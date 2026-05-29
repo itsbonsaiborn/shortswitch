@@ -1,0 +1,225 @@
+@import "tailwindcss";
+@config "../../tailwind.config.ts";
+
+:root {
+  color-scheme: light;
+
+  --flexoki-paper: #fffcf0;
+  --flexoki-base-50: #f2f0e5;
+  --flexoki-base-100: #e6e4d9;
+  --flexoki-base-150: #dad8ce;
+  --flexoki-base-200: #cecdc3;
+  --flexoki-base-300: #b7b5ac;
+  --flexoki-base-400: #9f9d96;
+  --flexoki-base-soft: #9f9d9624;
+  --flexoki-base-500: #878580;
+  --flexoki-base-600: #6f6e69;
+  --flexoki-base-dark-soft: #6f6e6929;
+  --flexoki-base-700: #575653;
+  --flexoki-base-800: #403e3c;
+  --flexoki-base-850: #343331;
+  --flexoki-base-900: #282726;
+  --flexoki-base-950: #1c1b1a;
+  --flexoki-black: #100f0f;
+
+  --flexoki-red-200: #f89a8a;
+  --flexoki-red-600: #af3029;
+  --flexoki-green-200: #bec97e;
+  --flexoki-green-600: #66800b;
+  --flexoki-yellow-200: #eccb60;
+  --flexoki-yellow-600: #ad8301;
+  --flexoki-cyan-200: #87d3c3;
+  --flexoki-cyan-300: #5abdac;
+  --flexoki-cyan-500: #2f968d;
+  --flexoki-cyan-600: #24837b;
+
+  --ui-bg: var(--flexoki-paper);
+  --ui-bg-alt: var(--flexoki-base-50);
+  --ui-panel: rgba(255, 252, 240, 0.92);
+  --ui-panel-muted: rgba(242, 240, 229, 0.9);
+  --ui-border: var(--flexoki-base-150);
+  --ui-text: var(--flexoki-black);
+  --ui-text-muted: var(--flexoki-base-600);
+  --ui-accent: var(--flexoki-cyan-600);
+  --ui-accent-hover: var(--flexoki-cyan-500);
+  --ui-accent-soft: rgba(90, 189, 172, 0.14);
+  --ui-accent-contrast: var(--flexoki-paper);
+  --ui-pill-bg: #e6e4d9;
+  --ui-input-bg: #f2f0e5;
+  --ui-dropdown-bg: #e6e4d9;
+}
+
+.dark {
+  color-scheme: dark;
+
+  --ui-bg: var(--flexoki-black);
+  --ui-bg-alt: var(--flexoki-base-950);
+  --ui-panel: rgba(28, 27, 26, 0.92);
+  --ui-panel-muted: rgba(40, 39, 38, 0.92);
+  --ui-border: var(--flexoki-base-850);
+  --ui-text: var(--flexoki-base-200);
+  --ui-text-muted: var(--flexoki-base-500);
+  --ui-accent: var(--flexoki-cyan-200);
+  --ui-accent-hover: var(--flexoki-cyan-300);
+  --ui-accent-soft: rgba(90, 189, 172, 0.18);
+  --ui-accent-contrast: var(--flexoki-black);
+  --ui-pill-bg: #282726;
+  --ui-input-bg: #1c1b1a;
+  --ui-dropdown-bg: #282726;
+}
+
+body {
+  @apply min-h-screen antialiased transition-colors duration-300;
+  font-family: "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+  color: var(--ui-text);
+  background-color: var(--ui-bg);
+  background-image:
+    radial-gradient(circle at top left, var(--ui-accent-soft), transparent 28%),
+    linear-gradient(180deg, var(--ui-bg), var(--ui-bg-alt));
+}
+
+html,
+body {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--ui-accent) 45%, transparent) transparent;
+}
+
+html::-webkit-scrollbar,
+body::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+html::-webkit-scrollbar-track,
+body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+html::-webkit-scrollbar-thumb,
+body::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+  background-color: color-mix(in srgb, var(--ui-accent) 44%, transparent);
+}
+
+html::-webkit-scrollbar-thumb:hover,
+body::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--ui-accent) 60%, transparent);
+}
+
+html::-webkit-scrollbar-button,
+body::-webkit-scrollbar-button,
+.app-scrollbar::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+#app {
+  @apply min-h-screen;
+}
+
+.panel {
+  @apply rounded-3xl border backdrop-blur-xl transition-colors duration-300;
+  border-color: var(--ui-border);
+  background: var(--ui-panel);
+}
+
+.panel-muted {
+  @apply rounded-2xl border transition-colors duration-300;
+  border-color: var(--ui-border);
+  background: var(--ui-panel-muted);
+}
+
+.btn-primary {
+  @apply inline-flex items-center justify-center rounded-2xl border px-4 py-2.5 font-medium transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-transparent;
+  border-color: var(--ui-accent);
+  background: var(--ui-accent);
+  color: var(--ui-accent-contrast);
+}
+
+.btn-primary:hover {
+  border-color: var(--ui-accent-hover);
+  background: var(--ui-accent-hover);
+}
+
+.btn-secondary {
+  @apply inline-flex items-center justify-center rounded-2xl border px-4 py-2.5 font-medium transition-colors duration-200;
+  border-color: var(--ui-border);
+  background: var(--ui-panel);
+  color: var(--ui-text);
+}
+
+.btn-secondary:hover {
+  border-color: var(--ui-accent);
+  color: var(--ui-accent);
+}
+
+.input {
+  @apply w-full rounded-2xl border transition-[border-color,box-shadow,background-color,color] duration-150 focus:outline-none focus:ring-0;
+  border-color: var(--ui-border);
+  background: var(--ui-input-bg);
+  color: var(--ui-text);
+  box-shadow: inset 0 0 0 0 transparent;
+}
+
+.input:focus {
+  border-color: var(--ui-accent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ui-accent) 45%, transparent);
+}
+
+.input::placeholder {
+  color: var(--ui-text-muted);
+}
+
+.icon-button {
+  @apply inline-flex h-10 w-10 items-center justify-center rounded-2xl border transition-colors duration-200;
+  border-color: var(--ui-border);
+  background: var(--ui-panel);
+  color: var(--ui-text-muted);
+}
+
+.icon-button:hover {
+  border-color: var(--ui-accent);
+  color: var(--ui-accent);
+}
+
+.dropdown-panel {
+  @apply absolute right-0 top-[calc(100%+0.75rem)] z-30 min-w-52 rounded-3xl border p-3 backdrop-blur-xl transition-colors duration-200;
+  border-color: var(--ui-border);
+  background: var(--ui-dropdown-bg);
+}
+
+.app-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--ui-accent) 45%, transparent) transparent;
+}
+
+.app-scrollbar-stable {
+  scrollbar-gutter: stable;
+}
+
+.app-scrollbar::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.app-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.app-scrollbar::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+  background-color: color-mix(in srgb, var(--ui-accent) 44%, transparent);
+}
+
+.app-scrollbar::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--ui-accent) 60%, transparent);
+}
+
+.app-scrollbar-x::-webkit-scrollbar:vertical {
+  width: 0;
+}

@@ -1,0 +1,64 @@
+services:
+  shortswitch:
+    build:
+      context: .
+      target: runtime
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      PUBLIC_URL: http://localhost:3000
+      CORS_ORIGIN: http://localhost:3000
+      APP_NAME: shortswitch
+      APP_DESCRIPTION: URL shortener.
+      DATABASE_PATH: /app/data/shortswitch.db
+      APP_DATA_DIR: /app/data
+      SESSION_COOKIE_NAME: shortswitch_session
+      SESSION_TTL_HOURS: 720
+      COOKIE_SECURE: "false"
+      COOKIE_SAME_SITE: lax
+      ENABLE_CSP: "true"
+      ADMIN_EMAIL: test@test.en
+      ADMIN_PASSWORD: test
+      ADMIN_NAME: admin
+      RESET_ADMIN: "false"
+      LOG_LEVEL: info
+      LOG_PRETTY: "true"
+      MIN_SLUG_LENGTH: 6
+      MAX_SLUG_LENGTH: 64
+      SLUG_ALLOWED_CHARS: abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789
+      LOGIN_MAX_FAILED_ATTEMPTS: 5
+      LOGIN_ATTEMPT_WINDOW_MINUTES: 10
+      LOGIN_BLOCK_MINUTES: 15
+      PROTECTED_LINK_MAX_FAILED_ATTEMPTS: 5
+      PROTECTED_LINK_ATTEMPT_WINDOW_MINUTES: 10
+      PROTECTED_LINK_BLOCK_MINUTES: 15
+      API_RATE_LIMIT_ENABLED: "false"
+      API_RATE_LIMIT_MAX_REQUESTS: 300
+      API_RATE_LIMIT_WINDOW_MINUTES: 1
+      LINK_CREATE_RATE_LIMIT_ENABLED: "false"
+      LINK_CREATE_MAX_REQUESTS: 30
+      LINK_CREATE_WINDOW_MINUTES: 60
+      REDIRECT_RATE_LIMIT_ENABLED: "false"
+      REDIRECT_RATE_LIMIT_MAX_REQUESTS: 600
+      REDIRECT_RATE_LIMIT_WINDOW_MINUTES: 1
+      REDIRECT_RATE_LIMIT_BLOCK_MINUTES: 10
+      BLOCK_LOCAL_URLS: "true"
+      BLOCK_PRIVATE_IPS: "false"
+      STORE_RAW_IP: "true"
+      IP_HASH_SECRET: local-dev-change-me-to-a-long-random-secret
+      ANALYTICS_RETENTION_DAYS: 90
+    volumes:
+      - shortswitch-data:/app/data
+    restart: unless-stopped
+
+  shortswitch-test:
+    build:
+      context: .
+      target: build
+    command: ["sh", "-c", "npm run typecheck && npm test"]
+    profiles: ["test"]
+
+volumes:
+  shortswitch-data:

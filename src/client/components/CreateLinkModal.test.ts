@@ -1,0 +1,22 @@
+// @vitest-environment jsdom
+import { mount } from '@vue/test-utils';
+import { describe, expect, test } from 'vitest';
+import CreateLinkModal from './CreateLinkModal.vue';
+
+describe('CreateLinkModal', () => {
+  test('reveals advanced fields when toggled', async () => {
+    const wrapper = mount(CreateLinkModal, {
+      props: {
+        open: true
+      }
+    });
+
+    expect(wrapper.text()).toContain('Create a fast, tracked short link');
+    expect(wrapper.text()).not.toContain('Custom slug');
+
+    await wrapper.get('button.text-sm').trigger('click');
+
+    expect(wrapper.text()).toContain('domain.com/');
+    expect(wrapper.text()).toContain('Password protection');
+  });
+});
