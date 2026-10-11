@@ -9,4 +9,10 @@ const router = createRouter({
   routes
 });
 
-createApp(App).use(router).mount('#app');
+const app = createApp(App);
+app.use(router);
+
+// Resolve the initial URL before App's auth watcher is mounted. Otherwise a
+// cold load of a public `/:slug` route can briefly look protected and redirect
+// an unauthenticated participant to /login.
+void router.isReady().then(() => app.mount('#app'));

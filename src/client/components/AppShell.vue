@@ -11,7 +11,7 @@ const router = useRouter();
 const { user, logout } = useAuth();
 const { appName, loadAppConfig } = useAppConfig();
 const { resolvedTheme, setTheme } = useTheme();
-const emit = defineEmits<{ createLink: [] }>();
+const emit = defineEmits<{ createLink: []; createLive: [] }>();
 
 const readSessionCookie = (name: string) => {
   if (typeof document === 'undefined') return null;
@@ -41,6 +41,11 @@ const tabs = [
     name: 'Links',
     path: '/app/links',
     icon: 'links'
+  },
+  {
+    name: 'Live',
+    path: '/app/live',
+    icon: 'live'
   },
   {
     name: 'Analytics',
@@ -173,6 +178,9 @@ onBeforeUnmount(() => {
                   <svg v-if="tab.icon === 'links'" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="h-5 w-5">
                     <path d="M17.74 2.76a4.32 4.32 0 0 1 0 6.1l-1.53 1.52c-1.12 1.12-2.7 1.47-4.14 1.09l2.62-2.61l.76-.77l.76-.76c.84-.84.84-2.2 0-3.04a2.13 2.13 0 0 0-3.04 0l-.77.76l-3.38 3.38c-.37-1.44-.02-3.02 1.1-4.14l1.52-1.53a4.32 4.32 0 0 1 6.1 0M8.59 13.43l5.34-5.34c.42-.42.42-1.1 0-1.52c-.44-.43-1.13-.39-1.53 0l-5.33 5.34c-.42.42-.42 1.1 0 1.52c.44.43 1.13.39 1.52 0m-.76 2.29l4.14-4.15c.38 1.44.03 3.02-1.09 4.14l-1.52 1.53a4.32 4.32 0 0 1-6.1 0a4.32 4.32 0 0 1 0-6.1l1.53-1.52c1.12-1.12 2.7-1.47 4.14-1.1l-4.14 4.15c-.85.84-.85 2.2 0 3.05c.84.84 2.2.84 3.04 0" />
                   </svg>
+                  <svg v-else-if="tab.icon === 'live'" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="h-5 w-5">
+                    <path d="M4 5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-5l-4.5 4v-4H6a2 2 0 0 1-2-2zm4 3a1 1 0 1 0 0 2a1 1 0 0 0 0-2m4 0a1 1 0 1 0 0 2a1 1 0 0 0 0-2m4 0a1 1 0 1 0 0 2a1 1 0 0 0 0-2" />
+                  </svg>
                   <svg v-else-if="tab.icon === 'analytics'" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="h-5 w-5">
                     <path d="M3 22V8h4v14zm7 0V2h4v20zm7 0v-8h4v8z" />
                   </svg>
@@ -243,10 +251,11 @@ onBeforeUnmount(() => {
             </div>
 
             <div
-              class="grid min-w-0 grid-cols-3 gap-2 sm:flex sm:items-center sm:gap-3"
+              class="grid min-w-0 grid-cols-2 gap-2 sm:flex sm:items-center sm:gap-3"
               :class="showMenuButton ? 'w-full' : 'self-start lg:self-center'"
             >
               <button class="btn-primary h-11 min-w-0 whitespace-nowrap px-3 text-[13px] sm:flex-none sm:px-4 sm:text-sm" @click="emit('createLink')">Create Link</button>
+              <button class="btn-secondary h-11 min-w-0 whitespace-nowrap px-3 text-[13px] sm:flex-none sm:px-4 sm:text-sm" @click="emit('createLive')">Create Live</button>
               <button class="btn-secondary h-11 min-w-0 whitespace-nowrap px-3 text-[13px] sm:flex-none sm:px-4 sm:text-sm" @click="setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')">
                 {{ resolvedTheme === 'dark' ? 'Light' : 'Dark' }}
               </button>

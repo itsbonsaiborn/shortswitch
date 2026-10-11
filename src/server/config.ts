@@ -112,7 +112,9 @@ export const config = {
     redirectRateLimitEnabled: parseBoolean(process.env.REDIRECT_RATE_LIMIT_ENABLED, false),
     redirectRateLimitMaxRequests: parseNumber(process.env.REDIRECT_RATE_LIMIT_MAX_REQUESTS, 600),
     redirectRateLimitWindowMinutes: parseNumber(process.env.REDIRECT_RATE_LIMIT_WINDOW_MINUTES, 1),
-    redirectRateLimitBlockMinutes: parseNumber(process.env.REDIRECT_RATE_LIMIT_BLOCK_MINUTES, 10)
+    redirectRateLimitBlockMinutes: parseNumber(process.env.REDIRECT_RATE_LIMIT_BLOCK_MINUTES, 10),
+    liveSubmitMaxRequests: parseNumber(process.env.LIVE_SUBMIT_MAX_REQUESTS, 60),
+    liveSubmitWindowMinutes: parseNumber(process.env.LIVE_SUBMIT_WINDOW_MINUTES, 1)
   },
   blockLocalUrls: parseBoolean(process.env.BLOCK_LOCAL_URLS, true),
   blockPrivateIps: parseBoolean(process.env.BLOCK_PRIVATE_IPS, false),
@@ -131,6 +133,8 @@ export const config = {
     'settings',
     'analytics',
     'links',
+    'live',
+    'present',
     'sessions',
     'access',
     'static',

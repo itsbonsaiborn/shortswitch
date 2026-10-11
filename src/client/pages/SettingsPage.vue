@@ -3,11 +3,15 @@ import { onMounted, ref } from 'vue';
 import { UAParser } from 'ua-parser-js';
 import { api } from '../lib/api';
 import { useToast } from '../composables/useToast';
-import type { UserSession } from '@/shared/types';
+import type { ModerationMatchMode, ModerationRule, UserSession } from '@/shared/types';
 
 const sessions = ref<UserSession[]>([]);
 const password = ref('');
 const clearingAnalytics = ref(false);
+const moderationRules = ref<ModerationRule[]>([]);
+const rulePattern = ref('');
+const ruleMode = ref<ModerationMatchMode>('whole_word');
+const editingRuleId = ref<string | null>(null);
 const { pushToast } = useToast();
 
 const formatSessionTime = (value: string) =>
@@ -26,10 +30,40 @@ const formatUserAgent = (value: string | null) => {
 
 const load = async () => {
   try {
-    sessions.value = await api<UserSession[]>('/api/sessions');
+    const [nextSessions, nextRules] = await Promise.all([
+      api<UserSession[]>('/api/sessions'),
+      api<ModerationRule[]>('/api/moderation/rules')
+    ]);
+    sessions.value = nextSessions;
+    moderationRules.value = nextRules;
   } catch (error) {
     pushToast({ tone: 'error', title: 'Failed to load sessions', description: (error as Error).message });
   }
+};
+
+const saveRule = async () => {
+  if (!rulePattern.value.trim()) return;
+  try {
+    const rule = await api<ModerationRule>(editingRuleId.value ? `/api/moderation/rules/${editingRuleId.value}` : '/api/moderation/rules', {
+      method: editingRuleId.value ? 'PATCH' : 'POST',
+      body: JSON.stringify({ pattern: rulePattern.value, matchMode: ruleMode.value })
+    });
+    const index = moderationRules.value.findIndex((item) => item.id === rule.id);
+    if (index === -1) moderationRules.value.unshift(rule); else moderationRules.value[index] = rule;
+    rulePattern.value = ''; editingRuleId.value = null; ruleMode.value = 'whole_word';
+    pushToast({ tone: 'success', title: 'Moderation rule saved' });
+  } catch (error) { pushToast({ tone: 'error', title: 'Failed to save rule', description: (error as Error).message }); }
+};
+
+const editRule = (rule: ModerationRule) => {
+  editingRuleId.value = rule.id; rulePattern.value = rule.pattern; ruleMode.value = rule.matchMode;
+};
+
+const deleteRule = async (rule: ModerationRule) => {
+  try {
+    await api(`/api/moderation/rules/${rule.id}`, { method: 'DELETE', body: JSON.stringify({}) });
+    moderationRules.value = moderationRules.value.filter((item) => item.id !== rule.id);
+  } catch (error) { pushToast({ tone: 'error', title: 'Failed to delete rule', description: (error as Error).message }); }
 };
 
 const revoke = async (id: string) => {
@@ -126,6 +160,25 @@ onMounted(load);
               </button>
             </div>
           </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="min-w-0 xl:col-span-2">
+      <div class="panel p-5 sm:p-6">
+        <h2 class="text-xl font-semibold">Moderation / Ban Filter</h2>
+        <p class="mt-2 text-sm text-[var(--ui-text-muted)]">Global, case-insensitive rules for moderated Live text responses. Unicode and repeated spaces are normalized on the server.</p>
+        <form class="mt-5 grid gap-3 sm:grid-cols-[minmax(0,1fr)_180px_auto]" @submit.prevent="saveRule">
+          <input v-model="rulePattern" class="input px-4 py-3" maxlength="120" placeholder="Forbidden word or phrase" required />
+          <select v-model="ruleMode" class="input px-4 py-3"><option value="whole_word">Whole word</option><option value="contains">Contains</option></select>
+          <button class="btn-primary">{{ editingRuleId ? 'Update rule' : 'Add rule' }}</button>
+        </form>
+        <div class="mt-5 grid gap-3 md:grid-cols-2">
+          <div v-for="rule in moderationRules" :key="rule.id" class="panel-muted flex min-w-0 items-center justify-between gap-3 p-4">
+            <div class="min-w-0"><p class="truncate font-medium">{{ rule.pattern }}</p><p class="mt-1 text-xs text-[var(--ui-text-muted)]">{{ rule.matchMode === 'whole_word' ? 'Whole word' : 'Contains' }}</p></div>
+            <div class="flex gap-2"><button class="btn-secondary px-3 py-2 text-sm" @click="editRule(rule)">Edit</button><button class="btn-secondary px-3 py-2 text-sm text-[#AF3029] dark:text-[#F89A8A]" @click="deleteRule(rule)">Delete</button></div>
+          </div>
+          <p v-if="moderationRules.length === 0" class="text-sm text-[var(--ui-text-muted)]">No ban filter rules configured.</p>
         </div>
       </div>
     </section>

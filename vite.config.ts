@@ -16,18 +16,15 @@ export default defineConfig({
   build: {
     outDir: 'dist/client',
     emptyOutDir: true,
-    chunkSizeWarningLimit: 1200,
-    rollupOptions: {
-      output: {
-        manualChunks(id) {
-          if (id.includes('vue3-apexcharts') || id.includes('apexcharts')) {
-            return 'analytics-vendor';
-          }
-        }
-      }
-    }
+    chunkSizeWarningLimit: 1200
   },
   server: {
-    port: 5173
+    port: 5173,
+    proxy: {
+      '/api': 'http://localhost:3000',
+      '/icons': 'http://localhost:3000',
+      '/og': 'http://localhost:3000',
+      '/site.webmanifest': 'http://localhost:3000'
+    }
   }
 });

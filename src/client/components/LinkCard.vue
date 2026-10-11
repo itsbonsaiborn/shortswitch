@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import QRCode from 'qrcode';
 import type { LinkRecord } from '@/shared/types';
+import QrCodePopover from './QrCodePopover.vue';
 
 const props = defineProps<{ link: LinkRecord }>();
 const emit = defineEmits<{
@@ -13,15 +13,12 @@ const emit = defineEmits<{
   toggleEnabled: [link: LinkRecord, enabled: boolean, clearExpirationOnEnable: boolean];
 }>();
 
-const qrOpen = ref(false);
 const actionsOpen = ref(false);
-const qrDataUrl = ref('');
 const rootRef = ref<HTMLElement | null>(null);
-const qrButtonRef = ref<HTMLElement | null>(null);
+const qrPopoverRef = ref<{ close: () => void } | null>(null);
 const actionsButtonRef = ref<HTMLElement | null>(null);
 const copied = ref(false);
 const faviconIndex = ref(0);
-const qrMenuStyle = ref<Record<string, string>>({});
 const actionsMenuStyle = ref<Record<string, string>>({});
 const menuOpenEventName = 'link-card-menu-open';
 
@@ -143,30 +140,13 @@ const copy = async () => {
   }, 1400);
 };
 
-const showQr = async () => {
-  qrDataUrl.value = await QRCode.toDataURL(props.link.shortUrl, { margin: 1, width: 256 });
-  qrOpen.value = !qrOpen.value;
-  if (qrOpen.value) {
-    window.dispatchEvent(new CustomEvent(menuOpenEventName, { detail: { linkId: props.link.id } }));
-    qrMenuStyle.value = buildMenuStyle(qrButtonRef.value, 260, 276);
-  }
-  actionsOpen.value = false;
-};
-
 const toggleActions = () => {
   actionsOpen.value = !actionsOpen.value;
   if (actionsOpen.value) {
     window.dispatchEvent(new CustomEvent(menuOpenEventName, { detail: { linkId: props.link.id } }));
     actionsMenuStyle.value = buildMenuStyle(actionsButtonRef.value, 220, props.link.passwordProtected ? 280 : 228);
   }
-  qrOpen.value = false;
-};
-
-const downloadQr = () => {
-  const link = document.createElement('a');
-  link.href = qrDataUrl.value;
-  link.download = `${props.link.slug}-qr.png`;
-  link.click();
+  qrPopoverRef.value?.close();
 };
 
 const openAnalytics = () => {
@@ -208,9 +188,6 @@ const buildMenuStyle = (anchor: HTMLElement | null, menuWidth: number, menuHeigh
 };
 
 const syncOpenMenus = () => {
-  if (qrOpen.value) {
-    qrMenuStyle.value = buildMenuStyle(qrButtonRef.value, 260, 276);
-  }
   if (actionsOpen.value) {
     actionsMenuStyle.value = buildMenuStyle(actionsButtonRef.value, 220, props.link.passwordProtected ? 228 : 176);
   }
@@ -225,14 +202,12 @@ const onCardClick = (event: MouseEvent) => {
 const closeDropdowns = (event: MouseEvent) => {
   const target = event.target as Node | null;
   if (rootRef.value?.contains(target)) return;
-  qrOpen.value = false;
   actionsOpen.value = false;
 };
 
 const closeMenusFromOtherCards = (event: Event) => {
   const detail = (event as CustomEvent<{ linkId?: string }>).detail;
   if (!detail || detail.linkId === props.link.id) return;
-  qrOpen.value = false;
   actionsOpen.value = false;
 };
 
@@ -327,45 +302,13 @@ const formatDate = (value: string) => {
           </svg>
         </button>
 
-        <div class="relative">
-          <button ref="qrButtonRef" class="icon-button" aria-label="Show QR code" @click.stop="showQr">
-            <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24">
-              <path d="M0 0h24v24H0z" fill="none" />
-              <path fill="currentColor" d="M3 4.5v5c0 .83.67 1.5 1.5 1.5h5c.83 0 1.5-.67 1.5-1.5v-5c0-.83-.67-1.5-1.5-1.5h-5C3.67 3 3 3.67 3 4.5M5 5h4v4H5zM3 19.5c0 .83.67 1.5 1.5 1.5h5c.83 0 1.5-.67 1.5-1.5v-5c0-.83-.67-1.5-1.5-1.5h-5c-.83 0-1.5.67-1.5 1.5zM5 15h4v4H5zM19.5 3h-5c-.83 0-1.5.67-1.5 1.5v5c0 .83.67 1.5 1.5 1.5h5c.83 0 1.5-.67 1.5-1.5v-5c0-.83-.67-1.5-1.5-1.5M19 9h-4V5h4zm-6 4h2v2h-2zm2 2h2v2h-2zm-2 2h2v2h-2zm4 0h2v2h-2zm2 2h2v2h-2zm-4 0h2v2h-2zm2-6h2v2h-2zm2 2h2v2h-2z" />
-            </svg>
-          </button>
-
-          <Transition
-            enter-active-class="transition duration-300 ease-out"
-            enter-from-class="opacity-0"
-            enter-to-class="opacity-100"
-            leave-active-class="transition duration-200 ease-in"
-            leave-from-class="opacity-100"
-            leave-to-class="opacity-0"
-          >
-            <Teleport to="body">
-              <div
-                v-if="qrOpen"
-                class="cursor-default rounded-3xl border border-[var(--ui-border)] bg-[var(--ui-dropdown-bg)] p-3 ring-1 ring-black/5 backdrop-blur-xl dark:ring-white/5"
-                :style="qrMenuStyle"
-                data-no-open="true"
-                @click.stop
-              >
-                <div class="flex flex-col items-center gap-4">
-                  <img :src="qrDataUrl" alt="QR code" class="h-44 w-44 rounded-3xl bg-white p-3" />
-                  <button class="btn-secondary w-full gap-2" @click.stop="downloadQr">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4.5 w-4.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                      <path d="m7 10 5 5 5-5"></path>
-                      <path d="M12 15V3"></path>
-                    </svg>
-                    Download QR
-                  </button>
-                </div>
-              </div>
-            </Teleport>
-          </Transition>
-        </div>
+        <QrCodePopover
+          ref="qrPopoverRef"
+          :url="props.link.shortUrl"
+          :slug="props.link.slug"
+          :instance-id="props.link.id"
+          @open="actionsOpen = false"
+        />
 
         <div class="relative">
           <button

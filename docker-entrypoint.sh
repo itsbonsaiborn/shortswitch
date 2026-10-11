@@ -1,4 +1,5 @@
 #!/bin/sh
+# This script must keep LF line endings because it runs inside Linux containers.
 set -eu
 
 if [ "$(id -u)" = "0" ]; then

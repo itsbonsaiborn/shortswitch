@@ -69,24 +69,37 @@ export class LinkRepository {
   }) {
     const id = createId();
     const timestamp = nowIso();
-    this.db
-      .prepare(
-        `INSERT INTO links (
-          id, user_id, slug, target_url, comment, password_hash, enabled, created_at, updated_at, expires_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        id,
-        input.userId,
-        input.slug,
-        input.targetUrl,
-        input.comment,
-        input.passwordHash,
-        1,
-        timestamp,
-        timestamp,
-        input.expiresAt
-      );
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO public_slugs (slug, resource_type, resource_id, created_at)
+           VALUES (?, 'link', ?, ?)`
+        )
+        .run(input.slug, id, timestamp);
+      this.db
+        .prepare(
+          `INSERT INTO links (
+            id, user_id, slug, target_url, comment, password_hash, enabled, created_at, updated_at, expires_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          id,
+          input.userId,
+          input.slug,
+          input.targetUrl,
+          input.comment,
+          input.passwordHash,
+          1,
+          timestamp,
+          timestamp,
+          input.expiresAt
+        );
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
     return this.findById(id)!;
   }
 
@@ -152,13 +165,28 @@ export class LinkRepository {
       expiresAt: string | null;
     }
   ) {
-    this.db
-      .prepare(
-        `UPDATE links
-         SET target_url = ?, slug = ?, comment = ?, password_hash = ?, expires_at = ?, updated_at = ?
-         WHERE id = ?`
-      )
-      .run(input.targetUrl, input.slug, input.comment, input.passwordHash, input.expiresAt, nowIso(), id);
+    const timestamp = nowIso();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.prepare(`DELETE FROM public_slugs WHERE resource_type = 'link' AND resource_id = ?`).run(id);
+      this.db
+        .prepare(
+          `INSERT INTO public_slugs (slug, resource_type, resource_id, created_at)
+           VALUES (?, 'link', ?, ?)`
+        )
+        .run(input.slug, id, timestamp);
+      this.db
+        .prepare(
+          `UPDATE links
+           SET target_url = ?, slug = ?, comment = ?, password_hash = ?, expires_at = ?, updated_at = ?
+           WHERE id = ?`
+        )
+        .run(input.targetUrl, input.slug, input.comment, input.passwordHash, input.expiresAt, timestamp, id);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
     return this.findById(id)!;
   }
 
@@ -174,7 +202,15 @@ export class LinkRepository {
   }
 
   delete(id: string) {
-    this.db.prepare('DELETE FROM links WHERE id = ?').run(id);
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.prepare('DELETE FROM links WHERE id = ?').run(id);
+      this.db.prepare(`DELETE FROM public_slugs WHERE resource_type = 'link' AND resource_id = ?`).run(id);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
   }
 
   incrementClicks(id: string) {

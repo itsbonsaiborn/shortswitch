@@ -78,14 +78,22 @@ export class LinkService {
 
     const passwordHash = input.password?.trim() ? await argon2.hash(input.password) : null;
     const comment = input.comment?.trim() ? input.comment.trim() : null;
-    const row = this.links.create({
-      userId,
-      slug,
-      targetUrl: validateTargetUrl(input.targetUrl),
-      comment,
-      passwordHash,
-      expiresAt: expirationFromInput(input.expirationValue, input.expirationUnit)
-    });
+    let row: LinkRow;
+    try {
+      row = this.links.create({
+        userId,
+        slug,
+        targetUrl: validateTargetUrl(input.targetUrl),
+        comment,
+        passwordHash,
+        expiresAt: expirationFromInput(input.expirationValue, input.expirationUnit)
+      });
+    } catch (error) {
+      if (String((error as Error).message).includes('UNIQUE constraint failed')) {
+        throw new Error('This slug is already in use.');
+      }
+      throw error;
+    }
 
     logger.info({ userId, slug }, 'link created');
 
@@ -123,16 +131,24 @@ export class LinkService {
     const comment =
       input.comment === undefined ? existing.comment : input.comment.trim() ? input.comment.trim() : null;
 
-    const row = this.links.update(linkId, {
-      targetUrl: input.targetUrl ? validateTargetUrl(input.targetUrl) : existing.targetUrl,
-      slug,
-      comment,
-      passwordHash,
-      expiresAt:
-        input.expirationValue === undefined && input.expirationUnit === undefined
-          ? existing.expiresAt
-          : expirationFromInput(input.expirationValue, input.expirationUnit)
-    });
+    let row: LinkRow;
+    try {
+      row = this.links.update(linkId, {
+        targetUrl: input.targetUrl ? validateTargetUrl(input.targetUrl) : existing.targetUrl,
+        slug,
+        comment,
+        passwordHash,
+        expiresAt:
+          input.expirationValue === undefined && input.expirationUnit === undefined
+            ? existing.expiresAt
+            : expirationFromInput(input.expirationValue, input.expirationUnit)
+      });
+    } catch (error) {
+      if (String((error as Error).message).includes('UNIQUE constraint failed')) {
+        throw new Error('This slug is already in use.');
+      }
+      throw error;
+    }
 
     logger.info({ userId, slug: row.slug }, 'link updated');
 

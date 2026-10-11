@@ -1,6 +1,6 @@
 # ShortSwitch
 
-Privacy-aware self-hosted URL shortener with a modern Vue 3 dashboard, secure server-side sessions, password-protected links, and lightweight analytics.
+Privacy-aware self-hosted URL shortener with a modern Vue 3 dashboard, interactive Live activities, secure server-side sessions, and lightweight analytics.
 
 ![ShortSwitch preview](public/og/app-og.png)
 
@@ -12,6 +12,9 @@ Privacy-aware self-hosted URL shortener with a modern Vue 3 dashboard, secure se
 - Responsive mobile-first dashboard
 - Light and dark themes
 - Password-protected and expiring links
+- Live open-answer, word-cloud, multiple-choice and scale activities
+- Anonymous or named participation with live SSE result boards
+- Global ban filter and manual moderation queue
 - Per-link analytics and global analytics
 - Cookie-based authentication with server-side sessions
 - Single-container Docker deployment
@@ -40,6 +43,7 @@ Privacy-aware self-hosted URL shortener with a modern Vue 3 dashboard, secure se
   - Top referrers, top slugs, languages, device analytics
 - Session management and password reset flow
 - Single-user admin reset flow for self-hosted recovery
+- Presentation mode with direct activity QR codes
 
 ## Security
 
@@ -91,6 +95,12 @@ npm run dev
 npm test
 npm run typecheck
 npm run build
+npm run verify:production
+npm run load:live:200
+npm run load:live:500
+npm run load:live:word-cloud
+npm run load:live:open
+npm run load:live:history
 ```
 
 ## Branding Assets
@@ -161,6 +171,7 @@ Before deploying to a real VPS, update the Docker config:
 - `src/client/` - Vue application
 - `src/server/` - Fastify server, services, repositories, views
 - `src/shared/` - shared TypeScript types
+- `docs/LIVE.md` - Live architecture, API, storage, moderation, realtime and load-test guide
 - `public/` - branding and OG assets
 
 ## License

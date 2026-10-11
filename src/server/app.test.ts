@@ -42,6 +42,8 @@ const envKeys = [
   'REDIRECT_RATE_LIMIT_MAX_REQUESTS',
   'REDIRECT_RATE_LIMIT_WINDOW_MINUTES',
   'REDIRECT_RATE_LIMIT_BLOCK_MINUTES',
+  'LIVE_SUBMIT_MAX_REQUESTS',
+  'LIVE_SUBMIT_WINDOW_MINUTES',
   'BLOCK_LOCAL_URLS',
   'BLOCK_PRIVATE_IPS',
   'SESSION_TTL_HOURS',
@@ -106,6 +108,8 @@ const setBaseEnv = (dbPath: string, overrides: Record<string, string | undefined
     REDIRECT_RATE_LIMIT_MAX_REQUESTS: '600',
     REDIRECT_RATE_LIMIT_WINDOW_MINUTES: '1',
     REDIRECT_RATE_LIMIT_BLOCK_MINUTES: '10',
+    LIVE_SUBMIT_MAX_REQUESTS: '60',
+    LIVE_SUBMIT_WINDOW_MINUTES: '1',
     BLOCK_LOCAL_URLS: 'true',
     BLOCK_PRIVATE_IPS: 'false',
     SESSION_TTL_HOURS: '720',
@@ -1200,6 +1204,534 @@ describe.sequential('server security hardening', () => {
     );
 
     expect((await app.inject({ method: 'GET', url: '/api/auth/me', headers: { cookie: sessionD.cookies } })).statusCode).toBe(401);
+
+    await app.close();
+  });
+
+  test('Live word cloud enforces global slugs, participant limits, filtering, editing and publication', async () => {
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+    const csrf = await getCsrfBundle(app);
+    const admin = await login(app, 'admin@example.com', 'change-me-now', csrf);
+    const adminHeaders = { cookie: admin.cookies, 'x-csrf-token': csrf.csrfToken };
+
+    const generated = await app.inject({
+      method: 'POST', url: '/api/live', headers: adminHeaders,
+      payload: {
+        title: 'Generated Live', question: 'Does the random URL work?', type: 'open_answer',
+        slug: '', status: 'active', identityMode: 'anonymous', allowMultipleResponses: false,
+        maxResponsesPerParticipant: 1, moderationMode: 'off', maxAnswerLength: 100,
+        publicResults: false
+      }
+    });
+    expect(generated.statusCode).toBe(200);
+    const generatedActivity = generated.json();
+    expect(generatedActivity.slug).toMatch(/^[A-Za-z0-9]{6}$/);
+    expect(generatedActivity.publicUrl).toBe(`http://localhost:3000/${generatedActivity.slug}`);
+
+    expect((await app.inject({
+      method: 'POST', url: `/api/live/public/${generatedActivity.slug}/responses`,
+      payload: { participantToken: 'participant_generated_01', text: 'Yes' }
+    })).statusCode).toBe(201);
+    const participantView = await app.inject({ method: 'GET', url: `/api/live/public/${generatedActivity.slug}` });
+    expect(participantView.statusCode).toBe(200);
+    expect(participantView.json().results).toBeNull();
+    expect((await app.inject({ method: 'GET', url: `/api/live/public/${generatedActivity.slug}/results` })).statusCode).toBe(400);
+    const presentationView = await app.inject({ method: 'GET', url: `/api/live/public/${generatedActivity.slug}/presentation` });
+    expect(presentationView.statusCode).toBe(200);
+    expect(presentationView.json().results.responseCount).toBe(1);
+
+    const expiring = await app.inject({
+      method: 'POST', url: '/api/live', headers: adminHeaders,
+      payload: {
+        title: 'Expiring Live', question: 'Will this expire?', type: 'open_answer', slug: 'expiring-live',
+        status: 'active', identityMode: 'anonymous', allowMultipleResponses: false,
+        maxResponsesPerParticipant: 1, moderationMode: 'off', maxAnswerLength: 100,
+        publicResults: true, expirationValue: 1, expirationUnit: 'minutes'
+      }
+    });
+    expect(expiring.statusCode).toBe(200);
+    expect(new Date(expiring.json().expiresAt).getTime()).toBeGreaterThan(Date.now());
+    const expiringActivity = expiring.json();
+    const expiringUpdate = await app.inject({
+      method: 'PATCH', url: `/api/live/${expiringActivity.id}`, headers: adminHeaders,
+      payload: {
+        title: 'Expiring Live updated', question: 'Will this expire?', type: 'open_answer', slug: 'expiring-live',
+        status: 'active', identityMode: 'anonymous', allowMultipleResponses: false,
+        maxResponsesPerParticipant: 1, moderationMode: 'off', maxAnswerLength: 100,
+        publicResults: true
+      }
+    });
+    expect(expiringUpdate.json().expiresAt).toBe(expiringActivity.expiresAt);
+    const { getDb } = await import('./db.js');
+    getDb().prepare('UPDATE live_activities SET expires_at = ? WHERE id = ?')
+      .run(new Date(Date.now() - 60_000).toISOString(), expiringActivity.id);
+    expect((await app.inject({ method: 'GET', url: '/expiring-live' })).statusCode).toBe(410);
+    expect((await app.inject({ method: 'GET', url: '/present/expiring-live' })).statusCode).toBe(410);
+    expect((await app.inject({ method: 'GET', url: '/api/live/public/expiring-live' })).statusCode).toBe(410);
+    expect((await app.inject({ method: 'GET', url: '/api/live/public/expiring-live/results' })).statusCode).toBe(410);
+    expect((await app.inject({
+      method: 'POST', url: '/api/live/public/expiring-live/responses',
+      payload: { participantToken: 'participant_expired_01', text: 'Too late' }
+    })).statusCode).toBe(410);
+    const reopened = await app.inject({
+      method: 'POST', url: `/api/live/${expiringActivity.id}/status`, headers: adminHeaders,
+      payload: { status: 'active', clearExpirationOnReopen: true }
+    });
+    expect(reopened.statusCode).toBe(200);
+    expect(reopened.json().expiresAt).toBeNull();
+    expect((await app.inject({ method: 'GET', url: '/api/live/public/expiring-live' })).statusCode).toBe(200);
+
+    const rule = await app.inject({
+      method: 'POST',
+      url: '/api/moderation/rules',
+      headers: adminHeaders,
+      payload: { pattern: '67', matchMode: 'contains' }
+    });
+    expect(rule.statusCode).toBe(200);
+
+    const namedChoice = await app.inject({
+      method: 'POST', url: '/api/live', headers: adminHeaders,
+      payload: {
+        title: 'Named choice', question: 'Choose one', type: 'multiple_choice', slug: 'named-choice',
+        status: 'active', identityMode: 'named', allowMultipleResponses: false,
+        maxResponsesPerParticipant: 1, moderationMode: 'filter_only', maxAnswerLength: 280,
+        allowMultipleChoices: false, options: ['One', 'Two'], publicResults: true
+      }
+    });
+    expect(namedChoice.statusCode).toBe(200);
+    const nameFiltered = await app.inject({
+      method: 'POST', url: '/api/live/public/named-choice/responses',
+      payload: {
+        participantToken: 'participant_bad_name_01', participantName: 'Gazan67',
+        optionIds: [namedChoice.json().options[0].id]
+      }
+    });
+    expect(nameFiltered.statusCode).toBe(201);
+    expect(nameFiltered.json().status).toBe('pending');
+    const namedChoiceDetails = await app.inject({
+      method: 'GET', url: `/api/live/${namedChoice.json().id}`, headers: { cookie: admin.cookies }
+    });
+    const nameFilteredResponse = namedChoiceDetails.json().responses[0];
+    expect(nameFilteredResponse.moderationReason).toContain('Participant name matched ban rule');
+    expect(nameFilteredResponse.originalParticipantName).toBe('Gazan67');
+    expect((await app.inject({
+      method: 'PATCH', url: `/api/live/${namedChoice.json().id}/responses/${nameFilteredResponse.id}`,
+      headers: adminHeaders,
+      payload: { status: 'approved', participantName: 'Gazan67' }
+    })).statusCode).toBe(400);
+    const renamedResponse = await app.inject({
+      method: 'PATCH', url: `/api/live/${namedChoice.json().id}/responses/${nameFilteredResponse.id}`,
+      headers: adminHeaders,
+      payload: { status: 'approved', participantName: 'Gazan' }
+    });
+    expect(renamedResponse.statusCode).toBe(200);
+    expect(renamedResponse.json().originalParticipantName).toBe('Gazan67');
+    expect(renamedResponse.json().participantName).toBe('Gazan');
+    expect(renamedResponse.json().nameEditedByModerator).toBe(true);
+    expect((await app.inject({ method: 'GET', url: '/api/live/public/named-choice/results' })).json().responseCount).toBe(1);
+
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/live',
+      headers: adminHeaders,
+      payload: {
+        title: '9.a Refleksija',
+        question: 'Kas tev šodien bija visgrūtākais?',
+        type: 'word_cloud',
+        slug: '9a-refleksija',
+        status: 'active',
+        identityMode: 'named',
+        allowMultipleResponses: true,
+        maxResponsesPerParticipant: 2,
+        moderationMode: 'filter_only',
+        maxAnswerLength: 80,
+        publicResults: true
+      }
+    });
+    expect(created.statusCode).toBe(200);
+    const activity = created.json();
+
+    const editedActivity = await app.inject({
+      method: 'PATCH',
+      url: `/api/live/${activity.id}`,
+      headers: adminHeaders,
+      payload: {
+        title: '9.a Refleksija — updated',
+        question: 'Kas tev šodien bija visgrūtākais?',
+        type: 'word_cloud',
+        slug: '9a-refleksija',
+        status: 'active',
+        identityMode: 'named',
+        allowMultipleResponses: true,
+        maxResponsesPerParticipant: 2,
+        moderationMode: 'filter_only',
+        maxAnswerLength: 80,
+        publicResults: true
+      }
+    });
+    expect(editedActivity.statusCode).toBe(200);
+    expect(editedActivity.json().title).toBe('9.a Refleksija — updated');
+
+    const conflictingLink = await app.inject({
+      method: 'POST',
+      url: '/api/links',
+      headers: adminHeaders,
+      payload: { targetUrl: 'https://example.com', slug: '9a-refleksija' }
+    });
+    expect(conflictingLink.statusCode).toBe(400);
+
+    const participantToken = 'participant_token_000001';
+    const approved = await app.inject({
+      method: 'POST',
+      url: '/api/live/public/9a-refleksija/responses',
+      payload: { participantToken, participantName: 'Anna', text: 'Maršrutēšana' }
+    });
+    expect(approved.statusCode).toBe(201);
+    expect(approved.json().status).toBe('approved');
+
+    const pending = await app.inject({
+      method: 'POST',
+      url: '/api/live/public/9a-refleksija/responses',
+      payload: { participantToken, participantName: 'Anna', text: 'Gazan67' }
+    });
+    expect(pending.statusCode).toBe(201);
+    expect(pending.json().status).toBe('pending');
+    const liveList = await app.inject({ method: 'GET', url: '/api/live', headers: { cookie: admin.cookies } });
+    const listedActivity = liveList.json().find((item: any) => item.id === activity.id);
+    expect(listedActivity.identityMode).toBe('named');
+    expect(listedActivity.pendingCount).toBe(1);
+
+    const overLimit = await app.inject({
+      method: 'POST',
+      url: '/api/live/public/9a-refleksija/responses',
+      payload: { participantToken, participantName: 'Anna', text: 'Trešā atbilde' }
+    });
+    expect(overLimit.statusCode).toBe(409);
+
+    const publicBefore = await app.inject({ method: 'GET', url: '/api/live/public/9a-refleksija/results' });
+    expect(publicBefore.statusCode).toBe(200);
+    expect(publicBefore.json().wordCloud).toEqual([{ text: 'Maršrutēšana', count: 1 }]);
+
+    const details = await app.inject({ method: 'GET', url: `/api/live/${activity.id}`, headers: { cookie: admin.cookies } });
+    const pendingResponse = details.json().responses.find((response: any) => response.status === 'pending');
+    expect(pendingResponse.originalText).toBe('Gazan67');
+
+    const unsafeApproval = await app.inject({
+      method: 'PATCH',
+      url: `/api/live/${activity.id}/responses/${pendingResponse.id}`,
+      headers: adminHeaders,
+      payload: { status: 'approved', publishedText: 'Gazan67' }
+    });
+    expect(unsafeApproval.statusCode).toBe(400);
+
+    const moderated = await app.inject({
+      method: 'PATCH',
+      url: `/api/live/${activity.id}/responses/${pendingResponse.id}`,
+      headers: adminHeaders,
+      payload: { status: 'approved', publishedText: 'Gazan' }
+    });
+    expect(moderated.statusCode).toBe(200);
+    expect(moderated.json().originalText).toBe('Gazan67');
+    expect(moderated.json().publishedText).toBe('Gazan');
+    expect(moderated.json().editedByModerator).toBe(true);
+
+    const publicAfter = await app.inject({ method: 'GET', url: '/api/live/public/9a-refleksija/results' });
+    expect(publicAfter.json().wordCloud).toEqual([
+      { text: 'Gazan', count: 1 },
+      { text: 'Maršrutēšana', count: 1 }
+    ]);
+
+    const hidden = await app.inject({
+      method: 'PATCH',
+      url: `/api/live/${activity.id}/responses/${pendingResponse.id}`,
+      headers: adminHeaders,
+      payload: { status: 'rejected', publishedText: 'Gazan' }
+    });
+    expect(hidden.statusCode).toBe(200);
+    expect((await app.inject({ method: 'GET', url: '/api/live/public/9a-refleksija/results' })).json().wordCloud)
+      .toEqual([{ text: 'Maršrutēšana', count: 1 }]);
+    expect((await app.inject({
+      method: 'PATCH',
+      url: `/api/live/${activity.id}/responses/${pendingResponse.id}`,
+      headers: adminHeaders,
+      payload: { status: 'approved', publishedText: 'Gazan' }
+    })).statusCode).toBe(200);
+
+    const closed = await app.inject({
+      method: 'POST', url: `/api/live/${activity.id}/status`, headers: adminHeaders, payload: { status: 'closed' }
+    });
+    expect(closed.statusCode).toBe(200);
+    expect((await app.inject({
+      method: 'POST', url: '/api/live/public/9a-refleksija/responses',
+      payload: { participantToken: 'participant_after_close', participantName: 'Jānis', text: 'Late' }
+    })).statusCode).toBe(409);
+
+    await app.close();
+  });
+
+  test('Live response limits are atomic and choice/scale results count submissions correctly', async () => {
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+    const csrf = await getCsrfBundle(app);
+    const admin = await login(app, 'admin@example.com', 'change-me-now', csrf);
+    const adminHeaders = { cookie: admin.cookies, 'x-csrf-token': csrf.csrfToken };
+    const base = {
+      status: 'active',
+      identityMode: 'anonymous',
+      allowMultipleResponses: false,
+      maxResponsesPerParticipant: 1,
+      moderationMode: 'off',
+      maxAnswerLength: 280,
+      publicResults: true
+    };
+    const choiceCreate = await app.inject({
+      method: 'POST', url: '/api/live', headers: adminHeaders,
+      payload: {
+        ...base,
+        title: 'Network choice', question: 'Select protocols', type: 'multiple_choice', slug: 'protocols',
+        allowMultipleChoices: true, options: ['HTTP', 'DNS', 'SSH']
+      }
+    });
+    const choice = choiceCreate.json();
+    const token = 'participant_token_atomic1';
+    const payload = {
+      participantToken: token,
+      optionIds: [choice.options[0].id, choice.options[1].id]
+    };
+    const concurrent = await Promise.all([
+      app.inject({ method: 'POST', url: '/api/live/public/protocols/responses', payload }),
+      app.inject({ method: 'POST', url: '/api/live/public/protocols/responses', payload })
+    ]);
+    expect(concurrent.map((response) => response.statusCode).sort()).toEqual([201, 409]);
+    const choiceResults = (await app.inject({ method: 'GET', url: '/api/live/public/protocols/results' })).json();
+    expect(choiceResults.responseCount).toBe(1);
+    expect(choiceResults.choices.slice(0, 2).map((item: any) => [item.count, item.percentage])).toEqual([[1, 100], [1, 100]]);
+
+    const originalOptionIds = choice.options.map((option: any) => option.id);
+    const previewDisabled = await app.inject({
+      method: 'PATCH', url: `/api/live/${choice.id}`, headers: adminHeaders,
+      payload: {
+        ...base,
+        title: 'Network choice', question: 'Select protocols', type: 'multiple_choice', slug: 'protocols',
+        allowMultipleChoices: true, options: ['HTTP', 'DNS', 'SSH'], publicResults: false
+      }
+    });
+    expect(previewDisabled.statusCode).toBe(200);
+    expect(previewDisabled.json().options.map((option: any) => option.id)).toEqual(originalOptionIds);
+    expect((await app.inject({ method: 'GET', url: '/api/live/public/protocols/results' })).statusCode).toBe(400);
+    const adminChoiceDetails = await app.inject({
+      method: 'GET', url: `/api/live/${choice.id}`, headers: { cookie: admin.cookies }
+    });
+    expect(adminChoiceDetails.json().responses[0].selectedOptionIds).toEqual(originalOptionIds.slice(0, 2));
+    expect(adminChoiceDetails.json().results.choices.slice(0, 2).map((item: any) => item.count)).toEqual([1, 1]);
+
+    const previewEnabled = await app.inject({
+      method: 'PATCH', url: `/api/live/${choice.id}`, headers: adminHeaders,
+      payload: {
+        ...base,
+        title: 'Network choice', question: 'Select protocols', type: 'multiple_choice', slug: 'protocols',
+        allowMultipleChoices: true, options: ['HTTP', 'DNS', 'SSH'], publicResults: true
+      }
+    });
+    expect(previewEnabled.statusCode).toBe(200);
+    expect(previewEnabled.json().options.map((option: any) => option.id)).toEqual(originalOptionIds);
+    const restoredChoiceResults = (await app.inject({ method: 'GET', url: '/api/live/public/protocols/results' })).json();
+    expect(restoredChoiceResults.choices.slice(0, 2).map((item: any) => [item.count, item.percentage]))
+      .toEqual([[1, 100], [1, 100]]);
+
+    const scaleCreate = await app.inject({
+      method: 'POST', url: '/api/live', headers: adminHeaders,
+      payload: { ...base, title: 'Scale', question: 'How hard?', type: 'scale', slug: 'hardness', scaleMin: 1, scaleMax: 5 }
+    });
+    expect(scaleCreate.statusCode).toBe(200);
+    for (const [index, value] of [2, 4].entries()) {
+      const response = await app.inject({
+        method: 'POST', url: '/api/live/public/hardness/responses',
+        payload: { participantToken: index === 0 ? token : `participant_scale_${index}000`, scaleValue: value }
+      });
+      expect(response.statusCode).toBe(201);
+    }
+    const scaleResults = (await app.inject({ method: 'GET', url: '/api/live/public/hardness/results' })).json();
+    expect(scaleResults.scale.average).toBe(3);
+
+    await app.inject({ method: 'DELETE', url: `/api/live/${choice.id}`, headers: adminHeaders });
+    const reusedSlug = await app.inject({
+      method: 'POST', url: '/api/links', headers: adminHeaders,
+      payload: { targetUrl: 'https://example.com', slug: 'protocols' }
+    });
+    expect(reusedSlug.statusCode).toBe(200);
+    await app.close();
+  });
+
+  test('Live admin routes require auth/CSRF and moderation supports whole-word and review-all modes', async () => {
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+    expect((await app.inject({ method: 'GET', url: '/api/live' })).statusCode).toBe(401);
+
+    const csrf = await getCsrfBundle(app);
+    const admin = await login(app, 'admin@example.com', 'change-me-now', csrf);
+    expect((await app.inject({
+      method: 'POST',
+      url: '/api/live',
+      headers: { cookie: admin.cookies },
+      payload: {}
+    })).statusCode).toBe(403);
+    const adminHeaders = { cookie: admin.cookies, 'x-csrf-token': csrf.csrfToken };
+
+    const rule = await app.inject({
+      method: 'POST',
+      url: '/api/moderation/rules',
+      headers: adminHeaders,
+      payload: { pattern: 'ļauns vārds', matchMode: 'whole_word' }
+    });
+    expect(rule.statusCode).toBe(200);
+
+    const base = {
+      type: 'open_answer',
+      status: 'active',
+      identityMode: 'anonymous',
+      allowMultipleResponses: true,
+      maxResponsesPerParticipant: 5,
+      maxAnswerLength: 280,
+      publicResults: true
+    };
+    expect((await app.inject({
+      method: 'POST', url: '/api/live', headers: adminHeaders,
+      payload: {
+        ...base, title: 'Whole word', question: 'Say something', slug: 'whole-filter', moderationMode: 'filter_only'
+      }
+    })).statusCode).toBe(200);
+
+    const participantToken = 'participant_whole_word_01';
+    const embedded = await app.inject({
+      method: 'POST', url: '/api/live/public/whole-filter/responses',
+      payload: { participantToken, text: 'priekšļauns vārdsx' }
+    });
+    expect(embedded.statusCode).toBe(201);
+    expect(embedded.json().status).toBe('approved');
+    const matched = await app.inject({
+      method: 'POST', url: '/api/live/public/whole-filter/responses',
+      payload: { participantToken, text: 'Tas ir ĻAUNS    VĀRDS!' }
+    });
+    expect(matched.statusCode).toBe(201);
+    expect(matched.json().status).toBe('pending');
+    const publicFilterResults = (await app.inject({ method: 'GET', url: '/api/live/public/whole-filter/results' })).json();
+    expect(publicFilterResults.responseCount).toBe(1);
+    expect(JSON.stringify(publicFilterResults)).not.toContain('ĻAUNS');
+
+    const updatedRule = await app.inject({
+      method: 'PATCH', url: `/api/moderation/rules/${rule.json().id}`, headers: adminHeaders,
+      payload: { pattern: 'jauns', matchMode: 'whole_word' }
+    });
+    expect(updatedRule.statusCode).toBe(200);
+    const oldPatternAfterUpdate = await app.inject({
+      method: 'POST', url: '/api/live/public/whole-filter/responses',
+      payload: { participantToken, text: 'ļauns vārds' }
+    });
+    expect(oldPatternAfterUpdate.json().status).toBe('approved');
+    const newPatternAfterUpdate = await app.inject({
+      method: 'POST', url: '/api/live/public/whole-filter/responses',
+      payload: { participantToken, text: 'JAUNS' }
+    });
+    expect(newPatternAfterUpdate.json().status).toBe('pending');
+
+    expect((await app.inject({
+      method: 'POST', url: '/api/live', headers: adminHeaders,
+      payload: {
+        ...base, title: 'Review all', question: 'Review me', slug: 'review-everything', moderationMode: 'review_all'
+      }
+    })).statusCode).toBe(200);
+    const reviewAll = await app.inject({
+      method: 'POST', url: '/api/live/public/review-everything/responses',
+      payload: { participantToken: 'participant_review_all1', text: 'Ordinary answer' }
+    });
+    expect(reviewAll.statusCode).toBe(201);
+    expect(reviewAll.json().status).toBe('pending');
+    expect((await app.inject({ method: 'GET', url: '/api/live/public/review-everything/results' })).json().responseCount).toBe(0);
+
+    await app.close();
+  });
+
+  test('Live public results are bounded, paginated and revisioned without limiting admin history', async () => {
+    process.env.LIVE_SUBMIT_MAX_REQUESTS = '1000';
+    vi.resetModules();
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+    const csrf = await getCsrfBundle(app);
+    const admin = await login(app, 'admin@example.com', 'change-me-now', csrf);
+    const adminHeaders = { cookie: admin.cookies, 'x-csrf-token': csrf.csrfToken };
+    const base = {
+      status: 'active', identityMode: 'anonymous', allowMultipleResponses: false,
+      maxResponsesPerParticipant: 1, moderationMode: 'off', maxAnswerLength: 280, publicResults: true
+    };
+
+    const openActivityResponse = await app.inject({
+      method: 'POST', url: '/api/live', headers: adminHeaders,
+      payload: { ...base, title: 'Paged answers', question: 'Answer', type: 'open_answer', slug: 'paged-answers' }
+    });
+    expect(openActivityResponse.statusCode).toBe(200);
+    const openActivity = openActivityResponse.json();
+    for (let index = 0; index < 105; index += 1) {
+      const response = await app.inject({
+        method: 'POST', url: '/api/live/public/paged-answers/responses',
+        payload: { participantToken: `paged_participant_${String(index).padStart(4, '0')}`, text: `Answer ${index}` }
+      });
+      expect(response.statusCode).toBe(201);
+    }
+
+    const publicResponse = await app.inject({ method: 'GET', url: '/api/live/public/paged-answers/results' });
+    const publicResults = publicResponse.json();
+    expect(publicResponse.headers['cache-control']).toBe('no-store');
+    expect(publicResults.responseCount).toBe(105);
+    expect(publicResults.openAnswers).toHaveLength(100);
+    expect(publicResults.openAnswerTotal).toBe(105);
+    expect(publicResults.openAnswerNextCursor).toEqual(expect.any(String));
+    expect(publicResults.revision).toBe(105);
+    const { getDb } = await import('./db.js');
+    const queryPlan = getDb()
+      .prepare(
+        `EXPLAIN QUERY PLAN SELECT id FROM live_responses
+         WHERE activity_id = ? AND moderation_status = 'approved'
+         ORDER BY created_at DESC, id DESC LIMIT 100`
+      )
+      .all(openActivity.id) as Array<{ detail: string }>;
+    expect(queryPlan.some((step) => step.detail.includes('idx_live_responses_public_page'))).toBe(true);
+
+    const olderPage = await app.inject({
+      method: 'GET',
+      url: `/api/live/public/paged-answers/answers?limit=50&cursor=${encodeURIComponent(publicResults.openAnswerNextCursor)}`
+    });
+    expect(olderPage.statusCode).toBe(200);
+    expect(olderPage.json().items).toHaveLength(5);
+    expect(olderPage.json().nextCursor).toBeNull();
+    expect(olderPage.json().total).toBe(105);
+
+    const adminDetails = await app.inject({ method: 'GET', url: `/api/live/${openActivity.id}`, headers: { cookie: admin.cookies } });
+    expect(adminDetails.json().responses).toHaveLength(105);
+    expect(adminDetails.json().results.openAnswers).toHaveLength(105);
+
+    const wordActivityResponse = await app.inject({
+      method: 'POST', url: '/api/live', headers: adminHeaders,
+      payload: { ...base, title: 'Bounded cloud', question: 'Phrase', type: 'word_cloud', slug: 'bounded-cloud' }
+    });
+    expect(wordActivityResponse.statusCode).toBe(200);
+    for (let index = 0; index < 151; index += 1) {
+      const response = await app.inject({
+        method: 'POST', url: '/api/live/public/bounded-cloud/responses',
+        payload: { participantToken: `cloud_participant_${String(index).padStart(4, '0')}`, text: `Phrase ${index}` }
+      });
+      expect(response.statusCode).toBe(201);
+    }
+    const wordResults = (await app.inject({ method: 'GET', url: '/api/live/public/bounded-cloud/results' })).json();
+    expect(wordResults.wordCloud).toHaveLength(150);
+    expect(wordResults.wordCloudTotal).toBe(151);
+    const wordPage = (await app.inject({ method: 'GET', url: '/api/live/public/bounded-cloud/words?limit=100' })).json();
+    expect(wordPage.items).toHaveLength(100);
+    expect(wordPage.total).toBe(151);
+    expect(wordPage.nextCursor).toEqual(expect.any(String));
+    const searchedWords = (await app.inject({ method: 'GET', url: '/api/live/public/bounded-cloud/words?search=Phrase%20150' })).json();
+    expect(searchedWords.items).toEqual([{ text: 'Phrase 150', count: 1 }]);
 
     await app.close();
   });

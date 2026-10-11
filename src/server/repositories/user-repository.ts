@@ -82,6 +82,8 @@ export class UserRepository {
       try {
         this.db.prepare('DELETE FROM sessions').run();
         this.db.prepare('UPDATE links SET user_id = ? WHERE user_id != ?').run(canonicalUser.id, canonicalUser.id);
+        this.db.prepare('UPDATE live_activities SET user_id = ? WHERE user_id != ?').run(canonicalUser.id, canonicalUser.id);
+        this.db.prepare('UPDATE moderation_rules SET user_id = ? WHERE user_id != ?').run(canonicalUser.id, canonicalUser.id);
         this.db.prepare('DELETE FROM users WHERE id != ?').run(canonicalUser.id);
         this.db
           .prepare(

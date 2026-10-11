@@ -104,3 +104,167 @@ export interface PublicAppConfig {
   appName: string;
   appDescription: string;
 }
+
+export type LiveActivityType = 'open_answer' | 'word_cloud' | 'multiple_choice' | 'scale';
+export type LiveIdentityMode = 'anonymous' | 'named';
+export type LiveActivityStatus = 'active' | 'closed';
+export type LiveModerationMode = 'off' | 'filter_only' | 'review_all';
+export type LiveResponseStatus = 'approved' | 'pending' | 'rejected';
+export type ModerationMatchMode = 'whole_word' | 'contains';
+
+export interface LiveQuestionOption {
+  id: string;
+  label: string;
+  position: number;
+}
+
+export interface LiveActivityInput {
+  title: string;
+  question: string;
+  type: LiveActivityType;
+  slug?: string;
+  status: LiveActivityStatus;
+  identityMode: LiveIdentityMode;
+  allowMultipleResponses: boolean;
+  maxResponsesPerParticipant: number;
+  moderationMode: LiveModerationMode;
+  maxAnswerLength: number;
+  allowMultipleChoices?: boolean;
+  options?: string[];
+  scaleMin?: number;
+  scaleMax?: number;
+  publicResults?: boolean;
+  expirationValue?: number | null;
+  expirationUnit?: 'minutes' | 'hours' | 'days';
+}
+
+export interface LiveActivitySummary {
+  id: string;
+  slug: string;
+  publicUrl: string;
+  title: string;
+  question: string;
+  type: LiveActivityType;
+  status: LiveActivityStatus;
+  identityMode: LiveIdentityMode;
+  allowMultipleResponses: boolean;
+  maxResponsesPerParticipant: number;
+  moderationMode: LiveModerationMode;
+  publicResults: boolean;
+  expiresAt: string | null;
+  maxAnswerLength: number;
+  allowMultipleChoices: boolean;
+  options: LiveQuestionOption[];
+  scaleMin: number | null;
+  scaleMax: number | null;
+  responseCount: number;
+  uniqueParticipantCount: number;
+  approvedCount: number;
+  pendingCount: number;
+  rejectedCount: number;
+  createdAt: string;
+  updatedAt: string;
+  lastResponseAt: string | null;
+  publicRevision: number;
+}
+
+export interface LiveResponseRecord {
+  id: string;
+  activityId: string;
+  originalParticipantName: string | null;
+  participantName: string | null;
+  originalText: string | null;
+  publishedText: string | null;
+  selectedOptionIds: string[];
+  scaleValue: number | null;
+  status: LiveResponseStatus;
+  moderationReason: string | null;
+  editedByModerator: boolean;
+  nameEditedByModerator: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LiveResultsSnapshot {
+  activityId: string;
+  slug: string;
+  type: LiveActivityType;
+  status: LiveActivityStatus;
+  publicResults: boolean;
+  responseCount: number;
+  uniqueParticipantCount: number;
+  openAnswers: Array<{
+    id: string;
+    text: string;
+    participantName: string | null;
+    editedByModerator: boolean;
+    createdAt: string;
+  }>;
+  openAnswerTotal: number;
+  openAnswerNextCursor: string | null;
+  wordCloud: Array<{ text: string; count: number }>;
+  wordCloudTotal: number;
+  choices: Array<{ id: string; label: string; count: number; percentage: number }>;
+  scale: {
+    average: number | null;
+    distribution: Array<{ value: number; count: number }>;
+  } | null;
+  revision: number;
+}
+
+export interface LiveResultsDelta {
+  type: 'delta';
+  baseRevision: number;
+  revision: number;
+  status?: LiveActivityStatus;
+  publicResults?: boolean;
+  responseCount?: number;
+  uniqueParticipantCount?: number;
+  openAnswerTotal?: number;
+  openAnswers?: {
+    upsert: LiveResultsSnapshot['openAnswers'];
+    removeIds: string[];
+  };
+  wordCloudTotal?: number;
+  wordCloud?: {
+    upsert: LiveResultsSnapshot['wordCloud'];
+    removeKeys: string[];
+  };
+  choices?: LiveResultsSnapshot['choices'];
+  scale?: LiveResultsSnapshot['scale'];
+}
+
+export interface LiveResultsPage<T> {
+  items: T[];
+  nextCursor: string | null;
+  total: number;
+}
+
+export interface PublicLiveActivity {
+  id: string;
+  slug: string;
+  publicUrl: string;
+  title: string;
+  question: string;
+  type: LiveActivityType;
+  status: LiveActivityStatus;
+  identityMode: LiveIdentityMode;
+  allowMultipleResponses: boolean;
+  maxResponsesPerParticipant: number;
+  maxAnswerLength: number;
+  allowMultipleChoices: boolean;
+  options: LiveQuestionOption[];
+  scaleMin: number | null;
+  scaleMax: number | null;
+  publicResults: boolean;
+  participantResponseCount: number;
+  results: LiveResultsSnapshot | null;
+}
+
+export interface ModerationRule {
+  id: string;
+  pattern: string;
+  matchMode: ModerationMatchMode;
+  createdAt: string;
+  updatedAt: string;
+}

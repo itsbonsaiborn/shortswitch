@@ -1,13 +1,14 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { brotliCompressSync, constants as zlibConstants, gzipSync } from 'node:zlib';
 import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import csrfProtection from '@fastify/csrf-protection';
 import formbody from '@fastify/formbody';
 import helmet from '@fastify/helmet';
 import staticPlugin from '@fastify/static';
-import Fastify from 'fastify';
+import Fastify, { LogController } from 'fastify';
 import { config } from './config.js';
 import { logger } from './logger.js';
 import { AuthService } from './services/auth-service.js';
@@ -17,6 +18,9 @@ import type { LinkRow } from './repositories/link-repository.js';
 import { SettingsRepository } from './repositories/settings-repository.js';
 import { UserRepository } from './repositories/user-repository.js';
 import { RateLimiterService } from './services/rate-limiter-service.js';
+import { LiveService } from './services/live-service.js';
+import { LiveRealtimeService } from './services/live-realtime-service.js';
+import { registerLiveRoutes } from './live-routes.js';
 import { renderLinkDisabledPage, renderLinkExpiredPage, renderLinkNotFoundPage, renderProtectedLinkPage, renderShortLinkPreviewPage } from './views/error-pages.js';
 import { isSafeRouteSlug, isTrustedCorsOrigin } from './utils.js';
 
@@ -24,7 +28,8 @@ export const buildApp = async () => {
   const app = Fastify({
     loggerInstance: logger,
     trustProxy: true,
-    disableRequestLogging: true
+    logController: new LogController({ disableRequestLogging: true }),
+    bodyLimit: 64 * 1024
   });
   const auth = new AuthService();
   const sessions = new SessionService();
@@ -32,6 +37,8 @@ export const buildApp = async () => {
   const settingsRepository = new SettingsRepository();
   const users = new UserRepository();
   const rateLimiter = new RateLimiterService();
+  const live = new LiveService();
+  const liveRealtime = new LiveRealtimeService();
   const clientRoot = path.resolve('dist/client');
   const clientIndexPath = path.resolve(clientRoot, 'index.html');
   const publicIconRoot = path.join(clientRoot, 'icons');
@@ -42,6 +49,10 @@ export const buildApp = async () => {
     reply.header('Cache-Control', 'no-store, no-cache, must-revalidate, private');
     reply.header('Pragma', 'no-cache');
     reply.header('Expires', '0');
+    return reply;
+  };
+  const applyNoCache = (reply: any) => {
+    reply.header('Cache-Control', 'no-cache');
     return reply;
   };
   const isPreviewBot = (userAgent: string | undefined) =>
@@ -109,6 +120,46 @@ export const buildApp = async () => {
       .replaceAll('__APP_NAME__', escapeHtml(config.appName))
       .replaceAll('__APP_DESCRIPTION__', escapeHtml(config.appDescription));
   };
+  let clientIndexPayloads: { identity: Buffer; br: Buffer; gzip: Buffer } | undefined;
+  const getClientIndexPayloads = () => {
+    if (clientIndexPayloads) return clientIndexPayloads;
+    const identity = Buffer.from(renderClientIndexHtml());
+    clientIndexPayloads = {
+      identity,
+      br: brotliCompressSync(identity, {
+        params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 11 }
+      }),
+      gzip: gzipSync(identity, { level: 9 })
+    };
+    return clientIndexPayloads;
+  };
+  const acceptedEncodingQuality = (header: string | undefined, encoding: 'br' | 'gzip') => {
+    if (!header) return 0;
+    let wildcardQuality = 0;
+    for (const item of header.toLowerCase().split(',')) {
+      const [name, ...parameters] = item.trim().split(';');
+      const qualityParameter = parameters.find((parameter) => parameter.trim().startsWith('q='));
+      const parsedQuality = qualityParameter ? Number.parseFloat(qualityParameter.trim().slice(2)) : 1;
+      const quality = Number.isFinite(parsedQuality) ? Math.max(0, Math.min(1, parsedQuality)) : 0;
+      if (name === encoding) return quality;
+      if (name === '*') wildcardQuality = quality;
+    }
+    return wildcardQuality;
+  };
+  const sendClientIndex = (request: { headers: { 'accept-encoding'?: string } }, reply: any) => {
+    const payloads = getClientIndexPayloads();
+    const acceptEncoding = request.headers['accept-encoding'];
+    const brQuality = acceptedEncodingQuality(acceptEncoding, 'br');
+    const gzipQuality = acceptedEncodingQuality(acceptEncoding, 'gzip');
+    applyNoCache(reply).header('Vary', 'Accept-Encoding').type('text/html; charset=utf-8');
+    if (brQuality > 0 && brQuality >= gzipQuality) {
+      return reply.header('Content-Encoding', 'br').send(payloads.br);
+    }
+    if (gzipQuality > 0) {
+      return reply.header('Content-Encoding', 'gzip').send(payloads.gzip);
+    }
+    return reply.send(payloads.identity);
+  };
   const isInvalidSlugRequest = (slug: string) => !isSafeRouteSlug(slug);
 
   await auth.bootstrapAdmin();
@@ -132,6 +183,7 @@ export const buildApp = async () => {
 
   app.addHook('onClose', async () => {
     clearInterval(analyticsCleanupTimer);
+    liveRealtime.close();
   });
 
   await app.register(cookie, {
@@ -183,6 +235,15 @@ export const buildApp = async () => {
   });
 
   app.addHook('onRequest', async (request, reply) => {
+    const pathname = request.url.split('?')[0];
+    if (pathname.startsWith('/api/live/public/')) {
+      reply.header('Cache-Control', 'no-store');
+    } else if (pathname === '/api/live' || pathname.startsWith('/api/live/') || pathname.startsWith('/api/moderation/')) {
+      reply.header('Cache-Control', 'private, no-store');
+    }
+  });
+
+  app.addHook('onRequest', async (request, reply) => {
     if (!config.defaults.apiRateLimitEnabled) return;
     if (!request.url.startsWith('/api/')) return;
     if (request.url === '/api/health') return;
@@ -200,6 +261,13 @@ export const buildApp = async () => {
     if (!allowed) {
       return reply.code(429).send({ message: 'Too many requests. Please try again later.' });
     }
+  });
+
+  await registerLiveRoutes(app, {
+    live,
+    realtime: liveRealtime,
+    sessions,
+    rateLimiter
   });
 
   app.get('/api/health', async () => ({ ok: true }));
@@ -567,11 +635,36 @@ export const buildApp = async () => {
     return reply.redirect('/app/links');
   });
 
+  app.get('/present/:slug', async (request, reply) => {
+    const slug = (request.params as { slug: string }).slug;
+    const liveActivity = isInvalidSlugRequest(slug) ? undefined : live.findBySlug(slug);
+    if (!liveActivity) {
+      return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage());
+    }
+    if (live.isExpired(liveActivity.expiresAt)) {
+      return applyNoStore(reply).code(410).type('text/html').send(renderLinkExpiredPage());
+    }
+    if (!fs.existsSync(clientIndexPath)) {
+      return reply.code(503).send({ message: 'Client application is not built.' });
+    }
+    return sendClientIndex(request, reply);
+  });
+
   app.get('/:slug', async (request, reply) => {
     const slug = (request.params as { slug: string }).slug;
     if (config.reservedSlugs.has(slug.toLowerCase())) return applyNoStore(reply).redirect('/app/links');
     if (isInvalidSlugRequest(slug)) {
       return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage());
+    }
+    const liveActivity = live.findBySlug(slug);
+    if (liveActivity) {
+      if (live.isExpired(liveActivity.expiresAt)) {
+        return applyNoStore(reply).code(410).type('text/html').send(renderLinkExpiredPage());
+      }
+      if (!fs.existsSync(clientIndexPath)) {
+        return reply.code(503).send({ message: 'Client application is not built.' });
+      }
+      return sendClientIndex(request, reply);
     }
     const link = links.getLinkBySlug(slug);
     if (!link) return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage());
@@ -621,7 +714,18 @@ export const buildApp = async () => {
     await app.register(staticPlugin, {
       root: clientRoot,
       prefix: '/app/',
-      wildcard: false
+      wildcard: false,
+      index: false,
+      preCompressed: true,
+      allowedPath: (pathName) => !/\.(?:br|gz)$/i.test(pathName),
+      setHeaders: (reply, filePath) => {
+        const sourcePath = filePath.replace(/\.(?:br|gz)$/i, '');
+        if (/[\\/]assets[\\/].+-[A-Za-z0-9_-]{8,}\.(?:css|js)$/i.test(sourcePath)) {
+          reply.header('Cache-Control', 'public, max-age=31536000, immutable');
+        } else {
+          reply.header('Cache-Control', 'no-cache');
+        }
+      }
     });
 
     app.setNotFoundHandler((request, reply) => {
@@ -630,7 +734,7 @@ export const buildApp = async () => {
         if (!clientIndexPath.startsWith(clientRoot + path.sep) && clientIndexPath !== path.join(clientRoot, 'index.html')) {
           return reply.code(500).send({ message: 'Client root resolution failed.' });
         }
-        return reply.type('text/html').send(renderClientIndexHtml());
+        return sendClientIndex(request, reply);
       }
       return reply.code(404).send({ message: 'Not found.' });
     });
