@@ -11,6 +11,8 @@ const links = ref<LinkRecord[]>([]);
 const loading = ref(true);
 const editingLink = ref<LinkRecord | null>(null);
 const editOpen = ref(false);
+const search = ref('');
+const sort = ref<'newest' | 'oldest' | 'slug' | 'clicks'>('newest');
 const { pushToast } = useToast();
 
 const load = async () => {
@@ -29,6 +31,24 @@ const onCreated = (event: Event) => {
 const totalUniqueClicks = computed(() =>
   links.value.reduce((sum, item) => sum + item.uniqueClickCount, 0)
 );
+
+const visibleLinks = computed(() => {
+  const query = search.value.trim().toLocaleLowerCase();
+  const filtered = query
+    ? links.value.filter((link) =>
+        [link.slug, link.targetUrl, link.comment ?? ''].some((value) =>
+          value.toLocaleLowerCase().includes(query)
+        )
+      )
+    : links.value;
+
+  return [...filtered].sort((left, right) => {
+    if (sort.value === 'oldest') return Date.parse(left.createdAt) - Date.parse(right.createdAt);
+    if (sort.value === 'slug') return left.slug.localeCompare(right.slug, undefined, { sensitivity: 'base' });
+    if (sort.value === 'clicks') return right.clickCount - left.clickCount || Date.parse(right.createdAt) - Date.parse(left.createdAt);
+    return Date.parse(right.createdAt) - Date.parse(left.createdAt);
+  });
+});
 
 const removeLink = async (link: LinkRecord) => {
   try {
@@ -111,11 +131,25 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="space-y-6">
-    <section class="grid gap-4 xl:grid-cols-3 md:grid-cols-2">
-      <StatCard label="Total links" :value="links.length" hint="All active and expired links" />
-      <StatCard label="Total clicks" :value="links.reduce((sum, item) => sum + item.clickCount, 0)" hint="Aggregated redirect traffic" />
-      <StatCard label="Unique clicks" :value="totalUniqueClicks" hint="Distinct visitors across your links" />
+  <div class="space-y-4 sm:space-y-6">
+    <section class="grid gap-3 sm:grid-cols-3">
+      <StatCard label="Total links" :value="links.length" />
+      <StatCard label="Total clicks" :value="links.reduce((sum, item) => sum + item.clickCount, 0)" />
+      <StatCard label="Unique clicks" :value="totalUniqueClicks" />
+    </section>
+
+    <section class="flex justify-end">
+      <div class="grid w-full gap-2 sm:w-auto sm:grid-cols-[minmax(220px,1fr)_170px]">
+        <label class="sr-only" for="link-search">Search Links</label>
+        <input id="link-search" v-model="search" class="input" placeholder="Search target or slug" />
+        <label class="sr-only" for="link-sort">Sort Links</label>
+        <select id="link-sort" v-model="sort" class="input">
+          <option value="newest">Newest first</option>
+          <option value="oldest">Oldest first</option>
+          <option value="slug">Slug</option>
+          <option value="clicks">Most clicked</option>
+        </select>
+      </div>
     </section>
 
     <section v-if="loading" class="panel p-8 text-center text-slate-500 dark:text-slate-400">Loading links...</section>
@@ -123,9 +157,13 @@ onUnmounted(() => {
       <h2 class="text-2xl font-semibold">No links yet</h2>
       <p class="mt-2 text-sm text-slate-500 dark:text-slate-400">Create your first short link from the header to get started.</p>
     </section>
+    <section v-else-if="!visibleLinks.length" class="panel p-10 text-center">
+      <h2 class="text-2xl font-semibold">No matching links</h2>
+      <p class="mt-2 text-sm text-slate-500 dark:text-slate-400">Try another target URL, slug, or comment.</p>
+    </section>
     <section v-else class="grid min-w-0 gap-4 lg:grid-cols-3">
       <LinkCard
-        v-for="link in links"
+        v-for="link in visibleLinks"
         :key="link.id"
         :link="link"
         @open="$router.push(`/app/links/${$event}`)"

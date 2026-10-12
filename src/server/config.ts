@@ -134,6 +134,7 @@ export const config = {
     'analytics',
     'links',
     'live',
+    'pages',
     'present',
     'sessions',
     'access',

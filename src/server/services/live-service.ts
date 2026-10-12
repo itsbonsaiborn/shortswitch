@@ -97,6 +97,16 @@ export class LiveService {
     this.repository.delete(activityId);
   }
 
+  clearResponses(userId: string, activityId: string) {
+    this.getOwned(userId, activityId);
+    const deletedRows = this.repository.clearResponses(activityId);
+    return { activity: this.getOwned(userId, activityId), deletedRows };
+  }
+
+  clearAllResponses(userId: string) {
+    return this.repository.clearAllResponses(userId);
+  }
+
   setStatus(userId: string, activityId: string, status: LiveActivityStatus, clearExpirationOnReopen = false) {
     const activity = this.getOwned(userId, activityId);
     if (!activityStatuses.has(status)) throw new Error('Invalid activity status.');

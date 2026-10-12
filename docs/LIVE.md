@@ -75,6 +75,7 @@ Authenticated admin routes (state-changing routes require the existing CSRF toke
 - `GET/POST /api/live`
 - `GET/PATCH/DELETE /api/live/:id`
 - `POST /api/live/:id/status`
+- `POST /api/live/:id/analytics/clear` — atomically removes responses and participant records while preserving the Activity and question configuration
 - `PATCH /api/live/:id/responses/:responseId`
 - `GET /api/live/moderation/pending`
 - `GET/POST /api/moderation/rules`

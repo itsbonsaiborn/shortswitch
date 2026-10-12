@@ -91,13 +91,14 @@ const changePassword = async () => {
 };
 
 const clearAnalytics = async () => {
+  if (!window.confirm('Clear all Link analytics, Live responses and participants, and Page views and clicks? This cannot be undone.')) return;
   clearingAnalytics.value = true;
   try {
     await api('/api/settings/analytics/clear', { method: 'POST', body: JSON.stringify({}) });
     pushToast({
       tone: 'error',
       title: 'Analytics cleared',
-      description: 'All recorded analytics events were removed and link counters were reset.'
+      description: 'Link analytics, Live responses, and Page views and clicks were removed.'
     });
   } catch (error) {
     pushToast({ tone: 'error', title: 'Failed to clear analytics', description: (error as Error).message });

@@ -35,33 +35,45 @@ try {
   assert(assetPath, 'Hashed JavaScript asset was not found in index.html.');
   const assetsRoot = path.resolve('dist/client/assets');
   const assetEntries = await fs.readdir(assetsRoot);
-  const publicPageFile = assetEntries.find((name) => /^PublicLivePage-.+\.js$/.test(name));
+  const publicLivePageFile = assetEntries.find((name) => /^PublicLivePage-.+\.js$/.test(name));
+  const publicSlugPageFile = assetEntries.find((name) => /^PublicSlugPage-.+\.js$/.test(name));
+  const publicPageFile = assetEntries.find((name) => /^PublicPagePage-.+\.js$/.test(name));
   const cssFile = assetEntries.find((name) => /^index-.+\.css$/.test(name));
-  assert(publicPageFile && cssFile, 'Public Live build assets were not found.');
-  const publicFiles = new Set([path.basename(assetPath), publicPageFile, cssFile]);
-  const visitImports = async (fileName) => {
-    const source = await fs.readFile(path.join(assetsRoot, fileName), 'utf8');
-    for (const match of source.matchAll(/(?:from\s*|import\()["']\.\/([^"']+\.js)/g)) {
-      if (publicFiles.has(match[1])) continue;
-      publicFiles.add(match[1]);
-      await visitImports(match[1]);
-    }
+  assert(publicLivePageFile && publicSlugPageFile && publicPageFile && cssFile, 'Public build assets were not found.');
+  const collectCriticalFiles = async (entryFiles) => {
+    const files = new Set([path.basename(assetPath), cssFile, ...entryFiles]);
+    const visitImports = async (fileName) => {
+      const source = await fs.readFile(path.join(assetsRoot, fileName), 'utf8');
+      for (const match of source.matchAll(/(?:from\s*|import\()["']\.\/([^"']+\.js)/g)) {
+        if (files.has(match[1])) continue;
+        files.add(match[1]);
+        await visitImports(match[1]);
+      }
+    };
+    for (const fileName of entryFiles) await visitImports(fileName);
+    return files;
   };
-  await visitImports(publicPageFile);
-  const publicSizes = { uncompressed: 0, brotli: 0, gzip: 0 };
-  for (const fileName of publicFiles) {
-    const filePath = path.join(assetsRoot, fileName);
-    const source = await fs.stat(filePath);
-    publicSizes.uncompressed += source.size;
-    for (const encoding of ['brotli', 'gzip']) {
-      const suffix = encoding === 'brotli' ? '.br' : '.gz';
-      try {
-        publicSizes[encoding] += (await fs.stat(`${filePath}${suffix}`)).size;
-      } catch {
-        publicSizes[encoding] += source.size;
+  const publicLiveFiles = await collectCriticalFiles([publicSlugPageFile, publicLivePageFile]);
+  const publicPageFiles = await collectCriticalFiles([publicSlugPageFile, publicPageFile]);
+  const measureFiles = async (files) => {
+    const sizes = { uncompressed: 0, brotli: 0, gzip: 0 };
+    for (const fileName of files) {
+      const filePath = path.join(assetsRoot, fileName);
+      const source = await fs.stat(filePath);
+      sizes.uncompressed += source.size;
+      for (const encoding of ['brotli', 'gzip']) {
+        const suffix = encoding === 'brotli' ? '.br' : '.gz';
+        try {
+          sizes[encoding] += (await fs.stat(`${filePath}${suffix}`)).size;
+        } catch {
+          sizes[encoding] += source.size;
+        }
       }
     }
-  }
+    return sizes;
+  };
+  const publicLiveSizes = await measureFiles(publicLiveFiles);
+  const publicPageSizes = await measureFiles(publicPageFiles);
 
   const brResponse = await fetch(`${address}/app/${assetPath}`, { headers: { 'accept-encoding': 'br' } });
   assert.equal(brResponse.status, 200);
@@ -107,6 +119,20 @@ try {
     body: JSON.stringify({ targetUrl: 'https://example.com', slug: 'verify-link' })
   });
   assert.equal(linkResponse.status, 200);
+  const pageResponse = await fetch(`${address}/api/pages`, {
+    method: 'POST', headers: adminHeaders,
+    body: JSON.stringify({
+      title: 'Verification Page', slug: 'verify-page', description: 'Public Page verification', emoji: '✅',
+      theme: 'minimal_light', layout: 'classic', status: 'published',
+      seoTitle: 'Verification Page SEO', seoDescription: 'SEO metadata verification',
+      blocks: [
+        { type: 'heading', visible: true, config: { text: 'Welcome', alignment: 'center', size: 'large' } },
+        { type: 'link', visible: true, config: { title: 'Example', url: 'https://example.com', openInNewTab: true } }
+      ]
+    })
+  });
+  assert.equal(pageResponse.status, 200);
+  const createdPage = await pageResponse.json();
 
   const liveHtml = await fetch(`${address}/verify-live`, { headers: { 'accept-encoding': 'br' } });
   assert.equal(liveHtml.headers.get('cache-control'), 'no-cache');
@@ -121,6 +147,31 @@ try {
   const liveApi = await fetch(`${address}/api/live/public/verify-live`);
   assert.equal(liveApi.headers.get('cache-control'), 'no-store');
   await liveApi.arrayBuffer();
+  const pageHtml = await fetch(`${address}/verify-page`, { headers: { 'accept-encoding': 'br' } });
+  assert.equal(pageHtml.status, 200);
+  assert.equal(pageHtml.headers.get('cache-control'), 'no-cache');
+  assert.equal(pageHtml.headers.get('content-encoding'), 'br');
+  const pageHtmlCompressedBytes = Number(pageHtml.headers.get('content-length'));
+  const pageHtmlText = await pageHtml.text();
+  assert.match(pageHtmlText, /Verification Page SEO/);
+  assert.match(pageHtmlText, /SEO metadata verification/);
+  assert.match(pageHtmlText, /rel="canonical" href="http:\/\/127\.0\.0\.1\/verify-page"/);
+  assert.match(pageHtmlText, /shortswitch-resource-type" content="page"/);
+  const pageApi = await fetch(`${address}/api/pages/public/verify-page`);
+  assert.equal(pageApi.status, 200);
+  assert.equal(pageApi.headers.get('cache-control'), 'no-store');
+  const publicPage = await pageApi.json();
+  assert.equal(publicPage.title, 'Verification Page');
+  assert.equal(publicPage.blocks.length, 2);
+  assert.equal('status' in publicPage, false);
+  const adminPages = await fetch(`${address}/api/pages`, { headers: { cookie: adminCookies } });
+  assert.equal(adminPages.headers.get('cache-control'), 'private, no-store');
+  await adminPages.arrayBuffer();
+  const clickResponse = await fetch(`${address}/api/pages/public/verify-page/clicks`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ blockId: createdPage.blocks[1].id, eventId: randomUUID().replaceAll('-', '') })
+  });
+  assert.equal(clickResponse.status, 202);
   const shortRedirect = await fetch(`${address}/verify-link`, { redirect: 'manual' });
   assert.match(shortRedirect.headers.get('cache-control') ?? '', /no-store/);
 
@@ -139,12 +190,19 @@ try {
     gzipBytes,
     liveHtmlBytes,
     liveHtmlCompressedBytes,
+    pageHtmlBytes: Buffer.byteLength(pageHtmlText),
+    pageHtmlCompressedBytes,
     publicLiveCriticalAssets: {
-      requests: publicFiles.size,
-      files: [...publicFiles].sort(),
-      ...publicSizes
+      requests: publicLiveFiles.size,
+      files: [...publicLiveFiles].sort(),
+      ...publicLiveSizes
     },
-    cache: { hashedAsset: 'immutable', html: 'no-cache', liveApi: 'no-store', adminApi: 'private, no-store', sse: 'no-cache', shortUrl: 'no-store' },
+    publicPageCriticalAssets: {
+      requests: publicPageFiles.size,
+      files: [...publicPageFiles].sort(),
+      ...publicPageSizes
+    },
+    cache: { hashedAsset: 'immutable', html: 'no-cache', liveApi: 'no-store', pageApi: 'no-store', adminApi: 'private, no-store', sse: 'no-cache', shortUrl: 'no-store' },
     result: 'passed'
   }, null, 2));
 } finally {

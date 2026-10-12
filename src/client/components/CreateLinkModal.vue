@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { api } from '../lib/api';
 import { useToast } from '../composables/useToast';
 import type { LinkFormInput, LinkRecord } from '@/shared/types';
@@ -83,6 +83,15 @@ watch(
   { immediate: true }
 );
 
+const closeOnEscape = (event: KeyboardEvent) => {
+  if (event.key !== 'Escape' || !props.open) return;
+  event.preventDefault();
+  emit('close');
+};
+
+onMounted(() => document.addEventListener('keydown', closeOnEscape));
+onBeforeUnmount(() => document.removeEventListener('keydown', closeOnEscape));
+
 const submit = async () => {
   loading.value = true;
   error.value = '';
@@ -133,7 +142,7 @@ const submit = async () => {
     leave-from-class="opacity-100"
     leave-to-class="opacity-0"
   >
-  <div v-if="props.open" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur" @click.self="emit('close')">
+  <div v-if="props.open" class="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur">
     <div class="panel w-full max-w-2xl p-6">
       <div class="flex items-start justify-between gap-4">
         <div>

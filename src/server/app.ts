@@ -21,6 +21,8 @@ import { RateLimiterService } from './services/rate-limiter-service.js';
 import { LiveService } from './services/live-service.js';
 import { LiveRealtimeService } from './services/live-realtime-service.js';
 import { registerLiveRoutes } from './live-routes.js';
+import { registerPageRoutes } from './page-routes.js';
+import { PageService } from './services/page-service.js';
 import { renderLinkDisabledPage, renderLinkExpiredPage, renderLinkNotFoundPage, renderProtectedLinkPage, renderShortLinkPreviewPage } from './views/error-pages.js';
 import { isSafeRouteSlug, isTrustedCorsOrigin } from './utils.js';
 
@@ -39,6 +41,7 @@ export const buildApp = async () => {
   const rateLimiter = new RateLimiterService();
   const live = new LiveService();
   const liveRealtime = new LiveRealtimeService();
+  const pages = new PageService();
   const clientRoot = path.resolve('dist/client');
   const clientIndexPath = path.resolve(clientRoot, 'index.html');
   const publicIconRoot = path.join(clientRoot, 'icons');
@@ -114,24 +117,73 @@ export const buildApp = async () => {
     }
     return reply.type(getContentType(filePath)).send(fs.readFileSync(filePath));
   };
-  const renderClientIndexHtml = () => {
+  const renderClientIndexHtml = (metadata?: {
+    resourceType?: 'live' | 'page';
+    title?: string;
+    description?: string;
+    canonicalUrl?: string;
+  }) => {
     const rawHtml = fs.readFileSync(clientIndexPath, 'utf8');
-    return rawHtml
+    let html = rawHtml
       .replaceAll('__APP_NAME__', escapeHtml(config.appName))
       .replaceAll('__APP_DESCRIPTION__', escapeHtml(config.appDescription));
+    if (metadata?.title) {
+      const title = escapeHtml(metadata.title);
+      html = html
+        .replace(/<title>.*?<\/title>/, `<title>${title}</title>`)
+        .replace(/<meta property="og:title" content="[^"]*" \/>/, `<meta property="og:title" content="${title}" />`)
+        .replace(/<meta name="twitter:title" content="[^"]*" \/>/, `<meta name="twitter:title" content="${title}" />`);
+    }
+    if (metadata?.description) {
+      const description = escapeHtml(metadata.description);
+      html = html
+        .replace(/<meta name="description" content="[^"]*" \/>/, `<meta name="description" content="${description}" />`)
+        .replace(/<meta property="og:description" content="[^"]*" \/>/, `<meta property="og:description" content="${description}" />`)
+        .replace(/<meta name="twitter:description" content="[^"]*" \/>/, `<meta name="twitter:description" content="${description}" />`);
+    }
+    const additions = [
+      metadata?.resourceType ? `<meta name="shortswitch-resource-type" content="${metadata.resourceType}" />` : '',
+      metadata?.canonicalUrl ? `<link rel="canonical" href="${escapeHtml(metadata.canonicalUrl)}" />` : ''
+    ].filter(Boolean).join('\n    ');
+    return additions ? html.replace('</head>', `    ${additions}\n  </head>`) : html;
   };
-  let clientIndexPayloads: { identity: Buffer; br: Buffer; gzip: Buffer } | undefined;
-  const getClientIndexPayloads = () => {
-    if (clientIndexPayloads) return clientIndexPayloads;
-    const identity = Buffer.from(renderClientIndexHtml());
-    clientIndexPayloads = {
+  type ClientIndexPayloads = { identity: Buffer; br: Buffer; gzip: Buffer };
+  const compressClientHtml = (html: string): ClientIndexPayloads => {
+    const identity = Buffer.from(html);
+    return {
       identity,
-      br: brotliCompressSync(identity, {
-        params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 11 }
-      }),
+      br: brotliCompressSync(identity, { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 11 } }),
       gzip: gzipSync(identity, { level: 9 })
     };
+  };
+  let clientIndexPayloads: ClientIndexPayloads | undefined;
+  let liveIndexPayloads: ClientIndexPayloads | undefined;
+  const pageIndexPayloadCache = new Map<string, ClientIndexPayloads>();
+  const getClientIndexPayloads = () => {
+    if (clientIndexPayloads) return clientIndexPayloads;
+    clientIndexPayloads = compressClientHtml(renderClientIndexHtml());
     return clientIndexPayloads;
+  };
+  const getLiveIndexPayloads = () => {
+    if (!liveIndexPayloads) liveIndexPayloads = compressClientHtml(renderClientIndexHtml({ resourceType: 'live' }));
+    return liveIndexPayloads;
+  };
+  const getPageIndexPayloads = (page: { id: string; updatedAt: string; title: string; seoTitle: string | null; description: string | null; seoDescription: string | null; publicUrl: string }) => {
+    const key = `${page.id}:${page.updatedAt}`;
+    const cached = pageIndexPayloadCache.get(key);
+    if (cached) return cached;
+    const payloads = compressClientHtml(renderClientIndexHtml({
+      resourceType: 'page',
+      title: page.seoTitle || page.title,
+      description: page.seoDescription || page.description || config.appDescription,
+      canonicalUrl: page.publicUrl
+    }));
+    if (pageIndexPayloadCache.size >= 100) {
+      const oldestKey = pageIndexPayloadCache.keys().next().value as string | undefined;
+      if (oldestKey) pageIndexPayloadCache.delete(oldestKey);
+    }
+    pageIndexPayloadCache.set(key, payloads);
+    return payloads;
   };
   const acceptedEncodingQuality = (header: string | undefined, encoding: 'br' | 'gzip') => {
     if (!header) return 0;
@@ -146,8 +198,11 @@ export const buildApp = async () => {
     }
     return wildcardQuality;
   };
-  const sendClientIndex = (request: { headers: { 'accept-encoding'?: string } }, reply: any) => {
-    const payloads = getClientIndexPayloads();
+  const sendClientIndex = (
+    request: { headers: { 'accept-encoding'?: string } },
+    reply: any,
+    payloads = getClientIndexPayloads()
+  ) => {
     const acceptEncoding = request.headers['accept-encoding'];
     const brQuality = acceptedEncodingQuality(acceptEncoding, 'br');
     const gzipQuality = acceptedEncodingQuality(acceptEncoding, 'gzip');
@@ -165,6 +220,7 @@ export const buildApp = async () => {
   await auth.bootstrapAdmin();
   sessions.cleanup();
   links.cleanupAnalytics();
+  pages.cleanupAnalytics();
 
   for (const warning of config.startupWarnings) {
     logger.warn({ category: 'security' }, warning);
@@ -173,8 +229,9 @@ export const buildApp = async () => {
   const analyticsCleanupTimer = setInterval(() => {
     try {
       const deletedRows = links.cleanupAnalytics();
-      if (deletedRows > 0) {
-        logger.info({ deletedRows }, 'analytics retention cleanup completed');
+      const deletedPageRows = pages.cleanupAnalytics();
+      if (deletedRows > 0 || deletedPageRows > 0) {
+        logger.info({ deletedRows, deletedPageRows }, 'analytics retention cleanup completed');
       }
     } catch (error) {
       logger.error({ err: error }, 'analytics retention cleanup failed');
@@ -236,9 +293,12 @@ export const buildApp = async () => {
 
   app.addHook('onRequest', async (request, reply) => {
     const pathname = request.url.split('?')[0];
-    if (pathname.startsWith('/api/live/public/')) {
+    if (pathname.startsWith('/api/live/public/') || pathname.startsWith('/api/pages/public/')) {
       reply.header('Cache-Control', 'no-store');
-    } else if (pathname === '/api/live' || pathname.startsWith('/api/live/') || pathname.startsWith('/api/moderation/')) {
+    } else if (
+      pathname === '/api/live' || pathname.startsWith('/api/live/') || pathname.startsWith('/api/moderation/') ||
+      pathname === '/api/pages' || pathname.startsWith('/api/pages/')
+    ) {
       reply.header('Cache-Control', 'private, no-store');
     }
   });
@@ -269,6 +329,7 @@ export const buildApp = async () => {
     sessions,
     rateLimiter
   });
+  await registerPageRoutes(app, { pages, sessions });
 
   app.get('/api/health', async () => ({ ok: true }));
 
@@ -426,9 +487,18 @@ export const buildApp = async () => {
   app.post('/api/settings/analytics/clear', { onRequest: app.csrfProtection }, async (request, reply) => {
     const authenticated = await sessions.requireAuth(request, reply);
     if (!authenticated) return;
-    const deletedRows = links.clearAnalytics();
-    logger.warn({ userId: authenticated.currentUser.id, deletedRows }, 'analytics cleared');
-    return { ok: true, deletedRows };
+    const linkRows = Number(links.clearAnalytics());
+    const pageRows = pages.clearAllAnalytics(authenticated.currentUser.id);
+    const liveResult = live.clearAllResponses(authenticated.currentUser.id);
+    for (const activityId of liveResult.activityIds) {
+      liveRealtime.schedule(activityId, () => live.getResultsForActivityId(activityId), { forceSnapshot: true });
+    }
+    const deletedRows = linkRows + pageRows + liveResult.deletedRows;
+    logger.warn(
+      { userId: authenticated.currentUser.id, deletedRows, linkRows, pageRows, liveRows: liveResult.deletedRows },
+      'analytics and Live responses cleared'
+    );
+    return { ok: true, deletedRows, linkRows, pageRows, liveRows: liveResult.deletedRows };
   });
 
   app.get('/api/links', async (request, reply) => {
@@ -664,7 +734,20 @@ export const buildApp = async () => {
       if (!fs.existsSync(clientIndexPath)) {
         return reply.code(503).send({ message: 'Client application is not built.' });
       }
-      return sendClientIndex(request, reply);
+      return sendClientIndex(request, reply, getLiveIndexPayloads());
+    }
+    const page = pages.findPublicRoute(slug);
+    if (page) {
+      if (page.status === 'draft') {
+        return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage());
+      }
+      if (page.status === 'disabled') {
+        return applyNoStore(reply).code(403).type('text/html').send(renderLinkDisabledPage());
+      }
+      if (!fs.existsSync(clientIndexPath)) {
+        return reply.code(503).send({ message: 'Client application is not built.' });
+      }
+      return sendClientIndex(request, reply, getPageIndexPayloads(page));
     }
     const link = links.getLinkBySlug(slug);
     if (!link) return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage());

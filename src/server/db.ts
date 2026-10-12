@@ -75,7 +75,7 @@ export const getDb = () => {
 
       CREATE TABLE IF NOT EXISTS public_slugs (
         slug TEXT PRIMARY KEY,
-        resource_type TEXT NOT NULL CHECK (resource_type IN ('link', 'live_activity')),
+        resource_type TEXT NOT NULL CHECK (resource_type IN ('link', 'live_activity', 'page')),
         resource_id TEXT NOT NULL UNIQUE,
         created_at TEXT NOT NULL
       );
@@ -169,6 +169,57 @@ export const getDb = () => {
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       );
 
+      CREATE TABLE IF NOT EXISTS pages (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        slug TEXT NOT NULL UNIQUE,
+        title TEXT NOT NULL,
+        description TEXT,
+        emoji TEXT,
+        avatar_url TEXT,
+        theme TEXT NOT NULL DEFAULT 'classic_cream' CHECK (theme IN ('classic_cream', 'forest_dark', 'soft_lavender', 'ocean_blue', 'minimal_light')),
+        layout TEXT NOT NULL DEFAULT 'classic' CHECK (layout IN ('classic', 'minimal', 'soft', 'bold')),
+        status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'published', 'disabled')),
+        seo_title TEXT,
+        seo_description TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS page_blocks (
+        id TEXT PRIMARY KEY,
+        page_id TEXT NOT NULL,
+        block_type TEXT NOT NULL CHECK (block_type IN ('heading', 'text', 'link', 'existing_link', 'live_activity', 'email', 'divider', 'spacer', 'image', 'double')),
+        config_json TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        visible INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE (page_id, position),
+        FOREIGN KEY (page_id) REFERENCES pages(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS page_views (
+        id TEXT PRIMARY KEY,
+        page_id TEXT NOT NULL,
+        timestamp TEXT NOT NULL,
+        visitor_hash TEXT NOT NULL,
+        raw_ip TEXT,
+        FOREIGN KEY (page_id) REFERENCES pages(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS page_block_clicks (
+        id TEXT PRIMARY KEY,
+        page_id TEXT NOT NULL,
+        block_id TEXT NOT NULL,
+        block_label TEXT NOT NULL,
+        event_id TEXT NOT NULL UNIQUE,
+        timestamp TEXT NOT NULL,
+        visitor_hash TEXT NOT NULL,
+        FOREIGN KEY (page_id) REFERENCES pages(id) ON DELETE CASCADE
+      );
+
       CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -186,10 +237,73 @@ export const getDb = () => {
       CREATE INDEX IF NOT EXISTS idx_live_responses_public_page ON live_responses(activity_id, moderation_status, created_at DESC, id DESC);
       CREATE INDEX IF NOT EXISTS idx_live_responses_participant_count ON live_responses(activity_id, participant_id);
       CREATE INDEX IF NOT EXISTS idx_moderation_rules_user ON moderation_rules(user_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_pages_user_created ON pages(user_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_page_blocks_page_position ON page_blocks(page_id, position);
+      CREATE INDEX IF NOT EXISTS idx_page_views_page_timestamp ON page_views(page_id, timestamp DESC);
+      CREATE INDEX IF NOT EXISTS idx_page_views_page_visitor ON page_views(page_id, visitor_hash);
+      CREATE INDEX IF NOT EXISTS idx_page_clicks_page_timestamp ON page_block_clicks(page_id, timestamp DESC);
+      CREATE INDEX IF NOT EXISTS idx_page_clicks_page_block ON page_block_clicks(page_id, block_id);
 
       INSERT OR IGNORE INTO public_slugs (slug, resource_type, resource_id, created_at)
       SELECT slug, 'link', id, created_at FROM links;
     `);
+
+    const publicSlugTable = dbInstance
+      .prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'public_slugs'`)
+      .get() as { sql: string } | undefined;
+    if (publicSlugTable && !publicSlugTable.sql.includes("'page'")) {
+      dbInstance.exec('BEGIN IMMEDIATE');
+      try {
+        dbInstance.exec(`
+          ALTER TABLE public_slugs RENAME TO public_slugs_legacy;
+          CREATE TABLE public_slugs (
+            slug TEXT PRIMARY KEY,
+            resource_type TEXT NOT NULL CHECK (resource_type IN ('link', 'live_activity', 'page')),
+            resource_id TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL
+          );
+          INSERT INTO public_slugs (slug, resource_type, resource_id, created_at)
+          SELECT slug, resource_type, resource_id, created_at FROM public_slugs_legacy;
+          DROP TABLE public_slugs_legacy;
+        `);
+        dbInstance.exec('COMMIT');
+      } catch (error) {
+        dbInstance.exec('ROLLBACK');
+        throw error;
+      }
+    }
+
+    const pageBlocksTable = dbInstance
+      .prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'page_blocks'`)
+      .get() as { sql: string } | undefined;
+    if (pageBlocksTable && !pageBlocksTable.sql.includes("'double'")) {
+      dbInstance.exec('BEGIN IMMEDIATE');
+      try {
+        dbInstance.exec(`
+          ALTER TABLE page_blocks RENAME TO page_blocks_legacy;
+          CREATE TABLE page_blocks (
+            id TEXT PRIMARY KEY,
+            page_id TEXT NOT NULL,
+            block_type TEXT NOT NULL CHECK (block_type IN ('heading', 'text', 'link', 'existing_link', 'live_activity', 'email', 'divider', 'spacer', 'image', 'double')),
+            config_json TEXT NOT NULL,
+            position INTEGER NOT NULL,
+            visible INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE (page_id, position),
+            FOREIGN KEY (page_id) REFERENCES pages(id) ON DELETE CASCADE
+          );
+          INSERT INTO page_blocks (id, page_id, block_type, config_json, position, visible, created_at, updated_at)
+          SELECT id, page_id, block_type, config_json, position, visible, created_at, updated_at FROM page_blocks_legacy;
+          DROP TABLE page_blocks_legacy;
+          CREATE INDEX IF NOT EXISTS idx_page_blocks_page_position ON page_blocks(page_id, position);
+        `);
+        dbInstance.exec('COMMIT');
+      } catch (error) {
+        dbInstance.exec('ROLLBACK');
+        throw error;
+      }
+    }
 
     const linkColumns = dbInstance
       .prepare(`PRAGMA table_info(links)`)

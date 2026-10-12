@@ -361,6 +361,45 @@ export class LiveRepository {
     }
   }
 
+  clearResponses(id: string) {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const responses = this.db.prepare('DELETE FROM live_responses WHERE activity_id = ?').run(id).changes;
+      const participants = this.db.prepare('DELETE FROM live_participants WHERE activity_id = ?').run(id).changes;
+      this.db
+        .prepare('UPDATE live_activities SET last_response_at = NULL, public_revision = public_revision + 1, updated_at = ? WHERE id = ?')
+        .run(nowIso(), id);
+      this.db.exec('COMMIT');
+      return Number(responses) + Number(participants);
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  clearAllResponses(userId: string) {
+    const activityIds = (this.db
+      .prepare('SELECT id FROM live_activities WHERE user_id = ?')
+      .all(userId) as unknown as Array<{ id: string }>).map((row) => row.id);
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const responses = this.db
+        .prepare('DELETE FROM live_responses WHERE activity_id IN (SELECT id FROM live_activities WHERE user_id = ?)')
+        .run(userId).changes;
+      const participants = this.db
+        .prepare('DELETE FROM live_participants WHERE activity_id IN (SELECT id FROM live_activities WHERE user_id = ?)')
+        .run(userId).changes;
+      this.db
+        .prepare('UPDATE live_activities SET last_response_at = NULL, public_revision = public_revision + 1, updated_at = ? WHERE user_id = ?')
+        .run(nowIso(), userId);
+      this.db.exec('COMMIT');
+      return { activityIds, deletedRows: Number(responses) + Number(participants) };
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
   setStatus(id: string, status: 'active' | 'closed', expiresAt?: string | null) {
     this.db
       .prepare('UPDATE live_activities SET status = ?, expires_at = ?, updated_at = ?, public_revision = public_revision + 1 WHERE id = ?')

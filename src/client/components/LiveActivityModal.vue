@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { api } from '../lib/api';
 import { useToast } from '../composables/useToast';
 import type { LiveActivityInput, LiveActivitySummary } from '@/shared/types';
@@ -87,6 +87,15 @@ watch(() => [form.type, form.identityMode] as const, ([type, identityMode]) => {
   if (!textType && form.moderationMode === 'review_all') form.moderationMode = 'filter_only';
 });
 
+const closeOnEscape = (event: KeyboardEvent) => {
+  if (event.key !== 'Escape' || !props.open) return;
+  event.preventDefault();
+  emit('close');
+};
+
+onMounted(() => document.addEventListener('keydown', closeOnEscape));
+onBeforeUnmount(() => document.removeEventListener('keydown', closeOnEscape));
+
 const submit = async () => {
   loading.value = true;
   error.value = '';
@@ -120,7 +129,15 @@ const submit = async () => {
 </script>
 
 <template>
-  <div v-if="open" class="fixed inset-0 z-[80] grid place-items-center overflow-y-auto bg-slate-950/65 p-4 backdrop-blur-sm" @click.self="emit('close')">
+  <Transition
+    enter-active-class="transition duration-300 ease-out"
+    enter-from-class="opacity-0"
+    enter-to-class="opacity-100"
+    leave-active-class="transition duration-200 ease-in"
+    leave-from-class="opacity-100"
+    leave-to-class="opacity-0"
+  >
+  <div v-if="open" class="fixed inset-0 z-[80] grid place-items-center overflow-y-auto bg-slate-950/65 p-4 backdrop-blur-sm">
     <form class="panel my-6 w-full max-w-3xl p-5 sm:p-7" @submit.prevent="submit">
       <div class="flex items-start justify-between gap-4">
         <div><p class="text-xs font-semibold uppercase tracking-[0.25em] text-[var(--ui-accent)]">Live</p><h2 class="mt-2 text-2xl font-semibold">{{ isEditing ? 'Edit Live' : 'Create Live' }}</h2></div>
@@ -152,4 +169,5 @@ const submit = async () => {
       <div class="mt-6 flex justify-end"><button class="btn-primary w-full sm:w-auto" :disabled="loading">{{ loading ? 'Saving…' : isEditing ? 'Save changes' : 'Create Live' }}</button></div>
     </form>
   </div>
+  </Transition>
 </template>

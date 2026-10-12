@@ -268,3 +268,143 @@ export interface ModerationRule {
   createdAt: string;
   updatedAt: string;
 }
+
+export type PageStatus = 'draft' | 'published' | 'disabled';
+export type PageTheme = 'classic_cream' | 'forest_dark' | 'soft_lavender' | 'ocean_blue' | 'minimal_light';
+export type PageLayout = 'classic' | 'minimal' | 'soft' | 'bold';
+export type PageBlockType =
+  | 'heading'
+  | 'text'
+  | 'link'
+  | 'existing_link'
+  | 'live_activity'
+  | 'email'
+  | 'divider'
+  | 'spacer'
+  | 'image'
+  | 'double';
+
+export type PageNestedBlockType = Exclude<PageBlockType, 'double'>;
+
+export interface PageNestedBlock {
+  id: string;
+  type: PageNestedBlockType;
+  config: PageBlockConfig;
+  visible: boolean;
+  href?: string | null;
+  available?: boolean;
+}
+
+export interface PageBlockConfig {
+  text?: string;
+  title?: string;
+  subtitle?: string;
+  url?: string;
+  email?: string;
+  label?: string;
+  emoji?: string;
+  resourceId?: string;
+  alignment?: 'left' | 'center' | 'right';
+  size?: 'small' | 'medium' | 'large';
+  style?: 'solid' | 'dashed' | 'dotted' | 'text' | 'button';
+  spacing?: 'small' | 'medium' | 'large';
+  openInNewTab?: boolean;
+  alt?: string;
+  caption?: string;
+  children?: PageNestedBlock[];
+}
+
+export interface PageBlock {
+  id: string;
+  type: PageBlockType;
+  config: PageBlockConfig;
+  position: number;
+  visible: boolean;
+  createdAt: string;
+  updatedAt: string;
+  href?: string | null;
+  available?: boolean;
+}
+
+export interface PageInput {
+  title: string;
+  slug?: string;
+  description?: string;
+  emoji?: string;
+  avatarUrl?: string;
+  theme: PageTheme;
+  layout: PageLayout;
+  status: PageStatus;
+  seoTitle?: string;
+  seoDescription?: string;
+  blocks: Array<{
+    id?: string;
+    type: PageBlockType;
+    config: PageBlockConfig;
+    visible: boolean;
+  }>;
+}
+
+export interface PageSummary {
+  id: string;
+  slug: string;
+  publicUrl: string;
+  title: string;
+  description: string | null;
+  emoji: string | null;
+  avatarUrl: string | null;
+  theme: PageTheme;
+  layout: PageLayout;
+  status: PageStatus;
+  seoTitle: string | null;
+  seoDescription: string | null;
+  blockCount: number;
+  totalViews: number;
+  uniqueVisitors: number;
+  totalLinkClicks: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PageDetail extends PageSummary {
+  blocks: PageBlock[];
+}
+
+export interface PageListResponse {
+  items: PageSummary[];
+  total: number;
+  page: number;
+  pageSize: number;
+  stats: {
+    totalPages: number;
+    totalViews: number;
+    uniqueVisitors: number;
+  };
+}
+
+export interface PublicPage {
+  id: string;
+  slug: string;
+  publicUrl: string;
+  title: string;
+  description: string | null;
+  emoji: string | null;
+  avatarUrl: string | null;
+  theme: PageTheme;
+  layout: PageLayout;
+  blocks: PageBlock[];
+}
+
+export interface PageAnalytics {
+  totalViews: number;
+  uniqueVisitors: number;
+  totalLinkClicks: number;
+  viewsOverTime: Array<{ date: string; label: string; views: number; uniqueVisitors: number }>;
+  blockClicks: Array<{
+    blockId: string;
+    label: string;
+    clicks: number;
+    url: string | null;
+    type: 'link' | 'existing_link' | 'live_activity' | 'email';
+  }>;
+}

@@ -49,7 +49,7 @@ const onLiveCreated = (activity: LiveActivitySummary) => {
 
 <template>
   <RouterView v-if="isLoginRoute || isPublicRoute || !user" />
-  <AppShell v-else @create-link="createOpen = true" @create-live="liveCreateOpen = true">
+  <AppShell v-else @create-link="createOpen = true" @create-live="liveCreateOpen = true" @create-page="router.push('/app/pages/new')">
     <RouterView />
   </AppShell>
   <template v-if="showAdminOverlays">

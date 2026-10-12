@@ -210,6 +210,67 @@ describe.sequential('server security hardening', () => {
     await expect(import('./app.js')).rejects.toThrow('CORS_ORIGIN must be set in production');
   });
 
+  test('upgrades the shared slug registry for Pages without losing legacy rows', async () => {
+    const { DatabaseSync } = await import('node:sqlite');
+    const legacy = new DatabaseSync(testDbPath);
+    legacy.exec(`
+      CREATE TABLE public_slugs (
+        slug TEXT PRIMARY KEY,
+        resource_type TEXT NOT NULL CHECK (resource_type IN ('link', 'live_activity')),
+        resource_id TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL
+      );
+      INSERT INTO public_slugs VALUES ('legacy-slug', 'link', 'legacy-resource', '2026-01-01T00:00:00.000Z');
+    `);
+    legacy.close();
+    const { getDb } = await import('./db.js');
+    const db = getDb();
+    const table = db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'public_slugs'`).get() as { sql: string };
+    expect(table.sql).toContain("'page'");
+    expect(db.prepare('SELECT * FROM public_slugs WHERE slug = ?').get('legacy-slug')).toMatchObject({
+      resource_type: 'link', resource_id: 'legacy-resource'
+    });
+    expect(() => db.prepare('INSERT INTO public_slugs VALUES (?, ?, ?, ?)').run('page-slug', 'page', 'page-resource', '2026-01-01T00:00:00.000Z')).not.toThrow();
+  });
+
+  test('upgrades Page block constraints for Double without losing existing blocks', async () => {
+    const { DatabaseSync } = await import('node:sqlite');
+    const legacy = new DatabaseSync(testDbPath);
+    legacy.exec(`
+      CREATE TABLE users (
+        id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, name TEXT NOT NULL, password_hash TEXT NOT NULL,
+        is_bootstrap_admin INTEGER NOT NULL DEFAULT 0, theme TEXT NOT NULL DEFAULT 'system', session_version INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE TABLE pages (
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL, slug TEXT NOT NULL UNIQUE, title TEXT NOT NULL, description TEXT, emoji TEXT,
+        avatar_url TEXT, theme TEXT NOT NULL DEFAULT 'classic_cream', layout TEXT NOT NULL DEFAULT 'classic', status TEXT NOT NULL DEFAULT 'draft',
+        seo_title TEXT, seo_description TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE TABLE page_blocks (
+        id TEXT PRIMARY KEY, page_id TEXT NOT NULL,
+        block_type TEXT NOT NULL CHECK (block_type IN ('heading', 'text', 'link', 'existing_link', 'live_activity', 'email', 'divider', 'spacer', 'image')),
+        config_json TEXT NOT NULL, position INTEGER NOT NULL, visible INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        UNIQUE (page_id, position), FOREIGN KEY (page_id) REFERENCES pages(id) ON DELETE CASCADE
+      );
+      INSERT INTO users VALUES ('owner', 'owner@example.com', 'Owner', 'hash', 0, 'system', 1, '2026-01-01', '2026-01-01');
+      INSERT INTO pages VALUES ('page', 'owner', 'legacy-page', 'Legacy', NULL, NULL, NULL, 'classic_cream', 'classic', 'draft', NULL, NULL, '2026-01-01', '2026-01-01');
+      INSERT INTO page_blocks VALUES ('legacy-heading', 'page', 'heading', '{"text":"Preserved"}', 0, 1, '2026-01-01', '2026-01-01');
+    `);
+    legacy.close();
+
+    const { getDb } = await import('./db.js');
+    const db = getDb();
+    const table = db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'page_blocks'`).get() as { sql: string };
+    expect(table.sql).toContain("'double'");
+    expect(db.prepare('SELECT block_type, config_json FROM page_blocks WHERE id = ?').get('legacy-heading')).toMatchObject({
+      block_type: 'heading', config_json: '{"text":"Preserved"}'
+    });
+    expect(() => db.prepare('INSERT INTO page_blocks VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(
+      'double-block', 'page', 'double', '{"children":[]}', 1, 1, '2026-01-01', '2026-01-01'
+    )).not.toThrow();
+  });
+
   test('allowed CORS origin works and unknown origin is not trusted', async () => {
     setBaseEnv(testDbPath, {
       NODE_ENV: 'production',
@@ -414,6 +475,31 @@ describe.sequential('server security hardening', () => {
       headers: { cookie: userBLogin.cookies }
     });
     expect(analyticsAsUserB.statusCode).toBe(404);
+
+    const pagePayload = {
+      title: 'Admin Page', slug: 'admin-page', theme: 'minimal_light', layout: 'classic', status: 'draft',
+      blocks: [{ type: 'existing_link', visible: true, config: { title: 'Admin Link', resourceId: link.id } }]
+    };
+    const createdPage = await app.inject({
+      method: 'POST', url: '/api/pages', payload: pagePayload,
+      headers: { cookie: adminLogin.cookies, 'x-csrf-token': adminCsrf.csrfToken }
+    });
+    expect(createdPage.statusCode).toBe(200);
+    const page = createdPage.json();
+    expect((await app.inject({ method: 'GET', url: `/api/pages/${page.id}`, headers: { cookie: userBLogin.cookies } })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'GET', url: `/api/pages/${page.id}/analytics`, headers: { cookie: userBLogin.cookies } })).statusCode).toBe(404);
+    expect((await app.inject({
+      method: 'PATCH', url: `/api/pages/${page.id}`, payload: pagePayload,
+      headers: { cookie: userBLogin.cookies, 'x-csrf-token': userBCsrf.csrfToken }
+    })).statusCode).toBe(404);
+    expect((await app.inject({
+      method: 'DELETE', url: `/api/pages/${page.id}`,
+      headers: { cookie: userBLogin.cookies, 'x-csrf-token': userBCsrf.csrfToken }
+    })).statusCode).toBe(404);
+    expect((await app.inject({
+      method: 'POST', url: '/api/pages', payload: { ...pagePayload, slug: 'foreign-resource' },
+      headers: { cookie: userBLogin.cookies, 'x-csrf-token': userBCsrf.csrfToken }
+    })).statusCode).toBe(404);
 
     await app.close();
   });
@@ -762,7 +848,7 @@ describe.sequential('server security hardening', () => {
     await app.close();
   });
 
-  test('analytics can be cleared from settings and link counters are reset', async () => {
+  test('analytics can be cleared from settings across Links, Live and Pages', async () => {
     const { buildApp } = await import('./app.js');
     const app = await buildApp();
     const csrf = await getCsrfBundle(app);
@@ -779,6 +865,32 @@ describe.sequential('server security hardening', () => {
     });
     expect(created.statusCode).toBe(200);
     const link = created.json();
+
+    const liveCreated = await app.inject({
+      method: 'POST', url: '/api/live',
+      headers: { cookie: cookies, 'x-csrf-token': csrf.csrfToken },
+      payload: {
+        title: 'Clear Live', question: 'Clear this?', type: 'open_answer', slug: 'clear-live', status: 'active',
+        identityMode: 'anonymous', allowMultipleResponses: false, maxResponsesPerParticipant: 1,
+        moderationMode: 'off', maxAnswerLength: 120, publicResults: true
+      }
+    });
+    expect(liveCreated.statusCode).toBe(200);
+    expect((await app.inject({
+      method: 'POST', url: '/api/live/public/clear-live/responses',
+      payload: { participantToken: 'clear_participant_01', text: 'Recorded response' }
+    })).statusCode).toBe(201);
+
+    const pageCreated = await app.inject({
+      method: 'POST', url: '/api/pages',
+      headers: { cookie: cookies, 'x-csrf-token': csrf.csrfToken },
+      payload: {
+        title: 'Clear Page', slug: 'clear-page', description: '', emoji: '', avatarUrl: '',
+        theme: 'classic_cream', layout: 'classic', status: 'published', seoTitle: '', seoDescription: '', blocks: []
+      }
+    });
+    expect(pageCreated.statusCode).toBe(200);
+    expect((await app.inject({ method: 'GET', url: '/api/pages/public/clear-page' })).statusCode).toBe(200);
 
     await app.inject({
       method: 'GET',
@@ -802,8 +914,14 @@ describe.sequential('server security hardening', () => {
     const db = getDb();
     const analyticsCount = db.prepare('SELECT COUNT(*) as count FROM analytics_events').get() as { count: number };
     const clickCount = db.prepare('SELECT click_count as clickCount FROM links WHERE id = ?').get(link.id) as { clickCount: number };
+    const liveResponseCount = db.prepare('SELECT COUNT(*) as count FROM live_responses').get() as { count: number };
+    const liveParticipantCount = db.prepare('SELECT COUNT(*) as count FROM live_participants').get() as { count: number };
+    const pageViewCount = db.prepare('SELECT COUNT(*) as count FROM page_views').get() as { count: number };
     expect(analyticsCount.count).toBe(0);
     expect(clickCount.clickCount).toBe(0);
+    expect(liveResponseCount.count).toBe(0);
+    expect(liveParticipantCount.count).toBe(0);
+    expect(pageViewCount.count).toBe(0);
 
     await app.close();
   });
@@ -1240,6 +1358,12 @@ describe.sequential('server security hardening', () => {
     const presentationView = await app.inject({ method: 'GET', url: `/api/live/public/${generatedActivity.slug}/presentation` });
     expect(presentationView.statusCode).toBe(200);
     expect(presentationView.json().results.responseCount).toBe(1);
+    const clearedGenerated = await app.inject({
+      method: 'POST', url: `/api/live/${generatedActivity.id}/analytics/clear`, headers: adminHeaders, payload: {}
+    });
+    expect(clearedGenerated.statusCode).toBe(200);
+    expect(clearedGenerated.json().activity.responseCount).toBe(0);
+    expect((await app.inject({ method: 'GET', url: `/api/live/public/${generatedActivity.slug}/presentation` })).json().results.responseCount).toBe(0);
 
     const expiring = await app.inject({
       method: 'POST', url: '/api/live', headers: adminHeaders,
@@ -1733,6 +1857,180 @@ describe.sequential('server security hardening', () => {
     const searchedWords = (await app.inject({ method: 'GET', url: '/api/live/public/bounded-cloud/words?search=Phrase%20150' })).json();
     expect(searchedWords.items).toEqual([{ text: 'Phrase 150', count: 1 }]);
 
+    await app.close();
+  });
+
+  test('Pages CRUD, shared slugs, public visibility, safe blocks and analytics work without affecting Links or Live', async () => {
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+    const csrf = await getCsrfBundle(app);
+    const admin = await login(app, 'admin@example.com', 'change-me-now', csrf);
+    const adminHeaders = { cookie: admin.cookies, 'x-csrf-token': csrf.csrfToken };
+
+    expect((await app.inject({ method: 'GET', url: '/api/pages' })).statusCode).toBe(401);
+    const shortLinkResponse = await app.inject({
+      method: 'POST', url: '/api/links', headers: adminHeaders,
+      payload: { targetUrl: 'https://example.com/resource', slug: 'page-link' }
+    });
+    expect(shortLinkResponse.statusCode).toBe(200);
+    const shortLink = shortLinkResponse.json();
+    const liveResponse = await app.inject({
+      method: 'POST', url: '/api/live', headers: adminHeaders,
+      payload: {
+        title: 'Page Live', question: 'Ready?', type: 'multiple_choice', slug: 'page-live', status: 'active',
+        identityMode: 'anonymous', allowMultipleResponses: false, maxResponsesPerParticipant: 1,
+        moderationMode: 'off', maxAnswerLength: 120, publicResults: true, options: ['Yes', 'No']
+      }
+    });
+    expect(liveResponse.statusCode).toBe(200);
+    const liveActivity = liveResponse.json();
+    const pagePayload = {
+      title: '<script>alert(1)</script> Datorika', slug: 'datorika-page', description: 'Useful resources', emoji: '💻',
+      avatarUrl: 'https://images.example.com/avatar.png', theme: 'ocean_blue', layout: 'soft', status: 'draft',
+      seoTitle: 'Datorika resources', seoDescription: 'Learning links and activities',
+      blocks: [
+        { type: 'heading', visible: true, config: { text: 'Start here', alignment: 'left', size: 'large' } },
+        { type: 'text', visible: true, config: { text: '<img src=x onerror=alert(1)> Plain text', alignment: 'left' } },
+        { type: 'link', visible: true, config: { title: 'External', url: 'https://example.org/docs', openInNewTab: true } },
+        { type: 'existing_link', visible: true, config: { title: 'Tracked short link', resourceId: shortLink.id } },
+        { type: 'live_activity', visible: true, config: { title: 'Join activity', resourceId: liveActivity.id } },
+        { type: 'email', visible: true, config: { label: 'Contact', email: 'teacher@example.com', style: 'button' } },
+        { type: 'divider', visible: true, config: { style: 'dashed', spacing: 'medium' } },
+        { type: 'spacer', visible: false, config: { spacing: 'small' } },
+        { type: 'image', visible: true, config: { url: 'https://images.example.com/lesson.png', alt: 'Lesson', alignment: 'center' } },
+        { type: 'double', visible: true, config: { children: [
+          { id: 'nested-left', type: 'link', visible: true, config: { title: 'Nested docs', url: 'https://nested.example.com/docs', openInNewTab: true } },
+          { id: 'nested-right', type: 'email', visible: true, config: { label: 'Nested email', email: 'nested@example.com', style: 'button' } }
+        ] } }
+      ]
+    };
+    const createdResponse = await app.inject({ method: 'POST', url: '/api/pages', headers: adminHeaders, payload: pagePayload });
+    expect(createdResponse.statusCode).toBe(200);
+    const created = createdResponse.json();
+    expect(created.blocks).toHaveLength(10);
+    expect(created.status).toBe('draft');
+    const { getDb } = await import('./db.js');
+    const blockQueryPlan = getDb().prepare('EXPLAIN QUERY PLAN SELECT * FROM page_blocks WHERE page_id = ? ORDER BY position').all(created.id) as Array<{ detail: string }>;
+    expect(blockQueryPlan.some((step) => step.detail.includes('idx_page_blocks_page_position'))).toBe(true);
+
+    expect((await app.inject({ method: 'GET', url: '/datorika-page' })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'GET', url: '/api/pages/public/datorika-page' })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'POST', url: '/api/pages', headers: adminHeaders, payload: { ...pagePayload, slug: 'page-link' } })).statusCode).toBe(409);
+    expect((await app.inject({ method: 'POST', url: '/api/pages', headers: adminHeaders, payload: { ...pagePayload, slug: 'page-live' } })).statusCode).toBe(409);
+    expect((await app.inject({ method: 'POST', url: '/api/pages', headers: adminHeaders, payload: { ...pagePayload, slug: 'settings' } })).statusCode).toBe(400);
+    const invalidUrl = structuredClone(pagePayload);
+    invalidUrl.slug = 'invalid-page';
+    invalidUrl.blocks[2].config.url = 'javascript:alert(1)';
+    expect((await app.inject({ method: 'POST', url: '/api/pages', headers: adminHeaders, payload: invalidUrl })).statusCode).toBe(400);
+    const invalidImage = structuredClone(pagePayload);
+    invalidImage.slug = 'invalid-image';
+    invalidImage.blocks[8].config.url = 'http://images.example.com/lesson.png';
+    expect((await app.inject({ method: 'POST', url: '/api/pages', headers: adminHeaders, payload: invalidImage })).statusCode).toBe(400);
+    expect((await app.inject({ method: 'POST', url: '/api/pages', headers: adminHeaders, payload: { ...pagePayload, slug: 'invalid-theme', theme: 'unknown' } })).statusCode).toBe(400);
+    const duplicateBlocks = structuredClone(pagePayload);
+    duplicateBlocks.slug = 'duplicate-blocks';
+    (duplicateBlocks.blocks[1] as any).id = 'duplicate-block-id';
+    (duplicateBlocks.blocks[2] as any).id = 'duplicate-block-id';
+    expect((await app.inject({ method: 'POST', url: '/api/pages', headers: adminHeaders, payload: duplicateBlocks })).statusCode).toBe(400);
+    const recursiveDouble = structuredClone(pagePayload);
+    recursiveDouble.slug = 'recursive-double';
+    recursiveDouble.blocks[9].config.children[0].type = 'double';
+    expect((await app.inject({ method: 'POST', url: '/api/pages', headers: adminHeaders, payload: recursiveDouble })).statusCode).toBe(400);
+    const incompleteDouble = structuredClone(pagePayload);
+    incompleteDouble.slug = 'incomplete-double';
+    incompleteDouble.blocks[9].config.children.pop();
+    expect((await app.inject({ method: 'POST', url: '/api/pages', headers: adminHeaders, payload: incompleteDouble })).statusCode).toBe(400);
+
+    const publishedResponse = await app.inject({
+      method: 'POST', url: `/api/pages/${created.id}/status`, headers: adminHeaders, payload: { status: 'published' }
+    });
+    expect(publishedResponse.statusCode).toBe(200);
+    const publicHtml = await app.inject({ method: 'GET', url: '/datorika-page', headers: { 'accept-encoding': 'br' } });
+    expect(publicHtml.statusCode).toBe(200);
+    expect(publicHtml.headers['cache-control']).toBe('no-cache');
+    expect(publicHtml.headers['content-encoding']).toBe('br');
+    const { brotliDecompressSync } = await import('node:zlib');
+    const html = brotliDecompressSync(publicHtml.rawPayload).toString('utf8');
+    expect(html).toContain('name="shortswitch-resource-type" content="page"');
+    expect(html).toContain('<title>Datorika resources</title>');
+    expect(html).toContain('rel="canonical" href="http://localhost:3000/datorika-page"');
+    expect(html).not.toContain('<script>alert(1)</script> Datorika');
+
+    const publicResponse = await app.inject({ method: 'GET', url: '/api/pages/public/datorika-page' });
+    expect(publicResponse.statusCode).toBe(200);
+    expect(publicResponse.headers['cache-control']).toBe('no-store');
+    const publicPage = publicResponse.json();
+    expect(publicPage.blocks).toHaveLength(9);
+    expect(publicPage.status).toBeUndefined();
+    expect(publicPage.seoTitle).toBeUndefined();
+    expect(publicPage.blocks.find((block: any) => block.type === 'existing_link').href).toBe('http://localhost:3000/page-link');
+    expect(publicPage.blocks.find((block: any) => block.type === 'live_activity').href).toBe('http://localhost:3000/page-live');
+    const publicDouble = publicPage.blocks.find((block: any) => block.type === 'double');
+    expect(publicDouble.config.children).toHaveLength(2);
+    expect(publicDouble.config.children[0]).toMatchObject({ id: 'nested-left', type: 'link' });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const zeroClickAnalytics = (await app.inject({ method: 'GET', url: `/api/pages/${created.id}/analytics`, headers: { cookie: admin.cookies } })).json();
+    expect(zeroClickAnalytics.blockClicks.map((block: any) => block.label)).toEqual(['External', 'Tracked short link', 'Join activity', 'Contact', 'Nested docs', 'Nested email']);
+    expect(zeroClickAnalytics.blockClicks.every((block: any) => block.clicks === 0)).toBe(true);
+
+    const clickedBlock = publicPage.blocks.find((block: any) => block.type === 'existing_link');
+    for (let index = 0; index < 2; index += 1) {
+      expect((await app.inject({
+        method: 'POST', url: '/api/pages/public/datorika-page/clicks',
+        payload: { blockId: clickedBlock.id, eventId: 'pageclick001' }
+      })).statusCode).toBe(202);
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+    const analytics = (await app.inject({ method: 'GET', url: `/api/pages/${created.id}/analytics`, headers: { cookie: admin.cookies } })).json();
+    expect(analytics.totalViews).toBe(1);
+    expect(analytics.uniqueVisitors).toBe(1);
+    expect(analytics.totalLinkClicks).toBe(1);
+    expect(analytics.blockClicks).toHaveLength(6);
+    expect(analytics.blockClicks[0].clicks).toBe(1);
+    expect(analytics.blockClicks[0]).toMatchObject({ label: 'Tracked short link', type: 'existing_link', url: 'http://localhost:3000/page-link' });
+    expect(analytics.blockClicks.slice(1).map((block: any) => block.label)).toEqual(['External', 'Join activity', 'Contact', 'Nested docs', 'Nested email']);
+    expect(analytics.blockClicks.slice(1).every((block: any) => block.clicks === 0)).toBe(true);
+    const dailyAnalytics = (await app.inject({ method: 'GET', url: `/api/pages/${created.id}/analytics?range=day&timezoneOffsetMinutes=180`, headers: { cookie: admin.cookies } })).json();
+    const weeklyAnalytics = (await app.inject({ method: 'GET', url: `/api/pages/${created.id}/analytics?range=week&timezoneOffsetMinutes=180`, headers: { cookie: admin.cookies } })).json();
+    const monthlyAnalytics = (await app.inject({ method: 'GET', url: `/api/pages/${created.id}/analytics?range=month&timezoneOffsetMinutes=180`, headers: { cookie: admin.cookies } })).json();
+    expect(dailyAnalytics.viewsOverTime).toHaveLength(24);
+    expect(weeklyAnalytics.viewsOverTime.map((point: any) => point.label)).toEqual(['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']);
+    expect(monthlyAnalytics.viewsOverTime).toHaveLength(30);
+    const clearedPageAnalytics = await app.inject({
+      method: 'POST', url: `/api/pages/${created.id}/analytics/clear`, headers: adminHeaders, payload: {}
+    });
+    expect(clearedPageAnalytics.statusCode).toBe(200);
+    expect(clearedPageAnalytics.json().page.totalViews).toBe(0);
+    expect((await app.inject({ method: 'GET', url: `/api/pages/${created.id}/analytics`, headers: { cookie: admin.cookies } })).json().totalLinkClicks).toBe(0);
+
+    const reorderedBlocks = [...created.blocks].reverse().map((block: any, index: number) => ({
+      id: block.id, type: block.type, config: block.config, visible: index !== 0
+    }));
+    const updatedResponse = await app.inject({
+      method: 'PATCH', url: `/api/pages/${created.id}`, headers: adminHeaders,
+      payload: { ...pagePayload, slug: 'datorika-renamed', status: 'published', blocks: reorderedBlocks }
+    });
+    expect(updatedResponse.statusCode).toBe(200);
+    expect(updatedResponse.json().blocks[0].id).toBe(created.blocks.at(-1).id);
+    expect(updatedResponse.json().blocks[0].visible).toBe(false);
+    expect((await app.inject({ method: 'GET', url: '/datorika-page' })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'GET', url: '/datorika-renamed' })).statusCode).toBe(200);
+
+    const duplicateResponse = await app.inject({ method: 'POST', url: `/api/pages/${created.id}/duplicate`, headers: adminHeaders, payload: {} });
+    expect(duplicateResponse.statusCode).toBe(200);
+    expect(duplicateResponse.json().status).toBe('draft');
+    expect(duplicateResponse.json().slug).not.toBe(created.slug);
+    expect((await app.inject({ method: 'GET', url: '/api/pages?page=1&pageSize=1', headers: { cookie: admin.cookies } })).json().total).toBe(2);
+
+    expect((await app.inject({ method: 'POST', url: `/api/pages/${created.id}/status`, headers: adminHeaders, payload: { status: 'disabled' } })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'GET', url: '/datorika-renamed' })).statusCode).toBe(403);
+    expect((await app.inject({ method: 'GET', url: '/api/pages/public/datorika-renamed' })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'DELETE', url: `/api/pages/${created.id}`, headers: adminHeaders })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'GET', url: '/datorika-renamed' })).statusCode).toBe(404);
+
+    expect((await app.inject({ method: 'GET', url: '/page-link', headers: { 'user-agent': 'Mozilla/5.0' } })).statusCode).toBe(302);
+    expect((await app.inject({ method: 'GET', url: '/page-live' })).statusCode).toBe(200);
     await app.close();
   });
 });

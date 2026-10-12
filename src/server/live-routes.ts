@@ -107,6 +107,19 @@ export const registerLiveRoutes = async (app: FastifyInstance<any, any, any, any
     }
   });
 
+  app.post('/api/live/:id/analytics/clear', { onRequest: app.csrfProtection }, async (request, reply) => {
+    const authenticated = await requireAdmin(request, reply);
+    if (!authenticated) return;
+    try {
+      const id = (request.params as { id: string }).id;
+      const result = live.clearResponses(authenticated.currentUser.id, id);
+      publish(id, true);
+      return result;
+    } catch (error) {
+      return reply.code(404).send({ message: (error as Error).message });
+    }
+  });
+
   app.patch('/api/live/:id/responses/:responseId', { onRequest: app.csrfProtection }, async (request, reply) => {
     const authenticated = await requireAdmin(request, reply);
     if (!authenticated) return;

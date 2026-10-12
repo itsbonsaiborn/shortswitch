@@ -1,6 +1,6 @@
 # ShortSwitch
 
-Privacy-aware self-hosted URL shortener with a modern Vue 3 dashboard, interactive Live activities, secure server-side sessions, and lightweight analytics.
+Privacy-aware self-hosted URL shortener with a modern Vue 3 dashboard, interactive Live activities, lightweight public Pages, secure server-side sessions, and analytics.
 
 ![ShortSwitch preview](public/og/app-og.png)
 
@@ -15,6 +15,7 @@ Privacy-aware self-hosted URL shortener with a modern Vue 3 dashboard, interacti
 - Live open-answer, word-cloud, multiple-choice and scale activities
 - Anonymous or named participation with live SSE result boards
 - Global ban filter and manual moderation queue
+- Linktree-style public Pages with reusable blocks, themes, preview and independent analytics
 - Per-link analytics and global analytics
 - Cookie-based authentication with server-side sessions
 - Single-container Docker deployment
@@ -29,7 +30,7 @@ Privacy-aware self-hosted URL shortener with a modern Vue 3 dashboard, interacti
 
 ## Features
 
-- Clean dashboard with `Links`, `Analytics`, and `Settings`
+- Clean dashboard with `Links`, `Live`, `Pages`, `Analytics`, and `Settings`
 - Link creation with custom slug, password, and expiration
 - QR code generation and download
 - Per-link stats:
@@ -44,6 +45,7 @@ Privacy-aware self-hosted URL shortener with a modern Vue 3 dashboard, interacti
 - Session management and password reset flow
 - Single-user admin reset flow for self-hosted recovery
 - Presentation mode with direct activity QR codes
+- Public Page editor with shared live preview, draft/published/disabled lifecycle and unified root slugs
 
 ## Security
 
@@ -101,6 +103,13 @@ npm run load:live:500
 npm run load:live:word-cloud
 npm run load:live:open
 npm run load:live:history
+npm run load:links:50
+npm run load:links:200
+npm run load:links:500
+npm run load:live:50
+npm run load:pages:50
+npm run load:pages:200
+npm run load:pages:500
 ```
 
 ## Branding Assets
@@ -172,6 +181,7 @@ Before deploying to a real VPS, update the Docker config:
 - `src/server/` - Fastify server, services, repositories, views
 - `src/shared/` - shared TypeScript types
 - `docs/LIVE.md` - Live architecture, API, storage, moderation, realtime and load-test guide
+- `docs/PAGES.md` - Pages architecture, blocks, API, storage, security and verification guide
 - `public/` - branding and OG assets
 
 ## License

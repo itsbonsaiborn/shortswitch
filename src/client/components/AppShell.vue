@@ -11,7 +11,7 @@ const router = useRouter();
 const { user, logout } = useAuth();
 const { appName, loadAppConfig } = useAppConfig();
 const { resolvedTheme, setTheme } = useTheme();
-const emit = defineEmits<{ createLink: []; createLive: [] }>();
+const emit = defineEmits<{ createLink: []; createLive: []; createPage: [] }>();
 
 const readSessionCookie = (name: string) => {
   if (typeof document === 'undefined') return null;
@@ -33,6 +33,8 @@ const writeSessionCookie = (name: string, value: string) => {
 const mobileOpen = ref(false);
 const sidebarRef = ref<HTMLElement | null>(null);
 const menuButtonRef = ref<HTMLElement | null>(null);
+const createMenuRef = ref<HTMLElement | null>(null);
+const createMenuOpen = ref(false);
 const { width } = useWindowSize();
 
 const manualCollapsed = ref(false);
@@ -46,6 +48,11 @@ const tabs = [
     name: 'Live',
     path: '/app/live',
     icon: 'live'
+  },
+  {
+    name: 'Pages',
+    path: '/app/pages',
+    icon: 'pages'
   },
   {
     name: 'Analytics',
@@ -103,10 +110,17 @@ const doLogout = async () => {
   await logout();
   await router.push('/login');
 };
+const runCreateAction = (action: 'link' | 'live' | 'page') => {
+  createMenuOpen.value = false;
+  if (action === 'link') emit('createLink');
+  else if (action === 'live') emit('createLive');
+  else emit('createPage');
+};
 
 const closeSidebarOnOutsideClick = (event: MouseEvent) => {
-  if (!showMenuButton.value || !mobileOpen.value) return;
   const target = event.target as Node | null;
+  if (createMenuOpen.value && !createMenuRef.value?.contains(target)) createMenuOpen.value = false;
+  if (!showMenuButton.value || !mobileOpen.value) return;
   if (sidebarRef.value?.contains(target)) return;
   if (menuButtonRef.value?.contains(target)) return;
   mobileOpen.value = false;
@@ -142,7 +156,7 @@ onBeforeUnmount(() => {
         <aside
           v-if="hasInlineSidebar || mobileOpen"
           ref="sidebarRef"
-          class="panel z-40 flex min-h-0 flex-col p-4 transition-all duration-300 ease-out md:p-5"
+          class="panel z-[60] flex min-h-0 flex-col p-4 transition-all duration-300 ease-out md:p-5"
           :class="hasInlineSidebar ? 'sticky top-4 h-[calc(100dvh-2rem)]' : 'fixed inset-y-3 left-3 w-[min(86vw,290px)]'"
         >
           <div class="flex items-center gap-3" :class="sidebarCollapsed ? 'justify-center' : ''">
@@ -181,6 +195,9 @@ onBeforeUnmount(() => {
                   <svg v-else-if="tab.icon === 'live'" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="h-5 w-5">
                     <path d="M4 5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-5l-4.5 4v-4H6a2 2 0 0 1-2-2zm4 3a1 1 0 1 0 0 2a1 1 0 0 0 0-2m4 0a1 1 0 1 0 0 2a1 1 0 0 0 0-2m4 0a1 1 0 1 0 0 2a1 1 0 0 0 0-2" />
                   </svg>
+                  <svg v-else-if="tab.icon === 'pages'" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="h-5 w-5">
+                    <path d="M6 2.75A2.75 2.75 0 0 0 3.25 5.5v13A2.75 2.75 0 0 0 6 21.25h12a2.75 2.75 0 0 0 2.75-2.75v-13A2.75 2.75 0 0 0 18 2.75zm1.25 4.5h9.5v1.5h-9.5zm0 4h9.5v1.5h-9.5zm0 4h6.5v1.5h-6.5z" />
+                  </svg>
                   <svg v-else-if="tab.icon === 'analytics'" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="h-5 w-5">
                     <path d="M3 22V8h4v14zm7 0V2h4v20zm7 0v-8h4v8z" />
                   </svg>
@@ -212,13 +229,13 @@ onBeforeUnmount(() => {
         <button
           v-if="mobileOpen && showMenuButton"
           aria-label="Close menu overlay"
-          class="fixed inset-0 z-30 bg-black/45 backdrop-blur-sm"
+          class="fixed inset-0 z-50 bg-black/45 backdrop-blur-sm"
           @click="mobileOpen = false"
         />
       </Transition>
 
       <div class="flex min-h-[calc(100dvh-1.5rem)] min-w-0 flex-col gap-4">
-        <header class="panel px-4 py-4 md:px-6">
+        <header class="panel relative z-40 px-4 py-4 md:px-6">
           <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div class="flex min-w-0 items-start gap-3 lg:items-center">
               <div class="flex min-w-0 items-center gap-3">
@@ -254,8 +271,28 @@ onBeforeUnmount(() => {
               class="grid min-w-0 grid-cols-2 gap-2 sm:flex sm:items-center sm:gap-3"
               :class="showMenuButton ? 'w-full' : 'self-start lg:self-center'"
             >
-              <button class="btn-primary h-11 min-w-0 whitespace-nowrap px-3 text-[13px] sm:flex-none sm:px-4 sm:text-sm" @click="emit('createLink')">Create Link</button>
-              <button class="btn-secondary h-11 min-w-0 whitespace-nowrap px-3 text-[13px] sm:flex-none sm:px-4 sm:text-sm" @click="emit('createLive')">Create Live</button>
+              <div ref="createMenuRef" class="relative col-span-2 sm:col-span-1">
+                <button
+                  class="btn-primary h-11 w-full whitespace-nowrap px-5 text-sm sm:w-auto"
+                  :aria-expanded="createMenuOpen"
+                  aria-haspopup="menu"
+                  @click.stop="createMenuOpen = !createMenuOpen"
+                >Create</button>
+                <Transition
+                  enter-active-class="transition duration-200 ease-out"
+                  enter-from-class="-translate-y-1 opacity-0"
+                  enter-to-class="translate-y-0 opacity-100"
+                  leave-active-class="transition duration-150 ease-in"
+                  leave-from-class="opacity-100"
+                  leave-to-class="opacity-0"
+                >
+                  <div v-if="createMenuOpen" class="absolute right-0 z-[70] mt-2 w-48 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-dropdown-bg)] p-2 shadow-xl" role="menu">
+                    <button class="w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-[var(--ui-panel-muted)]" role="menuitem" @click="runCreateAction('link')">Create Link</button>
+                    <button class="w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-[var(--ui-panel-muted)]" role="menuitem" @click="runCreateAction('live')">Create Live</button>
+                    <button class="w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-[var(--ui-panel-muted)]" role="menuitem" @click="runCreateAction('page')">Create Page</button>
+                  </div>
+                </Transition>
+              </div>
               <button class="btn-secondary h-11 min-w-0 whitespace-nowrap px-3 text-[13px] sm:flex-none sm:px-4 sm:text-sm" @click="setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')">
                 {{ resolvedTheme === 'dark' ? 'Light' : 'Dark' }}
               </button>

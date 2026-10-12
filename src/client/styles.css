@@ -185,6 +185,18 @@ body::-webkit-scrollbar-button,
   color: var(--ui-accent);
 }
 
+.icon-button-primary {
+  border-color: var(--ui-accent);
+  background: var(--ui-accent);
+  color: var(--ui-accent-contrast);
+}
+
+.icon-button-primary:hover {
+  border-color: var(--ui-accent-hover);
+  background: var(--ui-accent-hover);
+  color: var(--ui-accent-contrast);
+}
+
 .dropdown-panel {
   @apply absolute right-0 top-[calc(100%+0.75rem)] z-30 min-w-52 rounded-3xl border p-3 backdrop-blur-xl transition-colors duration-200;
   border-color: var(--ui-border);

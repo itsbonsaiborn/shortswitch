@@ -11,6 +11,7 @@ ShortSwitch — самостоятельный (self-hosted) сервис кор
 - cookie-аутентификацию с серверными сессиями;
 - одноконтейнерное развёртывание с SQLite в постоянном Docker volume.
 - Live Activity с одним вопросом, публичной страницей, модерацией и SSE-результатами.
+- Pages — лёгкие публичные страницы из валидируемых блоков с темами и отдельной аналитикой.
 
 Фактическая модель приложения — single-user. Регистрации пользователей, ролей, публичного API для сторонних клиентов и фонового worker-процесса нет. Основной источник истины — код в `src/`, затем конфигурация и тесты; `README.md` полезен, но при расхождениях следует доверять реализации.
 
@@ -65,7 +66,7 @@ ShortSwitch — самостоятельный (self-hosted) сервис кор
 Browser
   ├─ /app/*        → Fastify static/fallback → собранное Vue SPA
   ├─ /api/*        → Fastify routes → services → repositories → SQLite
-  ├─ /:slug        → public_slugs → Live participant SPA либо link preview/password/redirect
+  ├─ /:slug        → public_slugs → Live/Page SPA либо link preview/password/redirect
   └─ /access/:slug → серверная HTML-форма пароля → redirect
 
 Vue pages/components
@@ -88,6 +89,7 @@ Fastify app.ts
   - `router.ts` — маршруты SPA.
   - `pages/` — Login, список ссылок, аналитика ссылки, глобальная аналитика, настройки.
   - `components/` — shell/sidebar, карточка ссылки, modal create/edit, stat card, toast viewport.
+  - Pages: `PagesPage.vue`, `PageEditorPage.vue`, `PageAnalyticsPage.vue`, `PublicPagePage.vue`, общий `PageRenderer.vue` и public dispatcher `PublicSlugPage.vue`.
   - `composables/` — общее состояние auth, runtime branding, тема, toast.
   - `lib/api.ts` — общий fetch wrapper, cookie credentials, получение и добавление CSRF-токена к non-GET запросам, `ApiError`.
   - `styles.css` — Tailwind import, Flexoki-подобные design tokens и общие utility-компоненты.
@@ -102,6 +104,7 @@ Fastify app.ts
   - `views/error-pages.ts` — самодостаточные HTML-страницы protected/expired/disabled/not-found и preview для crawler-ботов.
   - `utils.ts` — ID/hash/slug/URL/CORS/expiration helpers.
 - `src/shared/types.ts` — DTO и типы, используемые клиентом и сервером.
+- `docs/PAGES.md` — постоянная документация Pages: blocks, API, storage, security, cache и проверки.
 - `public/` — PWA icons и Open Graph PNG; Vite копирует их в client build.
 - `index.html` — Vite entry с runtime-плейсхолдерами `__APP_NAME__` и `__APP_DESCRIPTION__`, которые заменяет Fastify.
 - `Dockerfile`, `docker-entrypoint.sh`, `docker-compose.yml` — сборка и локальная контейнерная конфигурация.
@@ -154,6 +157,7 @@ Fastify app.ts
 ### UI и branding
 
 - Разделы: Links, Live, Analytics, Settings; responsive sidebar, light/dark/system theme.
+- Раздел Pages: server-side список/search/sort/pagination, компактные двухколоночные desktop-карточки, modal-based блочный редактор, общий preview/public renderer с mobile/desktop viewport и отдельная аналитика с 30-дневным графиком/Top links.
 - Предпочтения sidebar, analytics range/limit и global top-slug limit хранятся в обычных session-like cookies `ss_*` (без серверной защиты); theme дополнительно сохраняется в БД пользователя.
 - Название/описание загружаются из `/api/public/config`; manifest и meta-теги генерируются/подставляются сервером.
 - Все страницы выставлены `noindex`; public assets обслуживаются из build output.
@@ -171,6 +175,10 @@ Fastify app.ts
 | `/app/links/:id` | Аналитика конкретной ссылки |
 | `/app/live` | Список и редактор Live Activity |
 | `/app/live/:id` | Результаты и moderation queue активности |
+| `/app/pages` | Список, статистика, поиск и управление Pages |
+| `/app/pages/new` | Создание Page |
+| `/app/pages/:id` | Блочный редактор Page |
+| `/app/pages/:id/analytics` | Аналитика Page и кликов по блокам |
 | `/app/analytics` | Глобальная аналитика |
 | `/app/settings` | Пароль, сессии, очистка аналитики |
 | `/:slug` | Публичная Live Activity, если slug принадлежит Live |
@@ -192,7 +200,7 @@ Auth guard реализован watcher’ом в `App.vue`, не router middlew
 | `DELETE /api/sessions/:id` | да | да | Отзыв не текущей сессии |
 | `POST /api/settings/theme` | да | да | Сохранение theme |
 | `POST /api/settings/password` | да | да | Смена пароля, отзыв других сессий |
-| `POST /api/settings/analytics/clear` | да | да | Очистка всей аналитики |
+| `POST /api/settings/analytics/clear` | да | да | Очистка Link analytics, Live responses/participants и Page views/clicks |
 | `GET /api/links` | да | нет | Список ссылок текущего пользователя |
 | `POST /api/links` | да | да | Создание ссылки |
 | `PATCH /api/links/:id` | да | да | Изменение ссылки |
@@ -202,9 +210,17 @@ Auth guard реализован watcher’ом в `App.vue`, не router middlew
 | `GET /api/links/:id/analytics` | да | нет | Detail analytics; query: range, limit, timezone offset |
 | `GET /api/analytics/global` | да | нет | Global analytics; query: timezone offset |
 | `GET /api/live/public/:slug` | нет | нет | Participant view; result snapshot only when preview is enabled |
+| `POST /api/live/:id/analytics/clear` | да | да | Очистка ответов и участников одной Activity без удаления её конфигурации |
 | `POST /api/live/public/:slug/responses` | нет | нет | Submit participant response; server-enforced limits and moderation |
 | `GET /api/live/public/:slug/results`, `/events` | нет | нет | Participant result preview snapshot/SSE; unavailable when preview is disabled |
 | `GET /api/live/public/:slug/presentation`, `/presentation/events` | нет | нет | Approved Presentation snapshot/SSE; independent of participant preview |
+| `GET/POST /api/pages` | GET/POST: да | POST: да | Список с search/sort/pagination и создание Page |
+| `GET/PATCH/DELETE /api/pages/:id` | да | PATCH/DELETE: да | Detail, атомарное сохранение и удаление Page |
+| `POST /api/pages/:id/duplicate`, `/status` | да | да | Копирование в новый draft и смена статуса |
+| `GET /api/pages/:id/analytics` | да | нет | Views, unique visitors, Daily/Weekly/Month series и block clicks; query: range, timezone offset |
+| `POST /api/pages/:id/analytics/clear` | да | да | Очистка views/clicks одной Page |
+| `GET /api/pages/public/:slug` | нет | нет | Минимальная опубликованная Page с visible blocks |
+| `POST /api/pages/public/:slug/clicks` | нет | нет | Идемпотентное событие клика по публичному блоку |
 | `GET /robots.txt` | нет | нет | Полный запрет индексирования |
 | `GET /site.webmanifest` | нет | нет | Runtime PWA manifest |
 | `GET /icons/:file`, `/og/:file`, `/favicon.ico` | нет | нет | Ограниченная раздача branding assets |
@@ -246,6 +262,7 @@ Public link responses применяют `Cache-Control: no-store`. Зарезе
 - `settings`
   - key/value таблица создаётся, но текущий `SettingsRepository` её не читает и не пишет; security settings берутся из env/defaults.
 - Live использует нормализованные `public_slugs`, `live_activities`, `live_questions`, `live_question_options`, `live_participants`, `live_responses` и `moderation_rules`; `live_activities.expires_at` задаёт необязательный срок жизни, `public_revision` последовательно версионирует публичное состояние, `live_responses.participant_name` фиксирует исходный nickname, а `published_participant_name` — одобренную модератором версию. Подробности: `docs/LIVE.md`.
+- Pages использует `pages`, `page_blocks`, `page_views`, `page_block_clicks` и тот же `public_slugs`. `page_blocks.config_json` хранит только серверно валидированный типизированный config. Page analytics отделена от Short URL analytics. Подробности: `docs/PAGES.md`.
 
 Индексы есть для `sessions.user_id`, `links.user_id`, analytics `(link_id, timestamp)` и `(slug, timestamp)`, а также для публичной пагинации и подсчёта ответов Live.
 
@@ -317,11 +334,18 @@ npm run dev:client     # Vite, порт 5173
 npm run typecheck      # client и server TypeScript checks
 npm test               # Vitest один проход
 npm run test:watch     # Vitest watch
+npm run load:links:50  # isolated loopback: 50 redirects + analytics integrity
+npm run load:links:200 # то же для 200 virtual visitors
+npm run load:links:500 # то же для 500 virtual visitors
+npm run load:live:50   # isolated loopback: page API + 50 SSE + 50 submissions
 npm run load:live:200  # isolated loopback test: page API + 200 SSE + 200 submissions
 npm run load:live:500  # то же для 500 virtual participants
 npm run load:live:word-cloud # 200 unique Word Cloud phrases + SSE
 npm run load:live:open # 200 Open Answer submissions + SSE
 npm run load:live:history # 2,000 stored Open Answers + complete cursor traversal
+npm run load:pages:50  # isolated loopback Page HTML/API/click analytics test for 50 visitors
+npm run load:pages:200 # isolated loopback Page HTML/API/click analytics test
+npm run load:pages:500 # тот же сценарий для 500 virtual visitors
 npm run verify:production # real HTTP Brotli/gzip/cache/SSE header checks on a temporary DB
 npm run build          # clean, Vite client, tsc server
 npm start              # node dist/server/index.js
@@ -356,10 +380,14 @@ docker compose --profile test run --rm shortswitch-test
 - Vue: Composition API, `<script setup lang="ts">`, `ref/reactive/computed/watch`, lazy route components.
 - SQL держать в repositories, orchestration/business rules — в services, HTTP semantics/plugins — в `app.ts`, общие DTO — в `src/shared/types.ts`.
 - Multiple Choice ответы Live хранят ID вариантов в `selected_options_json`; при обычном редактировании Activity нельзя удалять и пересоздавать неизменённые `live_question_options`, иначе сохранённые голоса потеряют связь с вариантами.
+- Page block `double` хранит ровно два вложенных блока в `config_json`; вложенный `double` запрещён. ID дочерних блоков стабильны и используются click analytics, поэтому при обычном редактировании их нельзя без необходимости генерировать заново.
 - Публичные Live snapshots ограничены последними 100 Open Answer и top-150 Word Cloud; полная история остаётся в БД и доступна через `/answers` и `/words`. Административный detail остаётся полным.
 - SSE protocol 2 использует persisted `public_revision`, initial/reconnect snapshot и 500-ms delta batches. При изменении модерации/конфигурации предпочитай forced snapshot; не возвращай full-snapshot broadcast на каждую обычную отправку.
 - Не удаляй `?protocol=2` и legacy SSE fallback без отдельного плана совместимости уже открытых вкладок.
 - Hashed `/app/assets/*` immutable и precompressed; HTML должен оставаться `no-cache`, Live API `no-store`, SSE `no-cache`, а Short URL redirects/password/expiry — `no-store`.
+- Pages HTML также `no-cache`; public Page API `no-store`, admin Page API `private, no-store`. Динамические Page title/description/canonical/OG metadata экранируются и кешируются in-memory по `page.id:updatedAt` с лимитом 100 записей.
+- Page blocks всегда валидировать на сервере. Не добавлять `v-html`, custom HTML/JS/CSS или server-side fetch внешних изображений. Existing Link/Live blocks хранят ID и разрешают текущий URL при чтении; удалённый ресурс должен отображаться unavailable, а не превращаться в устаревшую копию URL.
+- При сохранении Page сохранять единый `BEGIN IMMEDIATE` для Page, slug mapping и полного порядка blocks. При смене slug старый slug освобождается без redirect; duplicate всегда создаёт новый draft без аналитики.
 - При изменении moderation rules сохранять немедленную инвалидацию process-local cache; он допустим только из-за single-process архитектуры.
 - Client network calls вести через `src/client/lib/api.ts`, чтобы сохранялись credentials, CSRF и единый `ApiError`.
 - State-changing API route должен подключать `app.csrfProtection` и затем проверять ownership/auth в service/repository path.
@@ -379,6 +407,7 @@ docker compose --profile test run --rm shortswitch-test
 - `src/server/services/live-realtime-service.test.ts` — delta protocol, удаление результатов и защита от медленных SSE-клиентов.
 - `src/client/components/CreateLinkModal.test.ts` — jsdom component smoke test advanced fields.
 - `src/client/components/LiveResultsBoard.test.ts`, `QrCodePopover.test.ts` — Live visualization and shared QR behavior.
+- `src/client/components/PageRenderer.test.ts` — безопасный общий renderer, hidden blocks, темы/layout и link behavior.
 - `src/client/pages/LivePresentationPage.test.ts`, `PublicLivePage.test.ts` — Presentation URL handling and public form validation.
 - `src/client/tests/setup.ts` — подключение `@testing-library/jest-dom`.
 
