@@ -1,5 +1,6 @@
-import type { GlobalAnalytics, LinkClickDetail, LinkOverviewAnalytics } from '@/shared/types.js';
+import type { AnalyticsBreakdowns, GlobalAnalytics, LinkClickDetail, LinkOverviewAnalytics } from '@/shared/types.js';
 import { getDb } from '../db.js';
+import { buildAnalyticsBreakdowns, type AnalyticsBreakdownRow } from './analytics-breakdowns.js';
 import { createId } from '../utils.js';
 
 export interface AnalyticsEventInput {
@@ -47,11 +48,14 @@ export class AnalyticsRepository {
   }
 
   private getRangeFrame(range: 'day' | 'week' | 'month', timezoneOffsetMinutes = 0) {
-    const shiftToLocalWall = (date: Date) => new Date(date.getTime() + timezoneOffsetMinutes * 60000);
-    const shiftToUtcInstant = (date: Date) => new Date(date.getTime() - timezoneOffsetMinutes * 60000);
+    const offset = Number.isFinite(timezoneOffsetMinutes)
+      ? Math.max(-840, Math.min(840, Math.trunc(timezoneOffsetMinutes)))
+      : 0;
+    const shiftToLocalWall = (date: Date) => new Date(date.getTime() + offset * 60000);
+    const shiftToUtcInstant = (date: Date) => new Date(date.getTime() - offset * 60000);
     const now = new Date();
     const localNow = shiftToLocalWall(now);
-    const sqliteOffsetModifier = `${timezoneOffsetMinutes >= 0 ? '+' : ''}${timezoneOffsetMinutes} minutes`;
+    const sqliteOffsetModifier = `${offset >= 0 ? '+' : ''}${offset} minutes`;
 
     if (range === 'day') {
       const localEnd = new Date(localNow);
@@ -269,101 +273,307 @@ export class AnalyticsRepository {
       .all(linkId, limit) as unknown as LinkClickDetail[];
   }
 
-  getGlobalAnalytics(timezoneOffsetMinutes = 0): GlobalAnalytics {
-    const totals = this.db
+  getBreakdowns(linkId: string): AnalyticsBreakdowns {
+    const rows = this.db
       .prepare(
-        `SELECT
-          (SELECT COUNT(*) FROM analytics_events) as clicks,
-          (SELECT COUNT(*) FROM links) as links,
-          (SELECT COUNT(DISTINCT referrer) FROM analytics_events WHERE auth_outcome = 'success') as referrers,
-          (SELECT COUNT(DISTINCT device_type) FROM analytics_events WHERE auth_outcome = 'success') as devices`
+        `SELECT 'devices' as category, COALESCE(NULLIF(TRIM(device_type), ''), 'Unknown') as label, COUNT(*) as value
+         FROM analytics_events WHERE link_id = ? AND auth_outcome = 'success' GROUP BY label
+         UNION ALL
+         SELECT 'browsers', COALESCE(NULLIF(TRIM(browser), ''), 'Unknown'), COUNT(*)
+         FROM analytics_events WHERE link_id = ? AND auth_outcome = 'success' GROUP BY COALESCE(NULLIF(TRIM(browser), ''), 'Unknown')
+         UNION ALL
+         SELECT 'operatingSystems', COALESCE(NULLIF(TRIM(os), ''), 'Unknown'), COUNT(*)
+         FROM analytics_events WHERE link_id = ? AND auth_outcome = 'success' GROUP BY COALESCE(NULLIF(TRIM(os), ''), 'Unknown')
+         UNION ALL
+         SELECT 'languages', COALESCE(NULLIF(TRIM(language), ''), 'Unknown'), COUNT(*)
+         FROM analytics_events WHERE link_id = ? AND auth_outcome = 'success' GROUP BY COALESCE(NULLIF(TRIM(language), ''), 'Unknown')
+         ORDER BY category, value DESC, label ASC`
       )
-      .get() as GlobalAnalytics['totals'];
+      .all(linkId, linkId, linkId, linkId) as unknown as AnalyticsBreakdownRow[];
+    return buildAnalyticsBreakdowns(rows);
+  }
 
-    const shiftToLocalWall = (date: Date) => new Date(date.getTime() + timezoneOffsetMinutes * 60000);
-    const shiftToUtcInstant = (date: Date) => new Date(date.getTime() - timezoneOffsetMinutes * 60000);
-    const now = new Date();
-    const localNow = shiftToLocalWall(now);
-    const localEnd = new Date(localNow);
-    localEnd.setUTCHours(0, 0, 0, 0);
-    localEnd.setUTCDate(localEnd.getUTCDate() + 1);
-    const localStart = new Date(localEnd);
-    localStart.setUTCDate(localStart.getUTCDate() - 30);
-    const sqliteOffsetModifier = `${timezoneOffsetMinutes >= 0 ? '+' : ''}${timezoneOffsetMinutes} minutes`;
-
-    const monthTrendRows = this.db
+  getGlobalActivityOverTime(
+    userId: string,
+    range: 'day' | 'week' | 'month' = 'month',
+    timezoneOffsetMinutes = 0
+  ): GlobalAnalytics['activityOverTime'] {
+    const activityCte = `
+      WITH activity AS (
+        SELECT e.timestamp, e.visitor_hash, 'click' as event_kind
+        FROM analytics_events e
+        INNER JOIN links l ON l.id = e.link_id
+        WHERE l.user_id = ? AND e.auth_outcome = 'success'
+        UNION ALL
+        SELECT c.timestamp, c.visitor_hash, 'click' as event_kind
+        FROM page_block_clicks c
+        INNER JOIN pages p ON p.id = c.page_id
+        WHERE p.user_id = ?
+        UNION ALL
+        SELECT v.timestamp, v.visitor_hash, 'view' as event_kind
+        FROM page_views v
+        INNER JOIN pages p ON p.id = v.page_id
+        WHERE p.user_id = ?
+        UNION ALL
+        SELECT v.timestamp, v.visitor_hash, 'view' as event_kind
+        FROM live_views v
+        INNER JOIN live_activities a ON a.id = v.activity_id
+        WHERE a.user_id = ?
+      )`;
+    const frame = this.getRangeFrame(range, timezoneOffsetMinutes);
+    const rows = this.db
       .prepare(
-        `SELECT strftime('%Y-%m-%d', timestamp, '${sqliteOffsetModifier}') as day, COUNT(*) as value
-         FROM analytics_events
-         WHERE auth_outcome = 'success' AND timestamp >= ? AND timestamp < ?
-         GROUP BY day
-         ORDER BY day ASC`
+        `${activityCte}
+         SELECT
+           ${frame.bucketSql} as bucket,
+           SUM(CASE WHEN event_kind = 'click' THEN 1 ELSE 0 END) as clicks,
+           SUM(CASE WHEN event_kind = 'view' THEN 1 ELSE 0 END) as views,
+           COUNT(DISTINCT visitor_hash) as uniqueVisitors
+         FROM activity
+         WHERE timestamp >= ? AND timestamp < ?
+         GROUP BY bucket
+         ORDER BY bucket ASC`
       )
-      .all(shiftToUtcInstant(localStart).toISOString(), shiftToUtcInstant(localEnd).toISOString()) as Array<{ day: string; value: number }>;
-
-    const monthTrendMap = new Map(monthTrendRows.map((row) => [row.day, row.value]));
-    const monthTrend = Array.from({ length: 30 }, (_, index) => {
-      const dayDate = new Date(localStart);
-      dayDate.setUTCDate(dayDate.getUTCDate() + index);
-      const dayKey = this.formatLocalDate(dayDate, 0);
+      .all(userId, userId, userId, userId, frame.start.toISOString(), frame.end.toISOString()) as Array<{
+        bucket: string;
+        clicks: number;
+        views: number;
+        uniqueVisitors: number;
+      }>;
+    const activityMap = new Map(rows.map((row) => [frame.normalizeBucket(row.bucket), row]));
+    return frame.labels.map((label, index) => {
+      const date = 'bucketKeys' in frame && Array.isArray(frame.bucketKeys) ? frame.bucketKeys[index] : label;
+      const point = activityMap.get(date);
       return {
-        label: this.formatLocalDate(dayDate, 0, { includeMonthName: true }),
-        clicks: monthTrendMap.get(dayKey) ?? 0
+        date,
+        label,
+        clicks: Number(point?.clicks ?? 0),
+        views: Number(point?.views ?? 0),
+        uniqueVisitors: Number(point?.uniqueVisitors ?? 0)
       };
     });
+  }
 
-    const weeklyHeatmap = this.db
+  getGlobalAnalytics(
+    userId: string,
+    range: 'day' | 'week' | 'month' = 'month',
+    timezoneOffsetMinutes = 0
+  ): GlobalAnalytics {
+    const activityCte = `
+      WITH activity AS (
+        SELECT e.timestamp, e.visitor_hash, e.device_type, 'links' as source_module, 'click' as event_kind
+        FROM analytics_events e
+        INNER JOIN links l ON l.id = e.link_id
+        WHERE l.user_id = ? AND e.auth_outcome = 'success'
+        UNION ALL
+        SELECT c.timestamp, c.visitor_hash, NULL as device_type, 'pages' as source_module, 'click' as event_kind
+        FROM page_block_clicks c
+        INNER JOIN pages p ON p.id = c.page_id
+        WHERE p.user_id = ?
+        UNION ALL
+        SELECT v.timestamp, v.visitor_hash, v.device_type, 'pages' as source_module, 'view' as event_kind
+        FROM page_views v
+        INNER JOIN pages p ON p.id = v.page_id
+        WHERE p.user_id = ?
+        UNION ALL
+        SELECT v.timestamp, v.visitor_hash, v.device_type, 'live' as source_module, 'view' as event_kind
+        FROM live_views v
+        INNER JOIN live_activities a ON a.id = v.activity_id
+        WHERE a.user_id = ?
+      )`;
+    const ownerParams = [userId, userId, userId, userId];
+    const accessCte = `
+      WITH access_events AS MATERIALIZED (
+        SELECT e.timestamp, e.visitor_hash, e.device_type, e.browser, e.os, e.referrer, e.language,
+          'links' as source_module, e.slug
+        FROM analytics_events e
+        INNER JOIN links l ON l.id = e.link_id
+        WHERE l.user_id = ? AND e.auth_outcome = 'success'
+        UNION ALL
+        SELECT v.timestamp, v.visitor_hash, v.device_type, v.browser, v.os, v.referrer, v.language,
+          'pages' as source_module, p.slug
+        FROM page_views v
+        INNER JOIN pages p ON p.id = v.page_id
+        WHERE p.user_id = ?
+        UNION ALL
+        SELECT v.timestamp, v.visitor_hash, v.device_type, v.browser, v.os, v.referrer, v.language,
+          'live' as source_module, a.slug
+        FROM live_views v
+        INNER JOIN live_activities a ON a.id = v.activity_id
+        WHERE a.user_id = ?
+      )`;
+    const accessOwnerParams = [userId, userId, userId];
+
+    const totalsRow = this.db
       .prepare(
-        `SELECT strftime('%w', timestamp, '${sqliteOffsetModifier}') as weekday, strftime('%H', timestamp, '${sqliteOffsetModifier}') as hour, COUNT(*) as value
-         FROM analytics_events
-         WHERE auth_outcome = 'success'
-         GROUP BY weekday, hour`
+        `${activityCte}
+         SELECT
+           SUM(CASE WHEN event_kind = 'click' THEN 1 ELSE 0 END) as clicks,
+           SUM(CASE WHEN event_kind = 'view' THEN 1 ELSE 0 END) as views,
+           COUNT(DISTINCT visitor_hash) as uniqueVisitors,
+           COUNT(DISTINCT CASE
+             WHEN device_type IS NOT NULL AND device_type != 'unknown'
+             THEN visitor_hash || char(0) || device_type
+           END) as devices
+         FROM activity`
       )
-      .all()
+      .get(...ownerParams) as {
+        clicks: number | null;
+        views: number | null;
+        uniqueVisitors: number;
+        devices: number;
+      };
+    const totals: GlobalAnalytics['totals'] = {
+      clicks: Number(totalsRow.clicks ?? 0),
+      views: Number(totalsRow.views ?? 0),
+      uniqueVisitors: Number(totalsRow.uniqueVisitors ?? 0),
+      devices: Number(totalsRow.devices ?? 0)
+    };
+
+    const activityOverTime = this.getGlobalActivityOverTime(userId, range, timezoneOffsetMinutes);
+
+    const moduleRows = this.db
+      .prepare(
+        `${activityCte}
+         SELECT
+           source_module as module,
+           SUM(CASE WHEN event_kind = 'click' THEN 1 ELSE 0 END) as clicks,
+           SUM(CASE WHEN event_kind = 'view' THEN 1 ELSE 0 END) as views,
+           COUNT(DISTINCT visitor_hash) as uniqueVisitors
+         FROM activity
+         GROUP BY source_module`
+      )
+      .all(...ownerParams) as Array<{
+        module: GlobalAnalytics['modules'][number]['module'];
+        clicks: number;
+        views: number;
+        uniqueVisitors: number;
+      }>;
+    const moduleMap = new Map(moduleRows.map((row) => [row.module, row]));
+    const modules: GlobalAnalytics['modules'] = (['links', 'pages', 'live'] as const).map((module) => ({
+      module,
+      clicks: Number(moduleMap.get(module)?.clicks ?? 0),
+      views: Number(moduleMap.get(module)?.views ?? 0),
+      uniqueVisitors: Number(moduleMap.get(module)?.uniqueVisitors ?? 0)
+    }));
+
+    const offset = Number.isFinite(timezoneOffsetMinutes)
+      ? Math.max(-840, Math.min(840, Math.trunc(timezoneOffsetMinutes)))
+      : 0;
+    const sqliteOffsetModifier = `${offset >= 0 ? '+' : ''}${offset} minutes`;
+    const activityByTime = this.db
+      .prepare(
+        `${activityCte}
+         SELECT
+           ((CAST(strftime('%w', timestamp, '${sqliteOffsetModifier}') AS INTEGER) + 6) % 7) + 1 as day,
+           CAST(CAST(strftime('%H', timestamp, '${sqliteOffsetModifier}') AS INTEGER) / 2 AS INTEGER) * 2 as hour,
+           SUM(CASE WHEN event_kind = 'click' THEN 1 ELSE 0 END) as clicks,
+           SUM(CASE WHEN event_kind = 'view' THEN 1 ELSE 0 END) as views,
+           COUNT(DISTINCT visitor_hash) as uniqueVisitors
+         FROM activity
+         GROUP BY day, hour
+         ORDER BY day, hour`
+      )
+      .all(...ownerParams)
       .map((row) => ({
-        day: ((Number((row as any).weekday) + 6) % 7) + 1,
+        day: Number((row as any).day),
         hour: Number((row as any).hour),
-        value: Number((row as any).value)
+        clicks: Number((row as any).clicks),
+        views: Number((row as any).views),
+        uniqueVisitors: Number((row as any).uniqueVisitors)
       }));
 
-    const group = (field: string, alias = 'label') =>
-      this.db
-        .prepare(
-          `SELECT ${field} as ${alias}, COUNT(*) as value
-           FROM analytics_events
-           WHERE auth_outcome = 'success' AND ${field} IS NOT NULL AND ${field} != ''
-           GROUP BY ${field}
-           ORDER BY value DESC
-           LIMIT 8`
-        )
-        .all() as Array<{ label: string; value: number }>;
-
-    const topSlugs = this.db
+    const filters = ['all', 'links', 'pages', 'live'] as const;
+    const topReferrerRows = this.db
       .prepare(
-        `SELECT links.id as id, analytics_events.slug as slug, COUNT(*) as value
-         FROM analytics_events
-         INNER JOIN links ON links.id = analytics_events.link_id
-         WHERE analytics_events.auth_outcome = 'success'
-         GROUP BY analytics_events.link_id, analytics_events.slug
-         ORDER BY value DESC
-         LIMIT 8`
+        `${accessCte},
+         grouped AS (
+           SELECT source_module as filter, COALESCE(NULLIF(TRIM(referrer), ''), 'Direct') as label, COUNT(*) as value
+           FROM access_events
+           GROUP BY source_module, label
+         ),
+         expanded AS (
+           SELECT filter, label, value FROM grouped
+           UNION ALL
+           SELECT 'all' as filter, label, SUM(value) as value FROM grouped GROUP BY label
+         ),
+         ranked AS (
+           SELECT filter, label, value,
+             SUM(value) OVER (PARTITION BY filter) as total,
+             ROW_NUMBER() OVER (PARTITION BY filter ORDER BY value DESC, label ASC) as rank
+           FROM expanded
+         )
+         SELECT filter, label, value, total FROM ranked WHERE rank <= 8 ORDER BY filter, rank`
       )
-      .all() as Array<{ id: string; slug: string; value: number }>;
+      .all(...accessOwnerParams) as Array<{
+        filter: typeof filters[number];
+        label: string;
+        value: number;
+        total: number;
+      }>;
+    const topReferrers = Object.fromEntries(filters.map((filter) => [
+      filter,
+      topReferrerRows
+        .filter((row) => row.filter === filter)
+        .map((row) => ({ label: row.label, value: Number(row.value) }))
+    ])) as GlobalAnalytics['topReferrers'];
+    const referrerTotals = Object.fromEntries(filters.map((filter) => [
+      filter,
+      Number(topReferrerRows.find((row) => row.filter === filter)?.total ?? 0)
+    ])) as GlobalAnalytics['referrerTotals'];
 
-    return {
-      totals,
-      monthlyTrend: monthTrend,
-      weeklyHeatmap,
-      top: {
-        referrers: group('referrer'),
-        slugs: topSlugs,
-        languages: group('language')
-      },
-      devices: {
-        devices: group('device_type'),
-        operatingSystems: group('os'),
-        browsers: group('browser')
-      }
-    };
+    const topSlugRows = this.db
+      .prepare(
+        `${accessCte},
+         grouped AS (
+           SELECT source_module as filter, slug, source_module as module, COUNT(*) as value
+           FROM access_events
+           GROUP BY source_module, slug
+         ),
+         expanded AS (
+           SELECT filter, slug, module, value FROM grouped
+           UNION ALL
+           SELECT 'all' as filter, slug, module, value FROM grouped
+         ),
+         ranked AS (
+           SELECT filter, slug, module, value,
+             ROW_NUMBER() OVER (PARTITION BY filter ORDER BY value DESC, slug ASC) as rank
+           FROM expanded
+         )
+         SELECT filter, slug, module, value FROM ranked WHERE rank <= 8 ORDER BY filter, rank`
+      )
+      .all(...accessOwnerParams) as Array<{
+        filter: typeof filters[number];
+        slug: string;
+        module: GlobalAnalytics['modules'][number]['module'];
+        value: number;
+      }>;
+    const topSlugs = Object.fromEntries(filters.map((filter) => [
+      filter,
+      topSlugRows
+        .filter((row) => row.filter === filter)
+        .map((row) => ({ slug: row.slug, module: row.module, value: Number(row.value) }))
+    ])) as GlobalAnalytics['topSlugs'];
+
+    const breakdownRows = this.db
+      .prepare(
+        `${accessCte}
+         SELECT 'devices' as category, COALESCE(NULLIF(TRIM(device_type), ''), 'Unknown') as label, COUNT(*) as value
+         FROM access_events GROUP BY label
+         UNION ALL
+         SELECT 'browsers', COALESCE(NULLIF(TRIM(browser), ''), 'Unknown'), COUNT(*)
+         FROM access_events GROUP BY COALESCE(NULLIF(TRIM(browser), ''), 'Unknown')
+         UNION ALL
+         SELECT 'operatingSystems', COALESCE(NULLIF(TRIM(os), ''), 'Unknown'), COUNT(*)
+         FROM access_events GROUP BY COALESCE(NULLIF(TRIM(os), ''), 'Unknown')
+         UNION ALL
+         SELECT 'languages', COALESCE(NULLIF(TRIM(language), ''), 'Unknown'), COUNT(*)
+         FROM access_events GROUP BY COALESCE(NULLIF(TRIM(language), ''), 'Unknown')
+         ORDER BY category, value DESC, label ASC`
+      )
+      .all(...accessOwnerParams) as unknown as AnalyticsBreakdownRow[];
+    const breakdowns = buildAnalyticsBreakdowns(breakdownRows);
+
+    return { totals, activityOverTime, modules, activityByTime, topReferrers, referrerTotals, topSlugs, breakdowns };
   }
 }

@@ -73,9 +73,10 @@ SSE state is process-local, matching the existing single-container architecture.
 Authenticated admin routes (state-changing routes require the existing CSRF token):
 
 - `GET/POST /api/live`
-- `GET/PATCH/DELETE /api/live/:id`
+- `GET /api/live/:id?range=day|week|month&timezoneOffsetMinutes=&limit=10|20|50` — activity, responses, results, view trend, environment breakdowns and recent participant-page visits
+- `PATCH/DELETE /api/live/:id`
 - `POST /api/live/:id/status`
-- `POST /api/live/:id/analytics/clear` — atomically removes responses and participant records while preserving the Activity and question configuration
+- `POST /api/live/:id/analytics/clear` — atomically removes views, responses and participant records while preserving the Activity and question configuration
 - `PATCH /api/live/:id/responses/:responseId`
 - `GET /api/live/moderation/pending`
 - `GET/POST /api/moderation/rules`
@@ -102,11 +103,14 @@ The ordinary results and SSE routes honor the participant result-preview toggle.
 - `live_question_options` — ordered multiple-choice options;
 - `live_participants` — activity-scoped browser identities and optional names;
 - `live_responses` — submitted/published display names, original/published answer values and moderation state;
+- `live_views` — participant-page view timestamp, HMAC visitor identity, device/browser/OS, normalized referrer, browser language and optional raw IP;
 - `moderation_rules` — global ban-filter rules.
 
 Tables and indexes are created by the existing startup schema initializer. There is still no versioned migration/rollback framework; back up `/app/data` before deploying a build that first introduces Live.
 
 Approved response pages use `idx_live_responses_public_page (activity_id, moderation_status, created_at DESC, id DESC)`. Public aggregation reads only approved rows. Moderation rules use a small process-local cache per admin user which is invalidated immediately after create/update/delete; this matches the single-process deployment assumption.
+
+Opening `GET /api/live/public/:slug` records a best-effort Live page view. Presentation/result/SSE routes do not add views. The activity dashboard exposes Daily/Weekly/Month view trends, device/browser/OS/language breakdowns and the latest 10/20/50 participant-page visits; it intentionally calls these visits rather than clicks because Live has no click-event model. Live views follow the common analytics retention interval and are included in individual/global analytics clearing. Browser, OS, referrer and language are recorded only for views created after the corresponding schema upgrade; older rows keep neutral `Unknown`/`Direct`/`null` defaults.
 
 ## Transfer and cache behavior
 

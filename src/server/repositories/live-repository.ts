@@ -1,5 +1,6 @@
 import type {
   LiveActivityInput,
+  LiveAnalytics,
   LiveActivitySummary,
   LiveQuestionOption,
   LiveResponseRecord,
@@ -10,6 +11,7 @@ import type {
 } from '@/shared/types.js';
 import { getDb } from '../db.js';
 import { buildShortUrl, createId, nowIso } from '../utils.js';
+import { buildAnalyticsBreakdowns, type AnalyticsBreakdownRow } from './analytics-breakdowns.js';
 
 interface LiveActivityRow {
   id: string;
@@ -117,6 +119,43 @@ const activityRuntimeSelect = `
 
 export class LiveRepository {
   private db = getDb();
+
+  private analyticsFrame(range: 'day' | 'week' | 'month', timezoneOffsetMinutes: number) {
+    const offset = Number.isFinite(timezoneOffsetMinutes) ? Math.max(-840, Math.min(840, Math.trunc(timezoneOffsetMinutes))) : 0;
+    const toLocalWall = (date: Date) => new Date(date.getTime() + offset * 60_000);
+    const toUtcInstant = (date: Date) => new Date(date.getTime() - offset * 60_000);
+    const key = (date: Date, includeHour = false) => {
+      const dateKey = `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`;
+      return includeHour ? `${dateKey} ${String(date.getUTCHours()).padStart(2, '0')}:00` : dateKey;
+    };
+    const sqliteOffset = `${offset >= 0 ? '+' : ''}${offset} minutes`;
+    const localNow = toLocalWall(new Date());
+    if (range === 'day') {
+      const localEnd = new Date(localNow); localEnd.setUTCMinutes(0, 0, 0); localEnd.setUTCHours(localEnd.getUTCHours() + 1);
+      const localStart = new Date(localEnd); localStart.setUTCHours(localStart.getUTCHours() - 24);
+      const buckets = Array.from({ length: 24 }, (_, index) => {
+        const date = new Date(localStart); date.setUTCHours(date.getUTCHours() + index);
+        return { key: key(date, true), label: `${String(date.getUTCHours()).padStart(2, '0')}:00` };
+      });
+      return { start: toUtcInstant(localStart), end: toUtcInstant(localEnd), bucketSql: `strftime('%Y-%m-%d %H:00', timestamp, '${sqliteOffset}')`, buckets };
+    }
+    if (range === 'week') {
+      const localStart = new Date(localNow); const day = localStart.getUTCDay();
+      localStart.setUTCDate(localStart.getUTCDate() + (day === 0 ? -6 : 1 - day)); localStart.setUTCHours(0, 0, 0, 0);
+      const localEnd = new Date(localStart); localEnd.setUTCDate(localEnd.getUTCDate() + 7);
+      const buckets = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((label, index) => {
+        const date = new Date(localStart); date.setUTCDate(date.getUTCDate() + index); return { key: key(date), label };
+      });
+      return { start: toUtcInstant(localStart), end: toUtcInstant(localEnd), bucketSql: `strftime('%Y-%m-%d', timestamp, '${sqliteOffset}')`, buckets };
+    }
+    const localEnd = new Date(localNow); localEnd.setUTCHours(0, 0, 0, 0); localEnd.setUTCDate(localEnd.getUTCDate() + 1);
+    const localStart = new Date(localEnd); localStart.setUTCDate(localStart.getUTCDate() - 30);
+    const buckets = Array.from({ length: 30 }, (_, index) => {
+      const date = new Date(localStart); date.setUTCDate(date.getUTCDate() + index);
+      return { key: key(date), label: `${date.getUTCDate()} ${date.toLocaleString('en-US', { month: 'short', timeZone: 'UTC' })}` };
+    });
+    return { start: toUtcInstant(localStart), end: toUtcInstant(localEnd), bucketSql: `strftime('%Y-%m-%d', timestamp, '${sqliteOffset}')`, buckets };
+  }
 
   private getOptions(questionId: string): LiveQuestionOption[] {
     return this.db
@@ -364,13 +403,14 @@ export class LiveRepository {
   clearResponses(id: string) {
     this.db.exec('BEGIN IMMEDIATE');
     try {
+      const views = this.db.prepare('DELETE FROM live_views WHERE activity_id = ?').run(id).changes;
       const responses = this.db.prepare('DELETE FROM live_responses WHERE activity_id = ?').run(id).changes;
       const participants = this.db.prepare('DELETE FROM live_participants WHERE activity_id = ?').run(id).changes;
       this.db
         .prepare('UPDATE live_activities SET last_response_at = NULL, public_revision = public_revision + 1, updated_at = ? WHERE id = ?')
         .run(nowIso(), id);
       this.db.exec('COMMIT');
-      return Number(responses) + Number(participants);
+      return Number(views) + Number(responses) + Number(participants);
     } catch (error) {
       this.db.exec('ROLLBACK');
       throw error;
@@ -383,6 +423,9 @@ export class LiveRepository {
       .all(userId) as unknown as Array<{ id: string }>).map((row) => row.id);
     this.db.exec('BEGIN IMMEDIATE');
     try {
+      const views = this.db
+        .prepare('DELETE FROM live_views WHERE activity_id IN (SELECT id FROM live_activities WHERE user_id = ?)')
+        .run(userId).changes;
       const responses = this.db
         .prepare('DELETE FROM live_responses WHERE activity_id IN (SELECT id FROM live_activities WHERE user_id = ?)')
         .run(userId).changes;
@@ -393,11 +436,74 @@ export class LiveRepository {
         .prepare('UPDATE live_activities SET last_response_at = NULL, public_revision = public_revision + 1, updated_at = ? WHERE user_id = ?')
         .run(nowIso(), userId);
       this.db.exec('COMMIT');
-      return { activityIds, deletedRows: Number(responses) + Number(participants) };
+      return { activityIds, deletedRows: Number(views) + Number(responses) + Number(participants) };
     } catch (error) {
       this.db.exec('ROLLBACK');
       throw error;
     }
+  }
+
+  recordView(input: {
+    activityId: string;
+    visitorHash: string;
+    deviceType: string;
+    browser: string;
+    os: string;
+    referrer: string;
+    language: string | null;
+    rawIp: string | null;
+  }) {
+    this.db
+      .prepare(`INSERT INTO live_views (
+        id, activity_id, timestamp, visitor_hash, device_type, browser, os, referrer, language, raw_ip
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(createId(), input.activityId, nowIso(), input.visitorHash, input.deviceType, input.browser, input.os, input.referrer, input.language, input.rawIp);
+  }
+
+  analytics(activityId: string, range: 'day' | 'week' | 'month', timezoneOffsetMinutes = 0, limit = 10): LiveAnalytics {
+    const totals = this.db
+      .prepare('SELECT COUNT(*) as totalViews, COUNT(DISTINCT visitor_hash) as uniqueVisitors FROM live_views WHERE activity_id = ?')
+      .get(activityId) as { totalViews: number; uniqueVisitors: number };
+    const frame = this.analyticsFrame(range, timezoneOffsetMinutes);
+    const rows = this.db
+      .prepare(
+        `SELECT ${frame.bucketSql} as bucket, COUNT(*) as views, COUNT(DISTINCT visitor_hash) as uniqueVisitors
+         FROM live_views WHERE activity_id = ? AND timestamp >= ? AND timestamp < ? GROUP BY bucket ORDER BY bucket ASC`
+      )
+      .all(activityId, frame.start.toISOString(), frame.end.toISOString()) as Array<{ bucket: string; views: number; uniqueVisitors: number }>;
+    const rowMap = new Map(rows.map((row) => [row.bucket, row]));
+    const viewsOverTime = frame.buckets.map((bucket) => ({
+      date: bucket.key, label: bucket.label,
+      views: Number(rowMap.get(bucket.key)?.views ?? 0),
+      uniqueVisitors: Number(rowMap.get(bucket.key)?.uniqueVisitors ?? 0)
+    }));
+    const breakdownRows = this.db
+      .prepare(
+        `SELECT 'devices' as category, COALESCE(NULLIF(TRIM(device_type), ''), 'Unknown') as label, COUNT(*) as value
+         FROM live_views WHERE activity_id = ? GROUP BY label
+         UNION ALL SELECT 'browsers', COALESCE(NULLIF(TRIM(browser), ''), 'Unknown'), COUNT(*)
+         FROM live_views WHERE activity_id = ? GROUP BY COALESCE(NULLIF(TRIM(browser), ''), 'Unknown')
+         UNION ALL SELECT 'operatingSystems', COALESCE(NULLIF(TRIM(os), ''), 'Unknown'), COUNT(*)
+         FROM live_views WHERE activity_id = ? GROUP BY COALESCE(NULLIF(TRIM(os), ''), 'Unknown')
+         UNION ALL SELECT 'languages', COALESCE(NULLIF(TRIM(language), ''), 'Unknown'), COUNT(*)
+         FROM live_views WHERE activity_id = ? GROUP BY COALESCE(NULLIF(TRIM(language), ''), 'Unknown')
+         ORDER BY category, value DESC, label ASC`
+      )
+      .all(activityId, activityId, activityId, activityId) as unknown as AnalyticsBreakdownRow[];
+    const recentViews = this.db
+      .prepare(
+        `SELECT id, timestamp, raw_ip as ipAddress, browser, os, device_type as device, referrer, language
+         FROM live_views WHERE activity_id = ? ORDER BY timestamp DESC LIMIT ?`
+      )
+      .all(activityId, limit) as unknown as LiveAnalytics['recentViews'];
+    return {
+      totalViews: Number(totals.totalViews), uniqueVisitors: Number(totals.uniqueVisitors), viewsOverTime,
+      breakdowns: buildAnalyticsBreakdowns(breakdownRows), recentViews
+    };
+  }
+
+  cleanupViews(cutoffIso: string) {
+    return Number(this.db.prepare('DELETE FROM live_views WHERE timestamp < ?').run(cutoffIso).changes);
   }
 
   setStatus(id: string, status: 'active' | 'closed', expiresAt?: string | null) {

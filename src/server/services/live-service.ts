@@ -7,9 +7,11 @@ import type {
   ModerationRule,
   ModerationMatchMode
 } from '@/shared/types.js';
+import { UAParser } from 'ua-parser-js';
 import { config } from '../config.js';
+import { logger } from '../logger.js';
 import { LiveRepository } from '../repositories/live-repository.js';
-import { createSlugGenerator, expirationFromInput, nowIso, validateCustomSlug, validateGeneratedSlug } from '../utils.js';
+import { createSlugGenerator, expirationFromInput, hmacSha256, humanReferrer, nowIso, validateCustomSlug, validateGeneratedSlug } from '../utils.js';
 
 const activityTypes = new Set(['open_answer', 'word_cloud', 'multiple_choice', 'scale']);
 const identityModes = new Set(['anonymous', 'named']);
@@ -24,6 +26,16 @@ const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$
 export const LIVE_PUBLIC_OPEN_ANSWER_LIMIT = 100;
 export const LIVE_PUBLIC_WORD_CLOUD_LIMIT = 150;
 const LIVE_PUBLIC_PAGE_LIMIT = 100;
+
+const normalizeOsLabel = (name?: string, version?: string) => {
+  if (!name) return 'Unknown';
+  if (/windows/i.test(name)) return 'Windows';
+  if (/mac/i.test(name)) return 'macOS';
+  if (/ios/i.test(name)) return 'iOS';
+  if (/android/i.test(name)) return 'Android';
+  if (/linux|ubuntu|debian|fedora|arch/i.test(name)) return 'Linux';
+  return [name, version].filter(Boolean).join(' ');
+};
 
 export class LiveService {
   private repository = new LiveRepository();
@@ -107,6 +119,11 @@ export class LiveService {
     return this.repository.clearAllResponses(userId);
   }
 
+  getAdminResponses(userId: string, activityId: string) {
+    this.getOwned(userId, activityId);
+    return this.repository.listResponses(activityId);
+  }
+
   setStatus(userId: string, activityId: string, status: LiveActivityStatus, clearExpirationOnReopen = false) {
     const activity = this.getOwned(userId, activityId);
     if (!activityStatuses.has(status)) throw new Error('Invalid activity status.');
@@ -116,20 +133,59 @@ export class LiveService {
     return this.repository.setStatus(activityId, status, expiresAt)!;
   }
 
-  getAdminDetails(userId: string, activityId: string) {
+  getAdminDetails(
+    userId: string,
+    activityId: string,
+    range: 'day' | 'week' | 'month' = 'month',
+    timezoneOffsetMinutes = 0,
+    limit = 10
+  ) {
     const activity = this.getOwned(userId, activityId);
+    const safeLimit = [10, 20, 50].includes(limit) ? limit : 10;
     return {
       activity,
       responses: this.repository.listResponses(activityId),
-      results: this.repository.getResults(activity)
+      results: this.repository.getResults(activity),
+      analytics: this.repository.analytics(activityId, range, timezoneOffsetMinutes, safeLimit)
     };
   }
 
-  getPublic(slug: string, participantToken?: string, deferResults = false) {
+  getPublic(
+    slug: string,
+    participantToken?: string,
+    deferResults = false,
+    requestMeta?: { ip?: string; userAgent?: string; referrer?: string; language?: string }
+  ) {
     const activity = this.repository.findBySlugRuntime(slug);
     if (!activity) throw new Error('Activity not found.');
     this.requireNotExpired(activity);
+    if (requestMeta?.ip) {
+      setImmediate(() => {
+        try {
+          const parser = new UAParser(requestMeta.userAgent);
+          const browser = parser.getBrowser();
+          const os = parser.getOS();
+          this.repository.recordView({
+            activityId: activity.id,
+            visitorHash: hmacSha256(config.ipHashSecret, requestMeta.ip!),
+            deviceType: parser.getDevice().type ?? 'desktop',
+            browser: browser.name || 'Unknown',
+            os: normalizeOsLabel(os.name, os.version),
+            referrer: humanReferrer(requestMeta.referrer),
+            language: requestMeta.language?.split(',')[0]?.trim() || null,
+            rawIp: config.storeRawIp ? requestMeta.ip! : null
+          });
+        } catch (error) {
+          logger.error({ activityId: activity.id, err: error }, 'Live view analytics write failed');
+        }
+      });
+    }
     return this.toPublicActivity(activity, participantToken, activity.publicResults && !deferResults);
+  }
+
+  cleanupAnalytics() {
+    const cutoff = new Date(Date.now() - config.analyticsRetentionDays * 24 * 60 * 60 * 1000).toISOString();
+    return this.repository.cleanupViews(cutoff);
   }
 
   getPresentation(slug: string) {

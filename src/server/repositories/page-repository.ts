@@ -14,6 +14,7 @@ import type {
 } from '@/shared/types.js';
 import { getDb } from '../db.js';
 import { buildShortUrl, createId, nowIso } from '../utils.js';
+import { buildAnalyticsBreakdowns, type AnalyticsBreakdownRow } from './analytics-breakdowns.js';
 
 interface PageRow {
   id: string;
@@ -398,16 +399,45 @@ export class PageRepository {
     }
   }
 
-  recordView(pageId: string, visitorHash: string, rawIp: string | null) {
+  recordView(input: {
+    pageId: string;
+    visitorHash: string;
+    deviceType: string;
+    browser: string;
+    os: string;
+    referrer: string;
+    language: string | null;
+    rawIp: string | null;
+  }) {
     this.db
-      .prepare('INSERT INTO page_views (id, page_id, timestamp, visitor_hash, raw_ip) VALUES (?, ?, ?, ?, ?)')
-      .run(createId(), pageId, nowIso(), visitorHash, rawIp);
+      .prepare(`INSERT INTO page_views (
+        id, page_id, timestamp, visitor_hash, device_type, browser, os, referrer, language, raw_ip
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(createId(), input.pageId, nowIso(), input.visitorHash, input.deviceType, input.browser, input.os, input.referrer, input.language, input.rawIp);
   }
 
-  recordClick(pageId: string, blockId: string, label: string, eventId: string, visitorHash: string) {
+  recordClick(input: {
+    pageId: string;
+    blockId: string;
+    label: string;
+    eventId: string;
+    visitorHash: string;
+    deviceType: string;
+    browser: string;
+    os: string;
+    referrer: string;
+    language: string | null;
+    rawIp: string | null;
+  }) {
     this.db
-      .prepare('INSERT OR IGNORE INTO page_block_clicks (id, page_id, block_id, block_label, event_id, timestamp, visitor_hash) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(createId(), pageId, blockId, label, eventId, nowIso(), visitorHash);
+      .prepare(`INSERT OR IGNORE INTO page_block_clicks (
+        id, page_id, block_id, block_label, event_id, timestamp, visitor_hash,
+        device_type, browser, os, referrer, language, raw_ip
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(
+        createId(), input.pageId, input.blockId, input.label, input.eventId, nowIso(), input.visitorHash,
+        input.deviceType, input.browser, input.os, input.referrer, input.language, input.rawIp
+      );
   }
 
   findClickableBlock(pageId: string, blockId: string) {
@@ -420,7 +450,7 @@ export class PageRepository {
       .get(pageId, blockId) as { type: PageBlockType; configJson: string } | undefined;
   }
 
-  analytics(pageId: string, range: 'day' | 'week' | 'month', timezoneOffsetMinutes = 0): PageAnalytics {
+  analytics(pageId: string, range: 'day' | 'week' | 'month', timezoneOffsetMinutes = 0, limit = 10): PageAnalytics {
     const totals = this.db
       .prepare(
         `SELECT
@@ -428,7 +458,7 @@ export class PageRepository {
           (SELECT COUNT(DISTINCT visitor_hash) FROM page_views WHERE page_id = ?) as uniqueVisitors,
           (SELECT COUNT(*) FROM page_block_clicks WHERE page_id = ?) as totalLinkClicks`
       )
-      .get(pageId, pageId, pageId) as Omit<PageAnalytics, 'viewsOverTime' | 'blockClicks'>;
+      .get(pageId, pageId, pageId) as { totalViews: number; uniqueVisitors: number; totalLinkClicks: number };
     const frame = this.analyticsFrame(range, timezoneOffsetMinutes);
     const rows = this.db
       .prepare(
@@ -482,12 +512,43 @@ export class PageRepository {
       }))
       .sort((left, right) => right.clicks - left.clicks || left.position - right.position)
       .map(({ position: _position, ...block }) => block);
+    const breakdownRows = this.db
+      .prepare(
+        `SELECT 'devices' as category, COALESCE(NULLIF(TRIM(device_type), ''), 'Unknown') as label, COUNT(*) as value
+         FROM page_views WHERE page_id = ? GROUP BY label
+         UNION ALL
+         SELECT 'browsers', COALESCE(NULLIF(TRIM(browser), ''), 'Unknown'), COUNT(*)
+         FROM page_views WHERE page_id = ? GROUP BY COALESCE(NULLIF(TRIM(browser), ''), 'Unknown')
+         UNION ALL
+         SELECT 'operatingSystems', COALESCE(NULLIF(TRIM(os), ''), 'Unknown'), COUNT(*)
+         FROM page_views WHERE page_id = ? GROUP BY COALESCE(NULLIF(TRIM(os), ''), 'Unknown')
+         UNION ALL
+         SELECT 'languages', COALESCE(NULLIF(TRIM(language), ''), 'Unknown'), COUNT(*)
+         FROM page_views WHERE page_id = ? GROUP BY COALESCE(NULLIF(TRIM(language), ''), 'Unknown')
+         ORDER BY category, value DESC, label ASC`
+      )
+      .all(pageId, pageId, pageId, pageId) as unknown as AnalyticsBreakdownRow[];
+    const recentClicks = this.db
+      .prepare(
+        `SELECT c.id, c.timestamp, c.block_label as context,
+                c.raw_ip as ipAddress,
+                c.browser,
+                c.os,
+                c.device_type as device,
+                c.referrer,
+                c.language
+         FROM page_block_clicks c
+         WHERE c.page_id = ? ORDER BY c.timestamp DESC LIMIT ?`
+      )
+      .all(pageId, limit) as unknown as PageAnalytics['recentClicks'];
     return {
       totalViews: Number(totals.totalViews),
       uniqueVisitors: Number(totals.uniqueVisitors),
       totalLinkClicks: Number(totals.totalLinkClicks),
       viewsOverTime,
-      blockClicks
+      blockClicks,
+      breakdowns: buildAnalyticsBreakdowns(breakdownRows),
+      recentClicks
     };
   }
 

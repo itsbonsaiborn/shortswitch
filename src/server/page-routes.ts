@@ -95,13 +95,14 @@ export const registerPageRoutes = async (
     const authenticated = await requireAdmin(request, reply);
     if (!authenticated) return;
     try {
-      const query = request.query as { range?: 'day' | 'week' | 'month'; timezoneOffsetMinutes?: string };
+      const query = request.query as { range?: 'day' | 'week' | 'month'; timezoneOffsetMinutes?: string; limit?: string };
       const range = ['day', 'week', 'month'].includes(String(query.range)) ? query.range! : 'month';
       return pages.analytics(
         authenticated.currentUser.id,
         (request.params as { id: string }).id,
         range,
-        Number(query.timezoneOffsetMinutes ?? 0)
+        Number(query.timezoneOffsetMinutes ?? 0),
+        Number(query.limit ?? 10)
       );
     } catch (error) {
       return reply.code(404).send({ message: (error as Error).message });
@@ -120,7 +121,12 @@ export const registerPageRoutes = async (
 
   app.get('/api/pages/public/:slug', async (request, reply) => {
     try {
-      return pages.getPublic((request.params as { slug: string }).slug, { ip: request.ip });
+      return pages.getPublic((request.params as { slug: string }).slug, {
+        ip: request.ip,
+        userAgent: request.headers['user-agent'],
+        referrer: request.headers.referer,
+        language: request.headers['accept-language']
+      });
     } catch (error) {
       return reply.code(404).send({ message: (error as Error).message });
     }
@@ -131,7 +137,12 @@ export const registerPageRoutes = async (
       pages.trackClick(
         (request.params as { slug: string }).slug,
         request.body as { blockId?: string; eventId?: string },
-        request.ip
+        {
+          ip: request.ip,
+          userAgent: request.headers['user-agent'],
+          referrer: request.headers.referer,
+          language: request.headers['accept-language']
+        }
       );
       return reply.code(202).send({ ok: true });
     } catch (error) {

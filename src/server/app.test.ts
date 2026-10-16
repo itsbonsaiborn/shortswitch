@@ -76,7 +76,7 @@ const setBaseEnv = (dbPath: string, overrides: Record<string, string | undefined
     NODE_ENV: 'development',
     DATABASE_PATH: dbPath,
     ADMIN_EMAIL: 'admin@example.com',
-    ADMIN_PASSWORD: 'change-me-now',
+    ADMIN_PASSWORD: 'test-admin-password-42',
     ADMIN_NAME: 'Admin',
     COOKIE_SECURE: 'false',
     COOKIE_SAME_SITE: 'lax',
@@ -210,6 +210,29 @@ describe.sequential('server security hardening', () => {
     await expect(import('./app.js')).rejects.toThrow('CORS_ORIGIN must be set in production');
   });
 
+  test('fails startup in production without a non-default admin password', async () => {
+    setBaseEnv(testDbPath, {
+      NODE_ENV: 'production',
+      STORE_RAW_IP: 'true',
+      ADMIN_PASSWORD: 'change-me-now'
+    });
+    vi.resetModules();
+
+    await expect(import('./config.js')).rejects.toThrow('ADMIN_PASSWORD must be explicitly set');
+  });
+
+  test('fails startup with an insecure cookie on an HTTPS production URL', async () => {
+    setBaseEnv(testDbPath, {
+      NODE_ENV: 'production',
+      PUBLIC_URL: 'https://links.example.com',
+      COOKIE_SECURE: 'false',
+      STORE_RAW_IP: 'true'
+    });
+    vi.resetModules();
+
+    await expect(import('./config.js')).rejects.toThrow('COOKIE_SECURE must be enabled');
+  });
+
   test('upgrades the shared slug registry for Pages without losing legacy rows', async () => {
     const { DatabaseSync } = await import('node:sqlite');
     const legacy = new DatabaseSync(testDbPath);
@@ -253,9 +276,20 @@ describe.sequential('server security hardening', () => {
         config_json TEXT NOT NULL, position INTEGER NOT NULL, visible INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
         UNIQUE (page_id, position), FOREIGN KEY (page_id) REFERENCES pages(id) ON DELETE CASCADE
       );
+      CREATE TABLE page_views (
+        id TEXT PRIMARY KEY, page_id TEXT NOT NULL, timestamp TEXT NOT NULL, visitor_hash TEXT NOT NULL, raw_ip TEXT,
+        FOREIGN KEY (page_id) REFERENCES pages(id) ON DELETE CASCADE
+      );
+      CREATE TABLE page_block_clicks (
+        id TEXT PRIMARY KEY, page_id TEXT NOT NULL, block_id TEXT NOT NULL, block_label TEXT NOT NULL,
+        event_id TEXT NOT NULL UNIQUE, timestamp TEXT NOT NULL, visitor_hash TEXT NOT NULL,
+        FOREIGN KEY (page_id) REFERENCES pages(id) ON DELETE CASCADE
+      );
       INSERT INTO users VALUES ('owner', 'owner@example.com', 'Owner', 'hash', 0, 'system', 1, '2026-01-01', '2026-01-01');
       INSERT INTO pages VALUES ('page', 'owner', 'legacy-page', 'Legacy', NULL, NULL, NULL, 'classic_cream', 'classic', 'draft', NULL, NULL, '2026-01-01', '2026-01-01');
       INSERT INTO page_blocks VALUES ('legacy-heading', 'page', 'heading', '{"text":"Preserved"}', 0, 1, '2026-01-01', '2026-01-01');
+      INSERT INTO page_views VALUES ('legacy-view', 'page', '2026-01-01', 'visitor', NULL);
+      INSERT INTO page_block_clicks VALUES ('legacy-click', 'page', 'legacy-heading', 'Preserved', 'legacy-event', '2026-01-01', 'visitor');
     `);
     legacy.close();
 
@@ -265,6 +299,12 @@ describe.sequential('server security hardening', () => {
     expect(table.sql).toContain("'double'");
     expect(db.prepare('SELECT block_type, config_json FROM page_blocks WHERE id = ?').get('legacy-heading')).toMatchObject({
       block_type: 'heading', config_json: '{"text":"Preserved"}'
+    });
+    expect(db.prepare('SELECT visitor_hash, device_type, browser, os, referrer, language FROM page_views WHERE id = ?').get('legacy-view')).toMatchObject({
+      visitor_hash: 'visitor', device_type: 'unknown', browser: 'Unknown', os: 'Unknown', referrer: 'Direct', language: null
+    });
+    expect(db.prepare('SELECT visitor_hash, device_type, browser, os, referrer, language FROM page_block_clicks WHERE id = ?').get('legacy-click')).toMatchObject({
+      visitor_hash: 'visitor', device_type: 'unknown', browser: 'Unknown', os: 'Unknown', referrer: 'Direct', language: null
     });
     expect(() => db.prepare('INSERT INTO page_blocks VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(
       'double-block', 'page', 'double', '{"children":[]}', 1, 1, '2026-01-01', '2026-01-01'
@@ -338,7 +378,7 @@ describe.sequential('server security hardening', () => {
     const { buildApp } = await import('./app.js');
     const app = await buildApp();
     const csrf = await getCsrfBundle(app);
-    const { response } = await login(app, 'admin@example.com', 'change-me-now', csrf);
+    const { response } = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
     const setCookie = getSetCookieEntries(response.headers['set-cookie'] as string[] | string | undefined).join('\n');
 
     expect(setCookie).toContain('HttpOnly');
@@ -354,7 +394,7 @@ describe.sequential('server security hardening', () => {
     const { buildApp } = await import('./app.js');
     const app = await buildApp();
     const csrf = await getCsrfBundle(app);
-    const { cookies } = await login(app, 'admin@example.com', 'change-me-now', csrf);
+    const { cookies } = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
 
     const createWithoutCsrf = await app.inject({
       method: 'POST',
@@ -426,7 +466,7 @@ describe.sequential('server security hardening', () => {
     await seedUser('userb@example.com', 'another-password');
 
     const adminCsrf = await getCsrfBundle(app);
-    const adminLogin = await login(app, 'admin@example.com', 'change-me-now', adminCsrf);
+    const adminLogin = await login(app, 'admin@example.com', 'test-admin-password-42', adminCsrf);
     const userBCsrf = await getCsrfBundle(app);
     const userBLogin = await login(app, 'userb@example.com', 'another-password', userBCsrf);
 
@@ -527,7 +567,7 @@ describe.sequential('server security hardening', () => {
     });
     expect(failed.statusCode).toBe(401);
 
-    const success = await login(app, 'admin@example.com', 'change-me-now', csrf);
+    const success = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
     expect(success.response.statusCode).toBe(200);
 
     const failedAgain = await app.inject({
@@ -586,7 +626,7 @@ describe.sequential('server security hardening', () => {
     const { buildApp } = await import('./app.js');
     const app = await buildApp();
     const csrf = await getCsrfBundle(app);
-    const { cookies } = await login(app, 'admin@example.com', 'change-me-now', csrf);
+    const { cookies } = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
 
     await app.inject({
       method: 'POST',
@@ -618,7 +658,7 @@ describe.sequential('server security hardening', () => {
     const { buildApp } = await import('./app.js');
     const app = await buildApp();
     const csrf = await getCsrfBundle(app);
-    const { cookies } = await login(app, 'admin@example.com', 'change-me-now', csrf);
+    const { cookies } = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
 
     const created = await app.inject({
       method: 'POST',
@@ -647,7 +687,7 @@ describe.sequential('server security hardening', () => {
     const { buildApp } = await import('./app.js');
     const app = await buildApp();
     const csrf = await getCsrfBundle(app);
-    const { cookies } = await login(app, 'admin@example.com', 'change-me-now', csrf);
+    const { cookies } = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
 
     const created = await app.inject({
       method: 'POST',
@@ -682,7 +722,7 @@ describe.sequential('server security hardening', () => {
     const { buildApp } = await import('./app.js');
     const app = await buildApp();
     const csrf = await getCsrfBundle(app);
-    const { cookies } = await login(app, 'admin@example.com', 'change-me-now', csrf);
+    const { cookies } = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
 
     const created = await app.inject({
       method: 'POST',
@@ -724,7 +764,7 @@ describe.sequential('server security hardening', () => {
     const { buildApp } = await import('./app.js');
     const app = await buildApp();
     const csrf = await getCsrfBundle(app);
-    const { cookies } = await login(app, 'admin@example.com', 'change-me-now', csrf);
+    const { cookies } = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
 
     const invalidRequests = [
       { slug: 'static', message: 'Slug is reserved.' },
@@ -785,7 +825,7 @@ describe.sequential('server security hardening', () => {
     const { buildApp } = await import('./app.js');
     const app = await buildApp();
     const csrf = await getCsrfBundle(app);
-    const { cookies } = await login(app, 'admin@example.com', 'change-me-now', csrf);
+    const { cookies } = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
 
     const generated = await app.inject({
       method: 'POST',
@@ -819,7 +859,7 @@ describe.sequential('server security hardening', () => {
     const { buildApp } = await import('./app.js');
     const app = await buildApp();
     const csrf = await getCsrfBundle(app);
-    const { cookies } = await login(app, 'admin@example.com', 'change-me-now', csrf);
+    const { cookies } = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
 
     const created = await app.inject({
       method: 'POST',
@@ -852,7 +892,7 @@ describe.sequential('server security hardening', () => {
     const { buildApp } = await import('./app.js');
     const app = await buildApp();
     const csrf = await getCsrfBundle(app);
-    const { cookies } = await login(app, 'admin@example.com', 'change-me-now', csrf);
+    const { cookies } = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
 
     const created = await app.inject({
       method: 'POST',
@@ -930,7 +970,7 @@ describe.sequential('server security hardening', () => {
     const { buildApp } = await import('./app.js');
     const app = await buildApp();
     const csrf = await getCsrfBundle(app);
-    const { cookies } = await login(app, 'admin@example.com', 'change-me-now', csrf);
+    const { cookies } = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
 
     const firstCreated = await app.inject({
       method: 'POST',
@@ -1001,7 +1041,7 @@ describe.sequential('server security hardening', () => {
     const { buildApp } = await import('./app.js');
     const app = await buildApp();
     const csrf = await getCsrfBundle(app);
-    const { cookies } = await login(app, 'admin@example.com', 'change-me-now', csrf);
+    const { cookies } = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
 
     const response = await app.inject({
       method: 'POST',
@@ -1023,7 +1063,7 @@ describe.sequential('server security hardening', () => {
     const { buildApp } = await import('./app.js');
     const app = await buildApp();
     const csrf = await getCsrfBundle(app);
-    const { cookies } = await login(app, 'admin@example.com', 'change-me-now', csrf);
+    const { cookies } = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
 
     const blockedTargets = ['javascript:alert(1)', 'data:text/html,evil', 'ftp://example.com', 'localhost', 'http://localhost:8080'];
 
@@ -1076,7 +1116,7 @@ describe.sequential('server security hardening', () => {
     const { buildApp } = await import('./app.js');
     const app = await buildApp();
     const csrf = await getCsrfBundle(app);
-    const { cookies } = await login(app, 'admin@example.com', 'change-me-now', csrf);
+    const { cookies } = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
 
     const created = await app.inject({
       method: 'POST',
@@ -1099,6 +1139,19 @@ describe.sequential('server security hardening', () => {
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(loggerErrorSpy).toHaveBeenCalled();
 
+    const recordedRedirect = await app.inject({
+      method: 'GET',
+      url: '/analyt1',
+      remoteAddress: '203.0.113.7',
+      headers: {
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36',
+        referer: 'https://school.example/lesson',
+        'accept-language': 'lv-LV,lv;q=0.9'
+      }
+    });
+    expect(recordedRedirect.statusCode).toBe(302);
+    await new Promise((resolve) => setImmediate(resolve));
+
     const { getDb } = await import('./db.js');
     const db = getDb();
     const rawIp = db.prepare('SELECT raw_ip as rawIp FROM analytics_events WHERE link_id = ? LIMIT 1').get(link.id) as { rawIp: string | null } | undefined;
@@ -1106,6 +1159,19 @@ describe.sequential('server security hardening', () => {
 
     const analyticsAuth = await app.inject({ method: 'GET', url: `/api/links/${link.id}/analytics?range=day&limit=10` });
     expect(analyticsAuth.statusCode).toBe(401);
+
+    const analyticsResponse = await app.inject({
+      method: 'GET',
+      url: `/api/links/${link.id}/analytics?range=day&limit=10`,
+      headers: { cookie: cookies }
+    });
+    expect(analyticsResponse.statusCode).toBe(200);
+    const analytics = analyticsResponse.json();
+    expect(analytics.breakdowns.devices).toContainEqual({ label: 'desktop', value: 1 });
+    expect(analytics.breakdowns.browsers).toContainEqual({ label: 'Chrome', value: 1 });
+    expect(analytics.breakdowns.operatingSystems).toContainEqual({ label: 'Windows', value: 1 });
+    expect(analytics.breakdowns.languages).toContainEqual({ label: 'lv-LV', value: 1 });
+    expect(analytics.recentClicks[0]).toMatchObject({ browser: 'Chrome 128.0.0.0', os: 'Windows', device: 'desktop', referrer: 'school.example' });
 
     await app.close();
   });
@@ -1168,7 +1234,7 @@ describe.sequential('server security hardening', () => {
       }
     });
 
-    const { cookies } = await login(app, 'admin@example.com', 'change-me-now', csrf);
+    const { cookies } = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
     await app.inject({
       method: 'POST',
       url: '/api/links',
@@ -1208,7 +1274,7 @@ describe.sequential('server security hardening', () => {
     app = await appModule.buildApp();
 
     let csrf = await getCsrfBundle(app);
-    let loginOld = await login(app, 'admin@example.com', 'change-me-now', csrf);
+    let loginOld = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
     expect(loginOld.response.statusCode).toBe(200);
     let loginNew = await login(app, 'admin@example.com', 'new-password', csrf);
     expect(loginNew.response.statusCode).toBe(401);
@@ -1222,7 +1288,7 @@ describe.sequential('server security hardening', () => {
     appModule = await import('./app.js');
     app = await appModule.buildApp();
     csrf = await getCsrfBundle(app);
-    loginOld = await login(app, 'admin@example.com', 'change-me-now', csrf);
+    loginOld = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
     loginNew = await login(app, 'admin@example.com', 'new-password', csrf);
     expect(loginOld.response.statusCode).toBe(401);
     expect(loginNew.response.statusCode).toBe(200);
@@ -1264,7 +1330,7 @@ describe.sequential('server security hardening', () => {
     const singleLogin = await login(app, 'single@example.com', 'single-password', csrf);
     expect(singleLogin.response.statusCode).toBe(200);
 
-    const oldAdminLogin = await login(app, 'admin@example.com', 'change-me-now', csrf);
+    const oldAdminLogin = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
     expect(oldAdminLogin.response.statusCode).toBe(401);
 
     const legacyLogin = await login(app, 'legacy@example.com', 'legacy-password', csrf);
@@ -1278,8 +1344,8 @@ describe.sequential('server security hardening', () => {
     const app = await buildApp();
     const csrfA = await getCsrfBundle(app);
     const csrfB = await getCsrfBundle(app);
-    const sessionA = await login(app, 'admin@example.com', 'change-me-now', csrfA);
-    const sessionB = await login(app, 'admin@example.com', 'change-me-now', csrfB);
+    const sessionA = await login(app, 'admin@example.com', 'test-admin-password-42', csrfA);
+    const sessionB = await login(app, 'admin@example.com', 'test-admin-password-42', csrfB);
 
     const passwordChange = await app.inject({
       method: 'POST',
@@ -1330,7 +1396,7 @@ describe.sequential('server security hardening', () => {
     const { buildApp } = await import('./app.js');
     const app = await buildApp();
     const csrf = await getCsrfBundle(app);
-    const admin = await login(app, 'admin@example.com', 'change-me-now', csrf);
+    const admin = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
     const adminHeaders = { cookie: admin.cookies, 'x-csrf-token': csrf.csrfToken };
 
     const generated = await app.inject({
@@ -1598,7 +1664,7 @@ describe.sequential('server security hardening', () => {
     const { buildApp } = await import('./app.js');
     const app = await buildApp();
     const csrf = await getCsrfBundle(app);
-    const admin = await login(app, 'admin@example.com', 'change-me-now', csrf);
+    const admin = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
     const adminHeaders = { cookie: admin.cookies, 'x-csrf-token': csrf.csrfToken };
     const base = {
       status: 'active',
@@ -1694,7 +1760,7 @@ describe.sequential('server security hardening', () => {
     expect((await app.inject({ method: 'GET', url: '/api/live' })).statusCode).toBe(401);
 
     const csrf = await getCsrfBundle(app);
-    const admin = await login(app, 'admin@example.com', 'change-me-now', csrf);
+    const admin = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
     expect((await app.inject({
       method: 'POST',
       url: '/api/live',
@@ -1783,7 +1849,7 @@ describe.sequential('server security hardening', () => {
     const { buildApp } = await import('./app.js');
     const app = await buildApp();
     const csrf = await getCsrfBundle(app);
-    const admin = await login(app, 'admin@example.com', 'change-me-now', csrf);
+    const admin = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
     const adminHeaders = { cookie: admin.cookies, 'x-csrf-token': csrf.csrfToken };
     const base = {
       status: 'active', identityMode: 'anonymous', allowMultipleResponses: false,
@@ -1864,7 +1930,7 @@ describe.sequential('server security hardening', () => {
     const { buildApp } = await import('./app.js');
     const app = await buildApp();
     const csrf = await getCsrfBundle(app);
-    const admin = await login(app, 'admin@example.com', 'change-me-now', csrf);
+    const admin = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
     const adminHeaders = { cookie: admin.cookies, 'x-csrf-token': csrf.csrfToken };
 
     expect((await app.inject({ method: 'GET', url: '/api/pages' })).statusCode).toBe(401);
@@ -1956,7 +2022,12 @@ describe.sequential('server security hardening', () => {
     expect(html).toContain('rel="canonical" href="http://localhost:3000/datorika-page"');
     expect(html).not.toContain('<script>alert(1)</script> Datorika');
 
-    const publicResponse = await app.inject({ method: 'GET', url: '/api/pages/public/datorika-page' });
+    const analyticsHeaders = {
+      'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36',
+      referer: 'https://school.example/lesson',
+      'accept-language': 'lv-LV,lv;q=0.9,en;q=0.8'
+    };
+    const publicResponse = await app.inject({ method: 'GET', url: '/api/pages/public/datorika-page', headers: analyticsHeaders });
     expect(publicResponse.statusCode).toBe(200);
     expect(publicResponse.headers['cache-control']).toBe('no-store');
     const publicPage = publicResponse.json();
@@ -1978,7 +2049,8 @@ describe.sequential('server security hardening', () => {
     for (let index = 0; index < 2; index += 1) {
       expect((await app.inject({
         method: 'POST', url: '/api/pages/public/datorika-page/clicks',
-        payload: { blockId: clickedBlock.id, eventId: 'pageclick001' }
+        payload: { blockId: clickedBlock.id, eventId: 'pageclick001' },
+        headers: analyticsHeaders
       })).statusCode).toBe(202);
     }
     await new Promise((resolve) => setImmediate(resolve));
@@ -1991,6 +2063,69 @@ describe.sequential('server security hardening', () => {
     expect(analytics.blockClicks[0]).toMatchObject({ label: 'Tracked short link', type: 'existing_link', url: 'http://localhost:3000/page-link' });
     expect(analytics.blockClicks.slice(1).map((block: any) => block.label)).toEqual(['External', 'Join activity', 'Contact', 'Nested docs', 'Nested email']);
     expect(analytics.blockClicks.slice(1).every((block: any) => block.clicks === 0)).toBe(true);
+    expect(analytics.breakdowns.devices).toContainEqual({ label: 'desktop', value: 1 });
+    expect(analytics.breakdowns.browsers).toContainEqual({ label: 'Chrome', value: 1 });
+    expect(analytics.breakdowns.operatingSystems).toContainEqual({ label: 'Windows', value: 1 });
+    expect(analytics.breakdowns.languages).toContainEqual({ label: 'lv-LV', value: 1 });
+    expect(analytics.recentClicks).toHaveLength(1);
+    expect(analytics.recentClicks[0]).toMatchObject({
+      context: 'Tracked short link', browser: 'Chrome', os: 'Windows', device: 'desktop', referrer: 'school.example', language: 'lv-LV'
+    });
+
+    expect((await app.inject({ method: 'GET', url: '/api/live/public/page-live', headers: analyticsHeaders })).statusCode).toBe(200);
+    await new Promise((resolve) => setImmediate(resolve));
+    const liveAnalyticsResponse = await app.inject({
+      method: 'GET',
+      url: `/api/live/${liveActivity.id}?range=day&limit=10&timezoneOffsetMinutes=180`,
+      headers: { cookie: admin.cookies }
+    });
+    expect(liveAnalyticsResponse.statusCode).toBe(200);
+    const liveAnalytics = liveAnalyticsResponse.json().analytics;
+    expect(liveAnalytics.totalViews).toBe(1);
+    expect(liveAnalytics.uniqueVisitors).toBe(1);
+    expect(liveAnalytics.viewsOverTime).toHaveLength(24);
+    expect(liveAnalytics.breakdowns.devices).toContainEqual({ label: 'desktop', value: 1 });
+    expect(liveAnalytics.breakdowns.browsers).toContainEqual({ label: 'Chrome', value: 1 });
+    expect(liveAnalytics.breakdowns.operatingSystems).toContainEqual({ label: 'Windows', value: 1 });
+    expect(liveAnalytics.breakdowns.languages).toContainEqual({ label: 'lv-LV', value: 1 });
+    expect(liveAnalytics.recentViews).toHaveLength(1);
+    expect(liveAnalytics.recentViews[0]).toMatchObject({ browser: 'Chrome', os: 'Windows', device: 'desktop', referrer: 'school.example', language: 'lv-LV' });
+    const globalAnalyticsResponse = await app.inject({
+      method: 'GET',
+      url: '/api/analytics/global?range=day&timezoneOffsetMinutes=180',
+      headers: { cookie: admin.cookies }
+    });
+    expect(globalAnalyticsResponse.statusCode).toBe(200);
+    const globalAnalytics = globalAnalyticsResponse.json();
+    expect(globalAnalytics.totals).toEqual({ clicks: 1, views: 2, uniqueVisitors: 1, devices: 1 });
+    expect(globalAnalytics.activityOverTime).toHaveLength(24);
+    expect(globalAnalytics.activityOverTime.reduce((sum: number, point: any) => sum + point.clicks, 0)).toBe(1);
+    expect(globalAnalytics.activityOverTime.reduce((sum: number, point: any) => sum + point.views, 0)).toBe(2);
+    const activityOverTimeResponse = await app.inject({
+      method: 'GET',
+      url: '/api/analytics/global/activity-over-time?range=day&timezoneOffsetMinutes=180',
+      headers: { cookie: admin.cookies }
+    });
+    expect(activityOverTimeResponse.statusCode).toBe(200);
+    expect(activityOverTimeResponse.json()).toEqual(globalAnalytics.activityOverTime);
+    expect(globalAnalytics.modules).toEqual([
+      { module: 'links', clicks: 0, views: 0, uniqueVisitors: 0 },
+      { module: 'pages', clicks: 1, views: 1, uniqueVisitors: 1 },
+      { module: 'live', clicks: 0, views: 1, uniqueVisitors: 1 }
+    ]);
+    expect(globalAnalytics.activityByTime.reduce((sum: number, point: any) => sum + point.clicks, 0)).toBe(1);
+    expect(globalAnalytics.activityByTime.reduce((sum: number, point: any) => sum + point.views, 0)).toBe(2);
+    expect(globalAnalytics.topReferrers.all[0]).toEqual({ label: 'school.example', value: 2 });
+    expect(globalAnalytics.referrerTotals).toEqual({ all: 2, links: 0, pages: 1, live: 1 });
+    expect(globalAnalytics.topSlugs.all).toEqual(expect.arrayContaining([
+      { slug: 'datorika-page', module: 'pages', value: 1 },
+      { slug: 'page-live', module: 'live', value: 1 }
+    ]));
+    expect(globalAnalytics.breakdowns.devices).toContainEqual({ label: 'desktop', value: 2 });
+    expect(globalAnalytics.breakdowns.browsers).toContainEqual({ label: 'Chrome', value: 2 });
+    expect(globalAnalytics.breakdowns.operatingSystems).toContainEqual({ label: 'Windows', value: 2 });
+    expect(globalAnalytics.breakdowns.languages).toContainEqual({ label: 'lv-LV', value: 2 });
+
     const dailyAnalytics = (await app.inject({ method: 'GET', url: `/api/pages/${created.id}/analytics?range=day&timezoneOffsetMinutes=180`, headers: { cookie: admin.cookies } })).json();
     const weeklyAnalytics = (await app.inject({ method: 'GET', url: `/api/pages/${created.id}/analytics?range=week&timezoneOffsetMinutes=180`, headers: { cookie: admin.cookies } })).json();
     const monthlyAnalytics = (await app.inject({ method: 'GET', url: `/api/pages/${created.id}/analytics?range=month&timezoneOffsetMinutes=180`, headers: { cookie: admin.cookies } })).json();

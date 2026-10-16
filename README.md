@@ -38,10 +38,12 @@ Privacy-aware self-hosted URL shortener with a modern Vue 3 dashboard, interacti
   - Visits, unique visitors, referrers, failed auth attempts
   - Recent click details
 - Global analytics:
-  - Total clicks, links, referrers, devices
-  - Monthly traffic trend
-  - Weekly activity heatmap
-  - Top referrers, top slugs, languages, device analytics
+  - Combined clicks, views, unique visitors, and devices across Links, Pages, and Live
+  - Daily, weekly, and monthly activity trend
+  - Module comparison for clicks, views, and unique visitors
+  - Weekday/hour activity heatmap with clicks, views, and unique-visitor modes
+  - Top referrers and public slugs with All/Links/Pages/Live filters
+  - Device, browser, operating-system, and browser-language breakdowns
 - Session management and password reset flow
 - Single-user admin reset flow for self-hosted recovery
 - Presentation mode with direct activity QR codes
@@ -150,6 +152,7 @@ Important environment values:
 ShortSwitch follows a single-user self-hosted model.
 
 - If no admin exists, the container creates one from `ADMIN_EMAIL`, `ADMIN_PASSWORD`, and `ADMIN_NAME`
+- Production startup requires an explicit, non-default `ADMIN_PASSWORD` with at least 12 characters
 - If `RESET_ADMIN=false`, existing credentials in the database remain in use
 - If `RESET_ADMIN=true`, the container force-resets the single admin account from Docker config, revokes active sessions, and keeps the system aligned to one canonical user
 
@@ -162,7 +165,7 @@ Before deploying to a real VPS, update the Docker config:
 - Set `PUBLIC_URL` to your external HTTPS URL
 - Set `CORS_ORIGIN` to your exact trusted origin
 - Set `COOKIE_SECURE=true`
-- Replace admin credentials with strong values
+- Set an explicit, non-default `ADMIN_PASSWORD` with at least 12 characters
 - Set a long random `IP_HASH_SECRET`
 - Prefer `STORE_RAW_IP=false`
 - Keep `ENABLE_CSP=true`
@@ -172,6 +175,7 @@ Before deploying to a real VPS, update the Docker config:
 ## Known Deployment Notes
 
 - The current checked-in Docker setup is best for local testing first
+- The runtime image upgrades the base security package needed by the entrypoint and removes npm/npx after installing production dependencies
 - SQLite is stored inside the Docker volume mounted at `/app/data`
 - The application currently targets a single-container self-hosted deployment
 

@@ -23,6 +23,29 @@ export class LinkService {
   private links = new LinkRepository();
   private analytics = new AnalyticsRepository();
   private settings = new SettingsRepository();
+  private pendingAnalyticsWrites = new Set<Promise<void>>();
+
+  private scheduleAnalyticsWrite(linkId: string, slug: string, write: () => void) {
+    const task = new Promise<void>((resolve) => {
+      setImmediate(() => {
+        try {
+          write();
+        } catch (error) {
+          logger.error({ linkId, slug, err: error }, 'analytics write failed');
+        } finally {
+          resolve();
+        }
+      });
+    });
+    this.pendingAnalyticsWrites.add(task);
+    void task.finally(() => this.pendingAnalyticsWrites.delete(task));
+  }
+
+  async flushAnalytics() {
+    while (this.pendingAnalyticsWrites.size > 0) {
+      await Promise.allSettled([...this.pendingAnalyticsWrites]);
+    }
+  }
 
   list(userId: string) {
     return this.links.list(userId);
@@ -192,12 +215,17 @@ export class LinkService {
     return {
       link: this.toLinkRecord(link),
       overview: this.analytics.getOverview(link.id, range, timezoneOffsetMinutes),
-      recentClicks: this.analytics.getRecentClicks(link.id, clamp(limit, 10, 50))
+      recentClicks: this.analytics.getRecentClicks(link.id, clamp(limit, 10, 50)),
+      breakdowns: this.analytics.getBreakdowns(link.id)
     };
   }
 
-  getGlobalAnalytics(timezoneOffsetMinutes = 0) {
-    return this.analytics.getGlobalAnalytics(timezoneOffsetMinutes);
+  getGlobalAnalytics(userId: string, range: 'day' | 'week' | 'month', timezoneOffsetMinutes = 0) {
+    return this.analytics.getGlobalAnalytics(userId, range, timezoneOffsetMinutes);
+  }
+
+  getGlobalActivityOverTime(userId: string, range: 'day' | 'week' | 'month', timezoneOffsetMinutes = 0) {
+    return this.analytics.getGlobalActivityOverTime(userId, range, timezoneOffsetMinutes);
   }
 
   getLinkBySlug(slug: string) {
@@ -221,8 +249,7 @@ export class LinkService {
     region: string | undefined;
     city: string | undefined;
   }) {
-    setImmediate(() => {
-      try {
+    this.scheduleAnalyticsWrite(linkId, slug, () => {
         const parser = new UAParser(request.userAgent);
         const device = parser.getDevice();
         const browser = parser.getBrowser();
@@ -256,9 +283,6 @@ export class LinkService {
           rawIp: config.storeRawIp ? (request.ip ?? null) : null
         });
         this.links.incrementClicks(linkId);
-      } catch (error) {
-        logger.error({ linkId, slug, err: error }, 'analytics write failed');
-      }
     });
   }
 
@@ -271,8 +295,7 @@ export class LinkService {
     region: string | undefined;
     city: string | undefined;
   }) {
-    setImmediate(() => {
-      try {
+    this.scheduleAnalyticsWrite(linkId, slug, () => {
         const parser = new UAParser(request.userAgent);
         const device = parser.getDevice();
         const browser = parser.getBrowser();
@@ -305,9 +328,6 @@ export class LinkService {
           visitorHash,
           rawIp: config.storeRawIp ? (request.ip ?? null) : null
         });
-      } catch (error) {
-        logger.error({ linkId, slug, err: error }, 'analytics write failed');
-      }
     });
   }
 

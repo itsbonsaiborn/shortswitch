@@ -5,6 +5,7 @@ import type { LinkRecord, LiveActivitySummary, PageBlock, PageBlockType, PageDet
 import { api } from '../lib/api';
 import { useToast } from '../composables/useToast';
 import PageBlockIcon from '../components/PageBlockIcon.vue';
+import LiveActivityPicker from '../components/LiveActivityPicker.vue';
 import PageNestedBlockEditor from '../components/PageNestedBlockEditor.vue';
 import PageRenderer from '../components/PageRenderer.vue';
 
@@ -104,11 +105,6 @@ const filteredLinks = (blockId: string) => {
   const query = (resourceSearch[blockId] || '').toLowerCase();
   return links.value.filter((item) => !query || item.slug.toLowerCase().includes(query) || item.targetUrl.toLowerCase().includes(query)).slice(0, 30);
 };
-const filteredActivities = (blockId: string) => {
-  const query = (resourceSearch[blockId] || '').toLowerCase();
-  return activities.value.filter((item) => !query || item.slug.toLowerCase().includes(query) || item.title.toLowerCase().includes(query)).slice(0, 30);
-};
-
 const assignPage = (page: PageDetail) => {
   publicUrl.value = page.publicUrl;
   Object.assign(form, {
@@ -340,8 +336,7 @@ watch(() => route.params.id, () => { if (route.name) void load(); });
               <label class="sm:col-span-2"><span class="field-label">Subtitle</span><input v-model="editingBlock.config.subtitle" class="input px-3 py-2" maxlength="240" /></label>
             </template>
             <template v-else-if="editingBlock.type === 'live_activity'">
-              <label class="sm:col-span-2"><span class="field-label">Search Live</span><input v-model="resourceSearch[editingBlock.id]" class="input px-3 py-2" placeholder="Title or slug" /></label>
-              <label class="sm:col-span-2"><span class="field-label">Live Activity</span><select v-model="editingBlock.config.resourceId" class="input px-3 py-2"><option value="">Select an Activity</option><option v-for="activity in filteredActivities(editingBlock.id)" :key="activity.id" :value="activity.id">{{ activity.title }} · /{{ activity.slug }}</option></select></label>
+              <LiveActivityPicker v-model="editingBlock.config.resourceId" :activities="activities" class="sm:col-span-2" />
               <label><span class="field-label">Button title</span><input v-model="editingBlock.config.title" class="input px-3 py-2" maxlength="120" /></label>
               <label><span class="field-label">Emoji</span><input v-model="editingBlock.config.emoji" class="input px-3 py-2" maxlength="16" /></label>
               <label class="sm:col-span-2"><span class="field-label">Subtitle</span><input v-model="editingBlock.config.subtitle" class="input px-3 py-2" maxlength="240" /></label>

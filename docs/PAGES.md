@@ -66,9 +66,9 @@ Caching rules:
 
 ## Analytics and privacy
 
-Opening the public JSON Page endpoint records one Page view asynchronously. Unique visitors use the existing HMAC IP identity. Raw IP is stored only when the existing `STORE_RAW_IP` setting enables it. Clickable blocks send a generated event ID to the Page click endpoint; the database unique constraint makes retries idempotent.
+Opening the public JSON Page endpoint records one Page view asynchronously, including the parsed device type. Unique visitors use the existing HMAC IP identity. Raw IP is stored only when the existing `STORE_RAW_IP` setting enables it. Clickable blocks send a generated event ID to the Page click endpoint; the database unique constraint makes retries idempotent.
 
-Page analytics are independent of Short URL analytics. Following an existing ShortSwitch Link block records the Page block click first, then the ordinary redirect records its own Link analytics. Dashboard analytics expose total views, unique visitors, total tracked clicks, Daily/Weekly/Month trend ranges and a Top links list with every current clickable block, counts, percentages and bars. Equal-count links retain their Page order. The existing analytics retention interval also removes old Page views and clicks. Per-Page clearing removes only that Page's views and block clicks; the Settings-wide clear also removes Page analytics.
+Page analytics are independent of Short URL analytics. Following an existing ShortSwitch Link block records the Page block click first, then the ordinary redirect records its own Link analytics. Dashboard analytics expose total views, unique visitors, total tracked clicks, Daily/Weekly/Month trend ranges, device/browser/OS/language breakdowns, a Top links list and the latest 10/20/50 block-click details. Equal-count links retain their Page order. The existing analytics retention interval also removes old Page views and clicks. Per-Page clearing removes only that Page's views and block clicks; the Settings-wide clear also removes Page analytics.
 
 ## API
 
@@ -81,7 +81,7 @@ Authenticated routes (state-changing routes also require CSRF):
 - `DELETE /api/pages/:id`
 - `POST /api/pages/:id/duplicate`
 - `POST /api/pages/:id/status`
-- `GET /api/pages/:id/analytics?range=day|week|month&timezoneOffsetMinutes=`
+- `GET /api/pages/:id/analytics?range=day|week|month&timezoneOffsetMinutes=&limit=10|20|50`
 - `POST /api/pages/:id/analytics/clear`
 
 Public routes:
@@ -97,12 +97,12 @@ Pages uses four tables:
 
 - `pages` — owner, slug, identity, design, status and SEO metadata;
 - `page_blocks` — ordered typed blocks with validated JSON configuration;
-- `page_views` — view timestamp and visitor identity;
-- `page_block_clicks` — idempotent block-click events and labels.
+- `page_views` — view timestamp, visitor identity, device/browser/OS, normalized referrer, browser language and optional raw IP;
+- `page_block_clicks` — idempotent block-click events, labels and the request's device/browser/OS/referrer/language metadata used by Recent click details.
 
 Foreign keys cascade on Page deletion. Indexes cover owner/creation ordering, block ordering, view time/visitor queries and click time/block queries.
 
-Older databases can have a `public_slugs` CHECK constraint that only permits Links and Live, or a `page_blocks` CHECK constraint created before Double existed. Startup performs transaction-protected, data-preserving table rebuilds to add `page` and `double`, then ensures the required indexes exist. As with all ShortSwitch startup schema upgrades, back up `/app/data/shortswitch.db` before deploying a new image and do not treat first startup as read-only.
+Older databases can have a `public_slugs` CHECK constraint that only permits Links and Live, a `page_blocks` CHECK constraint created before Double existed, or Page view/click tables without analytics metadata columns. Startup performs data-preserving upgrades, then ensures the required indexes exist. Existing Page analytics rows receive neutral `unknown`/`Unknown`/`Direct`/`null` metadata defaults; historical browser, OS, referrer and language values cannot be reconstructed. As with all ShortSwitch startup schema upgrades, back up `/app/data/shortswitch.db` before deploying a new image and do not treat first startup as read-only.
 
 ## Verification
 

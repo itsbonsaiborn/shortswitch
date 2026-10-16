@@ -20,7 +20,7 @@ services:
       COOKIE_SAME_SITE: lax
       ENABLE_CSP: "true"
       ADMIN_EMAIL: test@test.en
-      ADMIN_PASSWORD: test
+      ADMIN_PASSWORD: testtesttesttesttesttesttest
       ADMIN_NAME: admin
       RESET_ADMIN: "false"
       LOG_LEVEL: info

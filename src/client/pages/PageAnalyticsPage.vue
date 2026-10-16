@@ -7,6 +7,8 @@ import VueApexCharts from 'vue3-apexcharts';
 import type { PageAnalytics, PageDetail } from '@/shared/types';
 import { api } from '../lib/api';
 import { useTheme } from '../composables/useTheme';
+import AnalyticsBreakdownGrid from '../components/AnalyticsBreakdownGrid.vue';
+import AnalyticsVisitTable from '../components/AnalyticsVisitTable.vue';
 import StatCard from '../components/StatCard.vue';
 
 const route = useRoute();
@@ -25,9 +27,19 @@ const readRange = () => {
   return value === 'week' || value === 'month' ? value : 'day';
 };
 const range = ref<'day' | 'week' | 'month'>(readRange());
+const readLimit = () => {
+  if (typeof document === 'undefined') return 10 as const;
+  const value = Number(document.cookie.split('; ').find((item) => item.startsWith('ss_page_analytics_limit='))?.split('=')[1]);
+  return (value === 20 || value === 50 ? value : 10) as 10 | 20 | 50;
+};
+const limit = ref<10 | 20 | 50>(readLimit());
 const setRange = (next: 'day' | 'week' | 'month') => {
   range.value = next;
   document.cookie = `ss_page_analytics_range=${next}; path=/; SameSite=Lax`;
+};
+const setLimit = (next: 10 | 20 | 50) => {
+  limit.value = next;
+  document.cookie = `ss_page_analytics_limit=${next}; path=/; SameSite=Lax`;
 };
 const rangeLabel = computed(() => range.value === 'month' ? 'Month trend' : range.value === 'week' ? 'Weekly trend' : 'Daily trend');
 const buttonClass = (active: boolean) => active
@@ -41,8 +53,6 @@ const chartSeries = computed(() => [
 ]);
 const isDark = computed(() => resolvedTheme.value === 'dark');
 const isMobileChart = computed(() => width.value < 640);
-const chartWidth = computed(() => isMobileChart.value ? 720 : '100%');
-const chartHeight = computed(() => isMobileChart.value ? 300 : 330);
 const chartOptions = computed<ApexOptions>(() => ({
   chart: {
     type: 'area', toolbar: { show: false }, zoom: { enabled: false }, background: 'transparent',
@@ -90,13 +100,13 @@ const load = async () => {
     const timezoneOffsetMinutes = -new Date().getTimezoneOffset();
     [page.value, analytics.value] = await Promise.all([
       api<PageDetail>(`/api/pages/${route.params.id}`),
-      api<PageAnalytics>(`/api/pages/${route.params.id}/analytics?range=${range.value}&timezoneOffsetMinutes=${timezoneOffsetMinutes}`)
+      api<PageAnalytics>(`/api/pages/${route.params.id}/analytics?range=${range.value}&limit=${limit.value}&timezoneOffsetMinutes=${timezoneOffsetMinutes}`)
     ]);
   } catch (caught) { error.value = (caught as Error).message || 'Could not load Page analytics.'; }
   finally { loading.value = false; }
 };
 
-watch(range, () => void load());
+watch([range, limit], () => void load());
 onMounted(load);
 </script>
 
@@ -116,9 +126,9 @@ onMounted(load);
       </div>
     </section>
     <section class="grid gap-3 sm:grid-cols-3">
-      <StatCard label="Total Views" :value="analytics.totalViews" />
-      <StatCard label="Unique Visitors" :value="analytics.uniqueVisitors" />
-      <StatCard label="Link Clicks" :value="analytics.totalLinkClicks" />
+      <StatCard label="Total Views" :value="analytics.totalViews" icon="views" />
+      <StatCard label="Unique Visitors" :value="analytics.uniqueVisitors" icon="visitors" />
+      <StatCard label="Link Clicks" :value="analytics.totalLinkClicks" icon="clicks" />
     </section>
     <section class="panel p-5 sm:p-6">
       <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -140,9 +150,12 @@ onMounted(load);
         </div>
       </div>
       <div class="app-scrollbar mt-6 rounded-[2rem] border border-[var(--ui-border)] bg-[var(--ui-panel-muted)] p-3 sm:p-4" :class="isMobileChart ? 'overflow-x-auto overflow-y-hidden' : 'overflow-hidden'">
-        <VueApexCharts type="area" :height="chartHeight" :width="chartWidth" :options="chartOptions" :series="chartSeries" />
+        <div :class="isMobileChart ? 'min-w-[720px]' : 'min-w-0'">
+          <VueApexCharts type="area" height="330" width="100%" :options="chartOptions" :series="chartSeries" />
+        </div>
       </div>
     </section>
+    <AnalyticsBreakdownGrid :breakdowns="analytics.breakdowns" />
     <section class="panel p-5 sm:p-6">
       <h3 class="text-xl font-semibold">Top links</h3>
       <p class="mt-1 text-sm text-[var(--ui-text-muted)]">Clicks are shown for every clickable block on this Page.</p>
@@ -165,5 +178,13 @@ onMounted(load);
         </div>
       </div>
     </section>
+    <AnalyticsVisitTable
+      :rows="analytics.recentClicks"
+      :limit="limit"
+      title="Recent click details"
+      description="Latest clicks on the public Page and their visit context."
+      context-label="Block"
+      @update:limit="setLimit"
+    />
   </div>
 </template>

@@ -189,9 +189,9 @@ onBeforeUnmount(() => {
 <template>
   <div class="space-y-4 sm:space-y-6">
     <section class="grid gap-3 sm:grid-cols-3">
-      <StatCard label="Total Activities" :value="activities.length" />
-      <StatCard label="Total Responses" :value="totalResponses" />
-      <StatCard label="Active Activities" :value="activeCount" />
+      <StatCard label="Total Activities" :value="activities.length" icon="activities" />
+      <StatCard label="Total Responses" :value="totalResponses" icon="responses" />
+      <StatCard label="Active Activities" :value="activeCount" icon="active-activities" />
     </section>
 
     <section class="flex justify-end">
@@ -235,7 +235,7 @@ onBeforeUnmount(() => {
           </div>
           <div class="relative z-20 flex shrink-0 items-center gap-2" data-live-action>
             <a class="icon-button icon-button-primary" :href="`/present/${activity.slug}`" target="_blank" rel="noopener noreferrer" aria-label="Open presentation" title="Open presentation" @click.stop>
-              <svg xmlns="http://www.w3.org/2000/svg" class="h-4.5 w-4.5" viewBox="0 0 48 48" aria-hidden="true"><path d="M0 0h48v48H0z" fill="none"/><path fill="currentColor" d="M40.75 10a.75.75 0 0 0-.75-.75H8a.75.75 0 0 0-.75.75v20c0 .415.335.75.75.75h32a.75.75 0 0 0 .75-.75zm2.5 20A3.25 3.25 0 0 1 40 33.25H8A3.25 3.25 0 0 1 4.75 30V10A3.25 3.25 0 0 1 8 6.75h32A3.25 3.25 0 0 1 43.25 10z"/><path fill="currentColor" d="M22.75 4a1.25 1.25 0 1 1 2.5 0v4h-2.5zm-3.564 28.396l-4 12a1.25 1.25 0 0 1-2.371-.791l4-12zm16 11.209a1.25 1.25 0 0 1-2.371.79l-4-12l2.37-.79zm-2.115-30.441a1.25 1.25 0 1 1 1.858 1.672l-9 10a1.25 1.25 0 0 1-1.622.204l-5.213-3.476l-6.28 5.385a1.25 1.25 0 0 1-1.627-1.899l7-6l.082-.064a1.25 1.25 0 0 1 1.424-.026l5.1 3.4z"/></svg>
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-4.5 w-4.5" viewBox="0 0 24 24" aria-hidden="true"><path d="M0 0h24v24H0z" fill="none"/><g fill="none"><path fill="currentColor" d="M4.24 10.83c0-4.74 0-7.11 1.53-7.97s3.55.38 7.6 2.85l1.91 1.17c3.75 2.3 5.62 3.44 5.62 5.12s-1.87 2.83-5.62 5.12l-1.91 1.17C9.32 20.76 7.3 22 5.77 21.14s-1.53-3.23-1.53-7.97z" opacity=".2"/><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4.24 10.83c0-4.74 0-7.11 1.53-7.97s3.55.38 7.6 2.85l1.91 1.17c3.75 2.3 5.62 3.44 5.62 5.12s-1.87 2.83-5.62 5.12l-1.91 1.17C9.32 20.76 7.3 22 5.77 21.14s-1.53-3.23-1.53-7.97z"/></g></svg>
             </a>
             <button class="icon-button" :aria-label="copiedActivityId === activity.id ? 'Copied' : 'Copy link'" :title="copiedActivityId === activity.id ? 'Copied' : 'Copy link'" @click.stop="copy(activity)">
               <svg v-if="copiedActivityId !== activity.id" xmlns="http://www.w3.org/2000/svg" class="h-4.5 w-4.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>

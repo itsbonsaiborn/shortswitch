@@ -133,9 +133,9 @@ onUnmounted(() => {
 <template>
   <div class="space-y-4 sm:space-y-6">
     <section class="grid gap-3 sm:grid-cols-3">
-      <StatCard label="Total links" :value="links.length" />
-      <StatCard label="Total clicks" :value="links.reduce((sum, item) => sum + item.clickCount, 0)" />
-      <StatCard label="Unique clicks" :value="totalUniqueClicks" />
+      <StatCard label="Total links" :value="links.length" icon="links" />
+      <StatCard label="Total clicks" :value="links.reduce((sum, item) => sum + item.clickCount, 0)" icon="clicks" />
+      <StatCard label="Unique clicks" :value="totalUniqueClicks" icon="clicks" />
     </section>
 
     <section class="flex justify-end">

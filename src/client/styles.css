@@ -235,3 +235,91 @@ body::-webkit-scrollbar-button,
 .app-scrollbar-x::-webkit-scrollbar:vertical {
   width: 0;
 }
+
+.apexcharts-tooltip:has(.ss-donut-tooltip) {
+  overflow: visible !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.ss-donut-tooltip {
+  position: relative;
+  display: grid;
+  min-width: 10rem;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.7rem;
+  border: 1px solid var(--ui-border);
+  border-radius: 1rem;
+  background: color-mix(in srgb, var(--ui-panel) 94%, transparent);
+  padding: 0.7rem 0.8rem;
+  color: var(--ui-text);
+  box-shadow: 0 14px 34px rgb(0 0 0 / 14%);
+  backdrop-filter: blur(12px);
+}
+
+.ss-donut-tooltip::after {
+  position: absolute;
+  bottom: -0.32rem;
+  left: 50%;
+  width: 0.62rem;
+  height: 0.62rem;
+  border-right: 1px solid var(--ui-border);
+  border-bottom: 1px solid var(--ui-border);
+  background: var(--ui-panel);
+  content: '';
+  transform: translateX(-50%) rotate(45deg);
+}
+
+.ss-donut-tooltip__marker {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 9999px;
+  background: var(--ss-tooltip-color);
+  box-shadow: 0 0 0 0.22rem color-mix(in srgb, var(--ss-tooltip-color) 18%, transparent);
+}
+
+.ss-donut-tooltip__content {
+  display: grid;
+  min-width: 0;
+  gap: 0.25rem;
+}
+
+.ss-donut-tooltip__label {
+  overflow: hidden;
+  color: var(--ui-text-muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ss-donut-tooltip__metrics {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  line-height: 1;
+}
+
+.ss-donut-tooltip__metrics strong {
+  color: var(--ui-text);
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.ss-donut-tooltip__metrics span {
+  color: var(--ui-accent);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.dark .ss-donut-tooltip {
+  box-shadow: 0 16px 38px rgb(0 0 0 / 34%);
+}
+
+.ss-donut-desktop .apexcharts-pie-series path {
+  cursor: default !important;
+}

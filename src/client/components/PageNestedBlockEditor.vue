@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import type { LinkRecord, LiveActivitySummary, PageBlockType, PageNestedBlock, PageNestedBlockType } from '@/shared/types';
+import LiveActivityPicker from './LiveActivityPicker.vue';
 import PageBlockIcon from './PageBlockIcon.vue';
 
 const props = defineProps<{
@@ -16,10 +17,6 @@ const nestedTypes: PageNestedBlockType[] = ['heading', 'text', 'link', 'existing
 const filteredLinks = computed(() => {
   const query = search.value.trim().toLowerCase();
   return props.links.filter((item) => !query || item.slug.toLowerCase().includes(query) || item.targetUrl.toLowerCase().includes(query)).slice(0, 30);
-});
-const filteredActivities = computed(() => {
-  const query = search.value.trim().toLowerCase();
-  return props.activities.filter((item) => !query || item.slug.toLowerCase().includes(query) || item.title.toLowerCase().includes(query)).slice(0, 30);
 });
 const defaultConfig = (type: PageNestedBlockType) => {
   if (type === 'heading') return { text: 'Section heading', alignment: 'left' as const, size: 'medium' as const };
@@ -73,8 +70,7 @@ const changeType = (event: Event) => {
         <label><span class="field-label">Subtitle</span><input v-model="block.config.subtitle" class="input px-3 py-2" maxlength="240" /></label>
       </template>
       <template v-else-if="block.type === 'live_activity'">
-        <label><span class="field-label">Search Live</span><input v-model="search" class="input px-3 py-2" placeholder="Title or slug" /></label>
-        <label><span class="field-label">Live Activity</span><select v-model="block.config.resourceId" class="input px-3 py-2"><option value="">Select an Activity</option><option v-for="activity in filteredActivities" :key="activity.id" :value="activity.id">{{ activity.title }} · /{{ activity.slug }}</option></select></label>
+        <LiveActivityPicker v-model="block.config.resourceId" :activities="activities" />
         <label><span class="field-label">Button title</span><input v-model="block.config.title" class="input px-3 py-2" maxlength="120" /></label>
         <label><span class="field-label">Subtitle</span><input v-model="block.config.subtitle" class="input px-3 py-2" maxlength="240" /></label>
       </template>

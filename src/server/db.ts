@@ -159,6 +159,20 @@ export const getDb = () => {
         FOREIGN KEY (moderated_by) REFERENCES users(id) ON DELETE SET NULL
       );
 
+      CREATE TABLE IF NOT EXISTS live_views (
+        id TEXT PRIMARY KEY,
+        activity_id TEXT NOT NULL,
+        timestamp TEXT NOT NULL,
+        visitor_hash TEXT NOT NULL,
+        device_type TEXT NOT NULL DEFAULT 'unknown',
+        browser TEXT NOT NULL DEFAULT 'Unknown',
+        os TEXT NOT NULL DEFAULT 'Unknown',
+        referrer TEXT NOT NULL DEFAULT 'Direct',
+        language TEXT,
+        raw_ip TEXT,
+        FOREIGN KEY (activity_id) REFERENCES live_activities(id) ON DELETE CASCADE
+      );
+
       CREATE TABLE IF NOT EXISTS moderation_rules (
         id TEXT PRIMARY KEY,
         user_id TEXT NOT NULL,
@@ -205,6 +219,11 @@ export const getDb = () => {
         page_id TEXT NOT NULL,
         timestamp TEXT NOT NULL,
         visitor_hash TEXT NOT NULL,
+        device_type TEXT NOT NULL DEFAULT 'unknown',
+        browser TEXT NOT NULL DEFAULT 'Unknown',
+        os TEXT NOT NULL DEFAULT 'Unknown',
+        referrer TEXT NOT NULL DEFAULT 'Direct',
+        language TEXT,
         raw_ip TEXT,
         FOREIGN KEY (page_id) REFERENCES pages(id) ON DELETE CASCADE
       );
@@ -217,6 +236,12 @@ export const getDb = () => {
         event_id TEXT NOT NULL UNIQUE,
         timestamp TEXT NOT NULL,
         visitor_hash TEXT NOT NULL,
+        device_type TEXT NOT NULL DEFAULT 'unknown',
+        browser TEXT NOT NULL DEFAULT 'Unknown',
+        os TEXT NOT NULL DEFAULT 'Unknown',
+        referrer TEXT NOT NULL DEFAULT 'Direct',
+        language TEXT,
+        raw_ip TEXT,
         FOREIGN KEY (page_id) REFERENCES pages(id) ON DELETE CASCADE
       );
 
@@ -236,6 +261,8 @@ export const getDb = () => {
       CREATE INDEX IF NOT EXISTS idx_live_responses_activity_status ON live_responses(activity_id, moderation_status);
       CREATE INDEX IF NOT EXISTS idx_live_responses_public_page ON live_responses(activity_id, moderation_status, created_at DESC, id DESC);
       CREATE INDEX IF NOT EXISTS idx_live_responses_participant_count ON live_responses(activity_id, participant_id);
+      CREATE INDEX IF NOT EXISTS idx_live_views_activity_timestamp ON live_views(activity_id, timestamp DESC);
+      CREATE INDEX IF NOT EXISTS idx_live_views_activity_visitor ON live_views(activity_id, visitor_hash);
       CREATE INDEX IF NOT EXISTS idx_moderation_rules_user ON moderation_rules(user_id, created_at);
       CREATE INDEX IF NOT EXISTS idx_pages_user_created ON pages(user_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_page_blocks_page_position ON page_blocks(page_id, position);
@@ -325,6 +352,18 @@ export const getDb = () => {
       .prepare(`PRAGMA table_info(live_activities)`)
       .all() as Array<{ name: string }>;
 
+    const pageViewColumns = dbInstance
+      .prepare(`PRAGMA table_info(page_views)`)
+      .all() as Array<{ name: string }>;
+
+    const pageClickColumns = dbInstance
+      .prepare(`PRAGMA table_info(page_block_clicks)`)
+      .all() as Array<{ name: string }>;
+
+    const liveViewColumns = dbInstance
+      .prepare(`PRAGMA table_info(live_views)`)
+      .all() as Array<{ name: string }>;
+
     if (!linkColumns.some((column) => column.name === 'enabled')) {
       dbInstance.exec(`ALTER TABLE links ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;`);
     }
@@ -363,6 +402,52 @@ export const getDb = () => {
 
     if (!liveActivityColumns.some((column) => column.name === 'public_revision')) {
       dbInstance.exec(`ALTER TABLE live_activities ADD COLUMN public_revision INTEGER NOT NULL DEFAULT 0;`);
+    }
+
+    if (!pageViewColumns.some((column) => column.name === 'device_type')) {
+      dbInstance.exec(`ALTER TABLE page_views ADD COLUMN device_type TEXT NOT NULL DEFAULT 'unknown';`);
+    }
+    if (!pageViewColumns.some((column) => column.name === 'browser')) {
+      dbInstance.exec(`ALTER TABLE page_views ADD COLUMN browser TEXT NOT NULL DEFAULT 'Unknown';`);
+    }
+    if (!pageViewColumns.some((column) => column.name === 'os')) {
+      dbInstance.exec(`ALTER TABLE page_views ADD COLUMN os TEXT NOT NULL DEFAULT 'Unknown';`);
+    }
+    if (!pageViewColumns.some((column) => column.name === 'referrer')) {
+      dbInstance.exec(`ALTER TABLE page_views ADD COLUMN referrer TEXT NOT NULL DEFAULT 'Direct';`);
+    }
+    if (!pageViewColumns.some((column) => column.name === 'language')) {
+      dbInstance.exec(`ALTER TABLE page_views ADD COLUMN language TEXT;`);
+    }
+    if (!pageClickColumns.some((column) => column.name === 'device_type')) {
+      dbInstance.exec(`ALTER TABLE page_block_clicks ADD COLUMN device_type TEXT NOT NULL DEFAULT 'unknown';`);
+    }
+    if (!pageClickColumns.some((column) => column.name === 'browser')) {
+      dbInstance.exec(`ALTER TABLE page_block_clicks ADD COLUMN browser TEXT NOT NULL DEFAULT 'Unknown';`);
+    }
+    if (!pageClickColumns.some((column) => column.name === 'os')) {
+      dbInstance.exec(`ALTER TABLE page_block_clicks ADD COLUMN os TEXT NOT NULL DEFAULT 'Unknown';`);
+    }
+    if (!pageClickColumns.some((column) => column.name === 'referrer')) {
+      dbInstance.exec(`ALTER TABLE page_block_clicks ADD COLUMN referrer TEXT NOT NULL DEFAULT 'Direct';`);
+    }
+    if (!pageClickColumns.some((column) => column.name === 'language')) {
+      dbInstance.exec(`ALTER TABLE page_block_clicks ADD COLUMN language TEXT;`);
+    }
+    if (!pageClickColumns.some((column) => column.name === 'raw_ip')) {
+      dbInstance.exec(`ALTER TABLE page_block_clicks ADD COLUMN raw_ip TEXT;`);
+    }
+    if (!liveViewColumns.some((column) => column.name === 'browser')) {
+      dbInstance.exec(`ALTER TABLE live_views ADD COLUMN browser TEXT NOT NULL DEFAULT 'Unknown';`);
+    }
+    if (!liveViewColumns.some((column) => column.name === 'os')) {
+      dbInstance.exec(`ALTER TABLE live_views ADD COLUMN os TEXT NOT NULL DEFAULT 'Unknown';`);
+    }
+    if (!liveViewColumns.some((column) => column.name === 'referrer')) {
+      dbInstance.exec(`ALTER TABLE live_views ADD COLUMN referrer TEXT NOT NULL DEFAULT 'Direct';`);
+    }
+    if (!liveViewColumns.some((column) => column.name === 'language')) {
+      dbInstance.exec(`ALTER TABLE live_views ADD COLUMN language TEXT;`);
     }
   }
 

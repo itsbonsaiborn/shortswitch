@@ -210,9 +210,30 @@ onBeforeUnmount(() => {
           </nav>
 
           <div class="mt-auto pt-8">
-            <div class="panel-muted p-4" :class="sidebarCollapsed ? 'px-2 py-3 text-center' : ''">
-              <p class="truncate text-sm font-medium">{{ sidebarCollapsed ? user?.name?.charAt(0) : user?.name }}</p>
-              <p v-if="!sidebarCollapsed" class="truncate text-xs text-[var(--ui-text-muted)]">{{ user?.email }}</p>
+            <div
+              class="panel-muted flex items-center gap-3"
+              :class="sidebarCollapsed ? 'justify-center p-1' : 'justify-between p-4'"
+            >
+              <div v-if="!sidebarCollapsed" class="min-w-0">
+                <p class="truncate text-sm font-medium">{{ user?.name }}</p>
+                <p class="truncate text-xs text-[var(--ui-text-muted)]">{{ user?.email }}</p>
+              </div>
+              <button
+                type="button"
+                class="flex shrink-0 items-center justify-center rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-panel)] text-[var(--ui-text-muted)] transition-all duration-200 hover:border-[var(--ui-accent)] hover:bg-[var(--ui-accent-soft)] hover:text-[var(--ui-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ui-accent)]"
+                :class="sidebarCollapsed ? 'h-10 w-10' : 'h-11 w-12'"
+                aria-label="Sign out"
+                title="Sign out"
+                @click="doLogout"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M0 0h24v24H0z" fill="none" />
+                  <g fill="currentColor" fill-rule="evenodd" clip-rule="evenodd">
+                    <path d="M15.99 7.823a.75.75 0 0 1 1.061.021l3.49 3.637a.75.75 0 0 1 0 1.038l-3.49 3.637a.75.75 0 0 1-1.082-1.039l2.271-2.367h-6.967a.75.75 0 0 1 0-1.5h6.968l-2.272-2.367a.75.75 0 0 1 .022-1.06" />
+                    <path d="M3.25 4A.75.75 0 0 1 4 3.25h9.455a.75.75 0 0 1 .75.75v3a.75.75 0 1 1-1.5 0V4.75H4.75v14.5h7.954V17a.75.75 0 0 1 1.5 0v3a.75.75 0 0 1-.75.75H4a.75.75 0 0 1-.75-.75z" />
+                  </g>
+                </svg>
+              </button>
             </div>
           </div>
         </aside>
@@ -268,10 +289,10 @@ onBeforeUnmount(() => {
             </div>
 
             <div
-              class="grid min-w-0 grid-cols-2 gap-2 sm:flex sm:items-center sm:gap-3"
+              class="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-2 sm:flex sm:items-center sm:gap-3"
               :class="showMenuButton ? 'w-full' : 'self-start lg:self-center'"
             >
-              <div ref="createMenuRef" class="relative col-span-2 sm:col-span-1">
+              <div ref="createMenuRef" class="relative min-w-0">
                 <button
                   class="btn-primary h-11 w-full whitespace-nowrap px-5 text-sm sm:w-auto"
                   :aria-expanded="createMenuOpen"
@@ -293,10 +314,41 @@ onBeforeUnmount(() => {
                   </div>
                 </Transition>
               </div>
-              <button class="btn-secondary h-11 min-w-0 whitespace-nowrap px-3 text-[13px] sm:flex-none sm:px-4 sm:text-sm" @click="setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')">
-                {{ resolvedTheme === 'dark' ? 'Light' : 'Dark' }}
-              </button>
-              <button class="btn-secondary h-11 min-w-0 whitespace-nowrap px-3 text-[13px] sm:flex-none sm:px-4 sm:text-sm" @click="doLogout">Sign out</button>
+              <div
+                class="grid h-11 shrink-0 grid-cols-2 divide-x divide-[var(--ui-border)] overflow-hidden rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-panel)]"
+                role="group"
+                aria-label="Color theme"
+              >
+                <button
+                  type="button"
+                  class="flex h-full w-11 items-center justify-center transition-colors duration-200 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ui-accent)]"
+                  :class="resolvedTheme === 'light' ? 'bg-[var(--ui-accent-soft)] text-[var(--ui-accent)]' : 'text-[var(--ui-text-muted)] hover:text-[var(--ui-text)]'"
+                  :aria-pressed="resolvedTheme === 'light'"
+                  aria-label="Use light theme"
+                  title="Light theme"
+                  @click="setTheme('light')"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M0 0h24v24H0z" fill="none" />
+                    <path fill="currentColor" d="M12 7a5 5 0 1 0 0 10a5 5 0 0 0 0-10" />
+                    <path fill="currentColor" fill-rule="evenodd" d="M12 1a1 1 0 0 1 1 1v1a1 1 0 1 1-2 0V2a1 1 0 0 1 1-1M3.293 3.293a1 1 0 0 1 1.414 0l1.5 1.5a1 1 0 0 1-1.414 1.414l-1.5-1.5a1 1 0 0 1 0-1.414m17.414 0a1 1 0 0 1 0 1.414l-1.5 1.5a1 1 0 1 1-1.414-1.414l1.5-1.5a1 1 0 0 1 1.414 0M1 12a1 1 0 0 1 1-1h1a1 1 0 1 1 0 2H2a1 1 0 0 1-1-1m19 0a1 1 0 0 1 1-1h1a1 1 0 1 1 0 2h-1a1 1 0 0 1-1-1M6.207 17.793a1 1 0 0 1 0 1.414l-1.5 1.5a1 1 0 0 1-1.414-1.414l1.5-1.5a1 1 0 0 1 1.414 0m11.586 0a1 1 0 0 1 1.414 0l1.5 1.5a1 1 0 0 1-1.414 1.414l-1.5-1.5a1 1 0 0 1 0-1.414M12 20a1 1 0 0 1 1 1v1a1 1 0 1 1-2 0v-1a1 1 0 0 1 1-1" clip-rule="evenodd" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  class="flex h-full w-11 items-center justify-center transition-colors duration-200 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ui-accent)]"
+                  :class="resolvedTheme === 'dark' ? 'bg-[var(--ui-accent-soft)] text-[var(--ui-accent)]' : 'text-[var(--ui-text-muted)] hover:text-[var(--ui-text)]'"
+                  :aria-pressed="resolvedTheme === 'dark'"
+                  aria-label="Use dark theme"
+                  title="Dark theme"
+                  @click="setTheme('dark')"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 1024 1024" aria-hidden="true">
+                    <path d="M0 0h1024v1024H0z" fill="none" />
+                    <path fill="currentColor" fill-rule="evenodd" d="M489.493 111.658c30.658-1.792 45.991 36.44 22.59 56.329C457.831 214.095 426 281.423 426 354c0 134.757 109.243 244 244 244c72.577 0 139.905-31.832 186.014-86.084c19.868-23.377 58.064-8.102 56.332 22.53C900.4 745.823 725.141 912 512.5 912C291.31 912 112 732.69 112 511.5c0-211.39 164.287-386.024 374.198-399.649l.206-.013z" />
+                  </svg>
+                </button>
+              </div>
             </div>
           </div>
         </header>

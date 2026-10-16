@@ -49,7 +49,7 @@ export const registerLiveRoutes = async (app: FastifyInstance<any, any, any, any
     const authenticated = await requireAdmin(request, reply);
     if (!authenticated) return;
     return live.list(authenticated.currentUser.id).flatMap((activity) =>
-      live.getAdminDetails(authenticated.currentUser.id, activity.id).responses
+      live.getAdminResponses(authenticated.currentUser.id, activity.id)
         .filter((response) => response.status === 'pending')
         .map((response) => ({ ...response, activityTitle: activity.title }))
     );
@@ -59,7 +59,15 @@ export const registerLiveRoutes = async (app: FastifyInstance<any, any, any, any
     const authenticated = await requireAdmin(request, reply);
     if (!authenticated) return;
     try {
-      return live.getAdminDetails(authenticated.currentUser.id, (request.params as { id: string }).id);
+      const query = request.query as { range?: string; timezoneOffsetMinutes?: string; limit?: string };
+      const range = query.range === 'day' || query.range === 'week' || query.range === 'month' ? query.range : 'month';
+      return live.getAdminDetails(
+        authenticated.currentUser.id,
+        (request.params as { id: string }).id,
+        range,
+        Number(query.timezoneOffsetMinutes ?? 0),
+        Number(query.limit ?? 10)
+      );
     } catch (error) {
       return reply.code(404).send({ message: (error as Error).message });
     }
@@ -186,7 +194,17 @@ export const registerLiveRoutes = async (app: FastifyInstance<any, any, any, any
     const participantToken = request.headers['x-live-participant'];
     const deferResults = (request.query as { deferResults?: string }).deferResults === '1';
     try {
-      return live.getPublic(slug, typeof participantToken === 'string' ? participantToken : undefined, deferResults);
+      return live.getPublic(
+        slug,
+        typeof participantToken === 'string' ? participantToken : undefined,
+        deferResults,
+        {
+          ip: request.ip,
+          userAgent: request.headers['user-agent'],
+          referrer: request.headers.referer,
+          language: request.headers['accept-language']
+        }
+      );
     } catch (error) {
       const message = (error as Error).message;
       return reply.code(errorStatus(message)).send({ message });

@@ -146,19 +146,21 @@ Fastify app.ts
 
 - Для ссылки: total clicks, unique visitors, referrers, trend; графики day/week/month с учётом timezone offset браузера; последние 10/20/50 успешных переходов.
 - График ссылки отдельно показывает visits, unique visitors и failed auth.
-- Глобально: totals, 30-дневный trend, heatmap weekday/hour, top referrers/slugs/languages, devices/OS/browsers.
+- Глобально: общие clicks/views/unique visitors/devices, объединённый day/week/month trend, сравнение Links/Pages/Live, weekday/hour heatmap, top referrers/slugs и breakdown по device/browser/OS/language. Clicks = успешные Link redirects + Page block clicks; Views = Page + Live public page views; Live не создаёт click events, Links не создаёт view events.
+- Heatmap использует ту же модель Clicks/Views, что глобальные totals, и группирует события по локальному времени браузера в двухчасовые интервалы. Top referrers/slugs и environment breakdowns используют основные публичные посещения: успешный Link redirect, Page view или Live participant-page view; Page block clicks в этих таблицах отдельно не дублируются.
+- Global unique visitors считаются как объединение `visitor_hash` по модулям. Total devices — число уникальных пар visitor/device по событиям с известным device type, а не число типов устройств.
 - User-agent классифицируется как human/bot/unknown и разбирается `ua-parser-js`.
 - Геоданные не вычисляются самим приложением: используются входящие `cf-ipcountry`, `x-region`, `x-city`, иначе `Unknown`/`null`.
 - Уникальный посетитель — HMAC от IP с `IP_HASH_SECRET`.
 - `STORE_RAW_IP` управляет `analytics_events.raw_ip` и частью логов, но IP сессии всегда сохраняется в `sessions.ip_address`.
-- Retention cleanup выполняется при старте и каждые 12 часов; удаляются события старше `ANALYTICS_RETENTION_DAYS`.
+- Retention cleanup выполняется при старте и каждые 12 часов; старше `ANALYTICS_RETENTION_DAYS` удаляются Link events, Page views/clicks и Live views.
 - Очистка всей/одной аналитики также сбрасывает materialized `click_count` ссылок.
 
 ### UI и branding
 
-- Разделы: Links, Live, Analytics, Settings; responsive sidebar, light/dark/system theme.
+- Разделы: Links, Live, Pages, Analytics, Settings; responsive sidebar, light/dark/system theme.
 - Раздел Pages: server-side список/search/sort/pagination, компактные двухколоночные desktop-карточки, modal-based блочный редактор, общий preview/public renderer с mobile/desktop viewport и отдельная аналитика с 30-дневным графиком/Top links.
-- Предпочтения sidebar, analytics range/limit и global top-slug limit хранятся в обычных session-like cookies `ss_*` (без серверной защиты); theme дополнительно сохраняется в БД пользователя.
+- Предпочтения sidebar и analytics range/limit хранятся в обычных session-like cookies `ss_*` (без серверной защиты); theme дополнительно сохраняется в БД пользователя.
 - Название/описание загружаются из `/api/public/config`; manifest и meta-теги генерируются/подставляются сервером.
 - Все страницы выставлены `noindex`; public assets обслуживаются из build output.
 
@@ -200,7 +202,7 @@ Auth guard реализован watcher’ом в `App.vue`, не router middlew
 | `DELETE /api/sessions/:id` | да | да | Отзыв не текущей сессии |
 | `POST /api/settings/theme` | да | да | Сохранение theme |
 | `POST /api/settings/password` | да | да | Смена пароля, отзыв других сессий |
-| `POST /api/settings/analytics/clear` | да | да | Очистка Link analytics, Live responses/participants и Page views/clicks |
+| `POST /api/settings/analytics/clear` | да | да | Очистка Link analytics, Live views/responses/participants и Page views/clicks |
 | `GET /api/links` | да | нет | Список ссылок текущего пользователя |
 | `POST /api/links` | да | да | Создание ссылки |
 | `PATCH /api/links/:id` | да | да | Изменение ссылки |
@@ -208,9 +210,10 @@ Auth guard реализован watcher’ом в `App.vue`, не router middlew
 | `POST /api/links/:id/enabled` | да | да | Enable/disable и optional expiration reset |
 | `POST /api/links/:id/analytics/clear` | да | да | Очистка аналитики ссылки |
 | `GET /api/links/:id/analytics` | да | нет | Detail analytics; query: range, limit, timezone offset |
-| `GET /api/analytics/global` | да | нет | Global analytics; query: timezone offset |
+| `GET /api/analytics/global` | да | нет | Combined Links/Pages/Live analytics; query: range (`day/week/month`), timezone offset |
+| `GET /api/analytics/global/activity-over-time` | да | нет | Только временной ряд глобальной аналитики при переключении day/week/month; не пересчитывает остальные dashboard-секции |
 | `GET /api/live/public/:slug` | нет | нет | Participant view; result snapshot only when preview is enabled |
-| `POST /api/live/:id/analytics/clear` | да | да | Очистка ответов и участников одной Activity без удаления её конфигурации |
+| `POST /api/live/:id/analytics/clear` | да | да | Очистка views, ответов и участников одной Activity без удаления её конфигурации |
 | `POST /api/live/public/:slug/responses` | нет | нет | Submit participant response; server-enforced limits and moderation |
 | `GET /api/live/public/:slug/results`, `/events` | нет | нет | Participant result preview snapshot/SSE; unavailable when preview is disabled |
 | `GET /api/live/public/:slug/presentation`, `/presentation/events` | нет | нет | Approved Presentation snapshot/SSE; independent of participant preview |
@@ -261,8 +264,8 @@ Public link responses применяют `Cache-Control: no-store`. Зарезе
   - `visitor_hash`, optional `raw_ip`.
 - `settings`
   - key/value таблица создаётся, но текущий `SettingsRepository` её не читает и не пишет; security settings берутся из env/defaults.
-- Live использует нормализованные `public_slugs`, `live_activities`, `live_questions`, `live_question_options`, `live_participants`, `live_responses` и `moderation_rules`; `live_activities.expires_at` задаёт необязательный срок жизни, `public_revision` последовательно версионирует публичное состояние, `live_responses.participant_name` фиксирует исходный nickname, а `published_participant_name` — одобренную модератором версию. Подробности: `docs/LIVE.md`.
-- Pages использует `pages`, `page_blocks`, `page_views`, `page_block_clicks` и тот же `public_slugs`. `page_blocks.config_json` хранит только серверно валидированный типизированный config. Page analytics отделена от Short URL analytics. Подробности: `docs/PAGES.md`.
+- Live использует нормализованные `public_slugs`, `live_activities`, `live_questions`, `live_question_options`, `live_participants`, `live_responses`, `live_views` и `moderation_rules`; `live_activities.expires_at` задаёт необязательный срок жизни, `public_revision` последовательно версионирует публичное состояние, `live_responses.participant_name` фиксирует исходный nickname, а `published_participant_name` — одобренную модератором версию. `live_views` хранит HMAC visitor identity, device/browser/OS, normalized referrer и browser language для общей аналитики. Подробности: `docs/LIVE.md`.
+- Pages использует `pages`, `page_blocks`, `page_views`, `page_block_clicks` и тот же `public_slugs`. `page_views` и `page_block_clicks` хранят HMAC visitor identity и request metadata (device/browser/OS, normalized referrer, browser language, optional raw IP); старые строки после upgrade получают нейтральные defaults. `page_blocks.config_json` хранит только серверно валидированный типизированный config. Page analytics отделена от Short URL analytics. Подробности: `docs/PAGES.md`.
 
 Индексы есть для `sessions.user_id`, `links.user_id`, analytics `(link_id, timestamp)` и `(slug, timestamp)`, а также для публичной пагинации и подсчёта ответов Live.
 
@@ -280,6 +283,9 @@ Public link responses применяют `Cache-Control: no-store`. Зарезе
 - `live_responses.participant_name`;
 - `live_responses.published_participant_name`;
 - `live_responses.name_edited_by_moderator`.
+- `live_views.device_type`, `browser`, `os`, `referrer`, `language`;
+- `page_views.device_type`, `browser`, `os`, `referrer`, `language`;
+- `page_block_clicks.device_type`, `browser`, `os`, `referrer`, `language`, `raw_ip`.
 
 Изменение схемы требует backward-compatible upgrade в `db.ts`, теста со старой схемой при необходимости и отдельного плана rollback/backup. Не считать обычный запуск «read-only».
 
@@ -320,7 +326,7 @@ Public link responses применяют `Cache-Control: no-store`. Зарезе
 - `ANALYTICS_RETENTION_DAYS`.
 - `LIVE_SUBMIT_MAX_REQUESTS`, `LIVE_SUBMIT_WINDOW_MINUTES`.
 
-Production invariants из кода: задать точный `CORS_ORIGIN`; для HTTPS включить secure cookie; при `STORE_RAW_IP=false` задать стабильный длинный `IP_HASH_SECRET`; не использовать встроенные/dev/Compose placeholder credentials.
+Production invariants из кода: задать точный `CORS_ORIGIN`; явно задать `ADMIN_PASSWORD` длиной не менее 12 символов и не использовать встроенное значение; для HTTPS обязателен secure cookie; при `STORE_RAW_IP=false` задать стабильный длинный `IP_HASH_SECRET`. Нарушение этих условий останавливает startup.
 
 ## 10. Локальная разработка, сборка и Docker
 
@@ -363,7 +369,7 @@ docker compose --profile test run --rm shortswitch-test
 ```
 
 - Build stage: `npm ci`, copy source, `npm run build`.
-- Runtime stage: production dependencies only, копирование `dist`, создание непривилегированного пользователя `app`.
+- Runtime stage: security upgrade `perl-base`, production dependencies only, удаление npm/npx из готового image, копирование `dist`, создание непривилегированного пользователя `app`.
 - Entrypoint при старте от root создаёт/chown `/app/data`, затем запускает процесс как `app`.
 - Healthcheck вызывает `GET /api/health`.
 - Compose публикует порт 3000 и монтирует named volume `shortswitch-data` в `/app/data`.
@@ -431,15 +437,14 @@ Server tests создают уникальные файлы `.data/test-shortswi
 2. **`trustProxy: true`:** при прямой публикации Fastify без доверенного proxy клиент может влиять на forwarded IP; это затрагивает rate limiting, session IP и аналитику.
 3. **In-memory rate limits:** состояние теряется при restart, не делится между replicas и Map не имеет общей фоновой очистки устаревших уникальных ключей. Горизонтальное масштабирование не поддерживается.
 4. **Нет migration framework/rollback:** schema upgrades выполняются на старте приложения.
-5. **Глобальная аналитика не scoped по user:** это соответствует single-user модели, но станет утечкой/ошибкой при попытке превратить проект в multi-user.
-6. **Global total clicks:** SQL totals считает все `analytics_events`, включая `failed_password`, тогда как trend/top/device queries фильтруют `auth_outcome = 'success'`; метрики могут расходиться.
-7. **Счётчик и события не транзакционны:** analytics event и `links.click_count` записываются отдельно и асинхронно; при частичном сбое возможен drift.
-8. **Privacy scope:** `STORE_RAW_IP=false` скрывает raw IP аналитики и части логов, но не IP в таблице `sessions`.
-9. **Runtime validation неполна:** часть JSON body/query значений приводится через TypeScript casts/`any`; например theme enum не проверяется на сервере, а non-finite timezone/limit могут попасть глубже.
-10. **DB errors:** duplicate slug и другие SQLite errors могут возвращаться клиенту как raw `Error.message` через route-level catch.
-11. **Unused schema/API remnants:** таблица `settings`, `sessions.csrf_secret`, `sha256`, `safeRedirectPath`, `SessionRepository.deleteOutdatedVersions()` не используются текущим рабочим потоком.
-12. **Документационные пробелы:** нет `.env.example`, versioned migration guide, backup/restore procedure, VPS update/rollback runbook, CI, API schema/OpenAPI и отдельного LICENSE-файла, хотя README заявляет MIT.
-13. **Client tests:** покрытие UI сведено к одному smoke test; нет e2e проверки login → CRUD → redirect → analytics.
+5. **Исторические данные общей аналитики:** Live views до появления `live_views` восстановить нельзя; browser/OS/referrer/language и часть device metadata старых Page/Live views не реконструируются и остаются `Unknown`/`Direct`/`null`.
+6. **Счётчик и события не транзакционны:** analytics event и `links.click_count` записываются отдельно и асинхронно; при частичном сбое возможен drift.
+7. **Privacy scope:** `STORE_RAW_IP=false` скрывает raw IP аналитики и части логов, но не IP в таблице `sessions`.
+8. **Runtime validation неполна:** часть JSON body/query значений приводится через TypeScript casts/`any`; non-finite limit может попасть глубже.
+9. **DB errors:** duplicate slug и другие SQLite errors могут возвращаться клиенту как raw `Error.message` через route-level catch.
+10. **Unused schema/API remnants:** таблица `settings`, `sessions.csrf_secret`, `sha256`, `safeRedirectPath`, `SessionRepository.deleteOutdatedVersions()` не используются текущим рабочим потоком.
+11. **Документационные пробелы:** нет `.env.example`, versioned migration guide, backup/restore procedure, VPS update/rollback runbook, CI, API schema/OpenAPI и отдельного LICENSE-файла, хотя README заявляет MIT.
+12. **Client tests:** покрытие UI сведено к одному smoke test; нет e2e проверки login → CRUD → redirect → analytics.
 
 При исправлении любого пункта сначала зафиксировать ожидаемое поведение тестом и обновить этот файл вместе с README/config examples, если фактический workflow изменился.
 

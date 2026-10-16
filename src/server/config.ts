@@ -26,6 +26,7 @@ const publicUrl = process.env.PUBLIC_URL ?? process.env.APP_BASE_URL ?? 'http://
 const corsOrigins = parseOrigins(process.env.CORS_ORIGIN);
 const cookieSecure = parseBoolean(process.env.COOKIE_SECURE, isProduction);
 const storeRawIp = parseBoolean(process.env.STORE_RAW_IP, false);
+const adminPassword = process.env.ADMIN_PASSWORD?.trim();
 
 if (isProduction && corsOrigins.length === 0) {
   throw new Error('CORS_ORIGIN must be set in production.');
@@ -43,14 +44,18 @@ if (isProduction && !storeRawIp && !ipHashSecret) {
   throw new Error('IP_HASH_SECRET must be set in production when STORE_RAW_IP=false.');
 }
 
+if (isProduction && (!adminPassword || adminPassword === 'change-me-now' || adminPassword.length < 12)) {
+  throw new Error('ADMIN_PASSWORD must be explicitly set to a non-default value of at least 12 characters in production.');
+}
+
+if (isProduction && publicUrl.startsWith('https://') && !cookieSecure) {
+  throw new Error('COOKIE_SECURE must be enabled in production when PUBLIC_URL uses HTTPS.');
+}
+
 const startupWarnings: string[] = [];
 
 if (isProduction && !cookieSecure) {
   startupWarnings.push('COOKIE_SECURE=false in production. Session cookies will travel over insecure transport.');
-}
-
-if (publicUrl.startsWith('https://') && !cookieSecure) {
-  startupWarnings.push('PUBLIC_URL uses https:// but COOKIE_SECURE=false. Browsers may expose session cookies insecurely.');
 }
 
 const resetAdminOnStart = parseBoolean(
@@ -83,7 +88,7 @@ export const config = {
   corsAllowedOrigins: corsOrigins,
   admin: {
     email: process.env.ADMIN_EMAIL ?? 'admin@example.com',
-    password: process.env.ADMIN_PASSWORD ?? 'change-me-now',
+    password: adminPassword ?? 'change-me-now',
     name: process.env.ADMIN_NAME ?? 'Admin'
   },
   resetAdminOnStart,

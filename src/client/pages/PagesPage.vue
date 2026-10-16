@@ -150,9 +150,9 @@ onBeforeUnmount(() => {
 <template>
   <div class="space-y-4 sm:space-y-6">
     <section class="grid gap-3 sm:grid-cols-3">
-      <StatCard label="Total Pages" :value="result.stats.totalPages" />
-      <StatCard label="Total Views" :value="result.stats.totalViews" />
-      <StatCard label="Unique Visitors" :value="result.stats.uniqueVisitors" />
+      <StatCard label="Total Pages" :value="result.stats.totalPages" icon="pages" />
+      <StatCard label="Total Views" :value="result.stats.totalViews" icon="views" />
+      <StatCard label="Unique Visitors" :value="result.stats.uniqueVisitors" icon="visitors" />
     </section>
 
     <section class="flex justify-end">

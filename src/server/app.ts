@@ -221,6 +221,7 @@ export const buildApp = async () => {
   sessions.cleanup();
   links.cleanupAnalytics();
   pages.cleanupAnalytics();
+  live.cleanupAnalytics();
 
   for (const warning of config.startupWarnings) {
     logger.warn({ category: 'security' }, warning);
@@ -230,8 +231,9 @@ export const buildApp = async () => {
     try {
       const deletedRows = links.cleanupAnalytics();
       const deletedPageRows = pages.cleanupAnalytics();
-      if (deletedRows > 0 || deletedPageRows > 0) {
-        logger.info({ deletedRows, deletedPageRows }, 'analytics retention cleanup completed');
+      const deletedLiveRows = live.cleanupAnalytics();
+      if (deletedRows > 0 || deletedPageRows > 0 || deletedLiveRows > 0) {
+        logger.info({ deletedRows, deletedPageRows, deletedLiveRows }, 'analytics retention cleanup completed');
       }
     } catch (error) {
       logger.error({ err: error }, 'analytics retention cleanup failed');
@@ -241,6 +243,7 @@ export const buildApp = async () => {
   app.addHook('onClose', async () => {
     clearInterval(analyticsCleanupTimer);
     liveRealtime.close();
+    await links.flushAnalytics();
   });
 
   await app.register(cookie, {
@@ -601,8 +604,17 @@ export const buildApp = async () => {
   app.get('/api/analytics/global', async (request, reply) => {
     const authenticated = await sessions.requireAuth(request, reply);
     if (!authenticated) return;
-    const query = request.query as { timezoneOffsetMinutes?: string };
-    return links.getGlobalAnalytics(Number(query.timezoneOffsetMinutes ?? 0));
+    const query = request.query as { range?: string; timezoneOffsetMinutes?: string };
+    const range = query.range === 'day' || query.range === 'week' || query.range === 'month' ? query.range : 'month';
+    return links.getGlobalAnalytics(authenticated.currentUser.id, range, Number(query.timezoneOffsetMinutes ?? 0));
+  });
+
+  app.get('/api/analytics/global/activity-over-time', async (request, reply) => {
+    const authenticated = await sessions.requireAuth(request, reply);
+    if (!authenticated) return;
+    const query = request.query as { range?: string; timezoneOffsetMinutes?: string };
+    const range = query.range === 'day' || query.range === 'week' || query.range === 'month' ? query.range : 'month';
+    return links.getGlobalActivityOverTime(authenticated.currentUser.id, range, Number(query.timezoneOffsetMinutes ?? 0));
   });
 
   app.get('/access/:slug', async (request, reply) => {

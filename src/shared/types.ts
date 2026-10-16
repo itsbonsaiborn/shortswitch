@@ -40,7 +40,7 @@ export interface LinkOverviewAnalytics {
   points: Array<{ label: string; clicks: number; uniqueVisitors: number; failedAuths: number }>;
 }
 
-export interface LinkClickDetail {
+export interface AnalyticsVisitDetail {
   id: string;
   timestamp: string;
   ipAddress: string | null;
@@ -48,37 +48,72 @@ export interface LinkClickDetail {
   os: string;
   device: string;
   referrer: string;
+  language: string | null;
+  context?: string;
+  trafficType?: 'human' | 'bot' | 'unknown';
+}
+
+export interface LinkClickDetail extends AnalyticsVisitDetail {
   country: string;
   city: string | null;
-  language: string | null;
   trafficType: 'human' | 'bot' | 'unknown';
+}
+
+export interface AnalyticsBreakdowns {
+  devices: Array<{ label: string; value: number }>;
+  browsers: Array<{ label: string; value: number }>;
+  operatingSystems: Array<{ label: string; value: number }>;
+  languages: Array<{ label: string; value: number }>;
 }
 
 export interface LinkDetailsResponse {
   link: LinkRecord;
   overview: LinkOverviewAnalytics;
   recentClicks: LinkClickDetail[];
+  breakdowns: AnalyticsBreakdowns;
 }
+
+export type AnalyticsModule = 'links' | 'pages' | 'live';
+export type GlobalAnalyticsModuleFilter = 'all' | AnalyticsModule;
 
 export interface GlobalAnalytics {
   totals: {
     clicks: number;
-    links: number;
-    referrers: number;
+    views: number;
+    uniqueVisitors: number;
     devices: number;
   };
-  monthlyTrend: Array<{ label: string; clicks: number }>;
-  weeklyHeatmap: Array<{ day: number; hour: number; value: number }>;
-  top: {
-    referrers: Array<{ label: string; value: number }>;
-    slugs: Array<{ id: string; slug: string; value: number }>;
-    languages: Array<{ label: string; value: number }>;
-  };
-  devices: {
-    devices: Array<{ label: string; value: number }>;
-    operatingSystems: Array<{ label: string; value: number }>;
-    browsers: Array<{ label: string; value: number }>;
-  };
+  activityOverTime: Array<{
+    date: string;
+    label: string;
+    clicks: number;
+    views: number;
+    uniqueVisitors: number;
+  }>;
+  modules: Array<{
+    module: AnalyticsModule;
+    clicks: number;
+    views: number;
+    uniqueVisitors: number;
+  }>;
+  activityByTime: Array<{
+    day: number;
+    hour: number;
+    clicks: number;
+    views: number;
+    uniqueVisitors: number;
+  }>;
+  topReferrers: Record<GlobalAnalyticsModuleFilter, Array<{
+    label: string;
+    value: number;
+  }>>;
+  referrerTotals: Record<GlobalAnalyticsModuleFilter, number>;
+  topSlugs: Record<GlobalAnalyticsModuleFilter, Array<{
+    slug: string;
+    module: AnalyticsModule;
+    value: number;
+  }>>;
+  breakdowns: AnalyticsBreakdowns;
 }
 
 export interface SecuritySettings {
@@ -210,6 +245,14 @@ export interface LiveResultsSnapshot {
     distribution: Array<{ value: number; count: number }>;
   } | null;
   revision: number;
+}
+
+export interface LiveAnalytics {
+  totalViews: number;
+  uniqueVisitors: number;
+  viewsOverTime: Array<{ date: string; label: string; views: number; uniqueVisitors: number }>;
+  breakdowns: AnalyticsBreakdowns;
+  recentViews: AnalyticsVisitDetail[];
 }
 
 export interface LiveResultsDelta {
@@ -407,4 +450,6 @@ export interface PageAnalytics {
     url: string | null;
     type: 'link' | 'existing_link' | 'live_activity' | 'email';
   }>;
+  breakdowns: AnalyticsBreakdowns;
+  recentClicks: AnalyticsVisitDetail[];
 }

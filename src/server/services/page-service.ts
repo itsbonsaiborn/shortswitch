@@ -1,11 +1,12 @@
 import type { PageBlockConfig, PageBlockType, PageInput, PageLayout, PageNestedBlockType, PageStatus, PageTheme, PublicPage } from '@/shared/types.js';
+import { UAParser } from 'ua-parser-js';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import { LinkRepository } from '../repositories/link-repository.js';
 import { LiveRepository } from '../repositories/live-repository.js';
 import { PageRepository } from '../repositories/page-repository.js';
 import { SettingsRepository } from '../repositories/settings-repository.js';
-import { createId, createSlugGenerator, hmacSha256, validateCustomSlug, validateGeneratedSlug, validateTargetUrl } from '../utils.js';
+import { createId, createSlugGenerator, hmacSha256, humanReferrer, validateCustomSlug, validateGeneratedSlug, validateTargetUrl } from '../utils.js';
 
 const THEMES = new Set<PageTheme>(['classic_cream', 'forest_dark', 'soft_lavender', 'ocean_blue', 'minimal_light']);
 const LAYOUTS = new Set<PageLayout>(['classic', 'minimal', 'soft', 'bold']);
@@ -17,6 +18,16 @@ const SIZES = new Set<NonNullable<PageBlockConfig['size']>>(['small', 'medium', 
 const DIVIDER_STYLES = new Set<NonNullable<PageBlockConfig['style']>>(['solid', 'dashed', 'dotted']);
 const EMAIL_STYLES = new Set<NonNullable<PageBlockConfig['style']>>(['text', 'button']);
 const MAX_BLOCKS = 100;
+
+const normalizeOsLabel = (name?: string, version?: string) => {
+  if (!name) return 'Unknown';
+  if (/windows/i.test(name)) return 'Windows';
+  if (/mac/i.test(name)) return 'macOS';
+  if (/ios/i.test(name)) return 'iOS';
+  if (/android/i.test(name)) return 'Android';
+  if (/linux|ubuntu|debian|fedora|arch/i.test(name)) return 'Linux';
+  return [name, version].filter(Boolean).join(' ');
+};
 
 const text = (value: unknown, field: string, maximum: number, required = false) => {
   if (typeof value !== 'string') {
@@ -268,14 +279,30 @@ export class PageService {
     this.pages.delete(pageId);
   }
 
-  getPublic(slug: string, requestMeta?: { ip?: string }) : PublicPage {
+  getPublic(
+    slug: string,
+    requestMeta?: { ip?: string; userAgent?: string; referrer?: string; language?: string }
+  ): PublicPage {
     const page = this.pages.findBySlug(slug, true);
     if (!page) throw new Error('Page not found.');
     if (requestMeta?.ip) {
       const ip = requestMeta.ip;
+      const parser = new UAParser(requestMeta.userAgent);
+      const deviceType = parser.getDevice().type ?? 'desktop';
+      const browser = parser.getBrowser();
+      const os = parser.getOS();
       setImmediate(() => {
         try {
-          this.pages.recordView(page.id, hmacSha256(config.ipHashSecret, ip), config.storeRawIp ? ip : null);
+          this.pages.recordView({
+            pageId: page.id,
+            visitorHash: hmacSha256(config.ipHashSecret, ip),
+            deviceType,
+            browser: browser.name || 'Unknown',
+            os: normalizeOsLabel(os.name, os.version),
+            referrer: humanReferrer(requestMeta.referrer),
+            language: requestMeta.language?.split(',')[0]?.trim() || null,
+            rawIp: config.storeRawIp ? ip : null
+          });
         } catch (error) {
           logger.error({ err: error, pageId: page.id }, 'page view analytics write failed');
         }
@@ -299,7 +326,11 @@ export class PageService {
     return this.pages.findRouteBySlug(slug);
   }
 
-  trackClick(slug: string, input: { blockId?: string; eventId?: string }, ip: string) {
+  trackClick(
+    slug: string,
+    input: { blockId?: string; eventId?: string },
+    requestMeta: { ip: string; userAgent?: string; referrer?: string; language?: string }
+  ) {
     const page = this.pages.findBySlug(slug, true);
     if (!page) throw new Error('Page not found.');
     const blockId = text(input.blockId, 'Block', 128, true);
@@ -317,18 +348,34 @@ export class PageService {
     if (!block || !['link', 'existing_link', 'live_activity', 'email'].includes(block.type)) throw new Error('Block not found.');
     const blockConfig = block.config;
     const label = String(blockConfig.title || blockConfig.label || blockConfig.email || 'Link').slice(0, 120);
+    const parser = new UAParser(requestMeta.userAgent);
+    const browser = parser.getBrowser();
+    const os = parser.getOS();
     setImmediate(() => {
       try {
-        this.pages.recordClick(page.id, blockId, label, eventId, hmacSha256(config.ipHashSecret, ip));
+        this.pages.recordClick({
+          pageId: page.id,
+          blockId,
+          label,
+          eventId,
+          visitorHash: hmacSha256(config.ipHashSecret, requestMeta.ip),
+          deviceType: parser.getDevice().type ?? 'desktop',
+          browser: browser.name || 'Unknown',
+          os: normalizeOsLabel(os.name, os.version),
+          referrer: humanReferrer(requestMeta.referrer),
+          language: requestMeta.language?.split(',')[0]?.trim() || null,
+          rawIp: config.storeRawIp ? requestMeta.ip : null
+        });
       } catch (error) {
         logger.error({ err: error, pageId: page.id, blockId }, 'page click analytics write failed');
       }
     });
   }
 
-  analytics(userId: string, pageId: string, range: 'day' | 'week' | 'month', timezoneOffsetMinutes = 0) {
+  analytics(userId: string, pageId: string, range: 'day' | 'week' | 'month', timezoneOffsetMinutes = 0, limit = 10) {
     this.ensureOwner(userId, pageId);
-    return this.pages.analytics(pageId, range, timezoneOffsetMinutes);
+    const safeLimit = [10, 20, 50].includes(limit) ? limit : 10;
+    return this.pages.analytics(pageId, range, timezoneOffsetMinutes, safeLimit);
   }
 
   clearAnalytics(userId: string, pageId: string) {
