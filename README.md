@@ -164,9 +164,9 @@ services:
       NODE_ENV: production
       PORT: 3000
 
-      PUBLIC_URL: ${PUBLIC_URL:?Set PUBLIC_URL}
-      CORS_ORIGIN: ${CORS_ORIGIN:?Set CORS_ORIGIN}
-      APP_NAME: ${APP_NAME:-ShortSwitch}
+      PUBLIC_URL: http://localhost:3000
+      CORS_ORIGIN: http://localhost:3000
+      APP_NAME: ShortSwitch
       APP_DESCRIPTION: ${APP_DESCRIPTION:-Privacy-aware self-hosted URL shortener.}
 
       DATABASE_PATH: /app/data/shortswitch.db
@@ -191,7 +191,7 @@ services:
       BLOCK_LOCAL_URLS: "true"
       BLOCK_PRIVATE_IPS: "true"
       STORE_RAW_IP: "false"
-      IP_HASH_SECRET: &ygj03ZNyqr&0vDeNkXmkz$TZMd0cfBrkuj
+      IP_HASH_SECRET: "&ygj03ZNyqr&0vDeNkXmkz$TZMd0cfBrkuj"
       ANALYTICS_RETENTION_DAYS: 90
 
       LOG_LEVEL: info
