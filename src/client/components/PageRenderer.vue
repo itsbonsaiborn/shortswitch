@@ -4,8 +4,18 @@ import type { PageBlock, PageDetail, PublicPage } from '@/shared/types';
 import PageBlockRenderer from './PageBlockRenderer.vue';
 import { useI18n } from 'vue-i18n';
 
-const props = defineProps<{ page: PublicPage | PageDetail; preview?: boolean }>();
-const emit = defineEmits<{ blockClick: [block: PageBlock] }>();
+const props = defineProps<{
+  page: PublicPage | PageDetail;
+  preview?: boolean;
+  editorInteractive?: boolean;
+  activeBlockId?: string | null;
+}>();
+const emit = defineEmits<{
+  blockClick: [block: PageBlock];
+  previewBlockEnter: [blockId: string];
+  previewBlockLeave: [blockId: string];
+  previewBlockActivate: [blockId: string];
+}>();
 const avatarFailed = ref(false);
 const { t } = useI18n();
 
@@ -13,6 +23,34 @@ watch(() => props.page.avatarUrl, () => { avatarFailed.value = false; });
 const visibleBlocks = computed(() => props.page.blocks.filter((block) => block.visible));
 const rootClasses = computed(() => [`page-theme-${props.page.theme}`, `page-layout-${props.page.layout}`, `page-pattern-${props.page.backgroundPattern ?? 'none'}`]);
 const rootStyle = computed(() => ({ '--page-pattern-opacity': String((props.page.patternIntensity ?? 35) / 100) }));
+
+const eventBlockId = (target: EventTarget | null) => {
+  if (!props.editorInteractive || !(target instanceof Element)) return null;
+  return target.closest<HTMLElement>('[data-page-block-id]')?.dataset.pageBlockId ?? null;
+};
+const onBlockPointerOver = (event: PointerEvent) => {
+  const blockId = eventBlockId(event.target);
+  if (!blockId || blockId === eventBlockId(event.relatedTarget)) return;
+  emit('previewBlockEnter', blockId);
+};
+const onBlockPointerOut = (event: PointerEvent) => {
+  const blockId = eventBlockId(event.target);
+  if (!blockId || blockId === eventBlockId(event.relatedTarget)) return;
+  emit('previewBlockLeave', blockId);
+};
+const onBlockFocusIn = (event: FocusEvent) => {
+  const blockId = eventBlockId(event.target);
+  if (blockId) emit('previewBlockEnter', blockId);
+};
+const onBlockFocusOut = (event: FocusEvent) => {
+  const blockId = eventBlockId(event.target);
+  if (!blockId || blockId === eventBlockId(event.relatedTarget)) return;
+  emit('previewBlockLeave', blockId);
+};
+const onBlockActivate = (event: MouseEvent) => {
+  const blockId = eventBlockId(event.target);
+  if (blockId) emit('previewBlockActivate', blockId);
+};
 </script>
 
 <template>
@@ -34,8 +72,24 @@ const rootStyle = computed(() => ({ '--page-pattern-opacity': String((props.page
         <p v-if="page.description" class="mt-3 whitespace-pre-line break-words text-sm leading-6 text-[var(--page-muted)]">{{ page.description }}</p>
       </header>
 
-      <section class="space-y-3" :aria-label="t('pages.pageContent')">
-        <PageBlockRenderer v-for="block in visibleBlocks" :key="block.id" :block="block" :preview="preview" @block-click="emit('blockClick', $event)" />
+      <section
+        class="space-y-3"
+        :aria-label="t('pages.pageContent')"
+        @pointerover="onBlockPointerOver"
+        @pointerout="onBlockPointerOut"
+        @focusin="onBlockFocusIn"
+        @focusout="onBlockFocusOut"
+        @click="onBlockActivate"
+      >
+        <PageBlockRenderer
+          v-for="block in visibleBlocks"
+          :key="block.id"
+          :block="block"
+          :preview="preview"
+          :editor-interactive="editorInteractive"
+          :active-block-id="activeBlockId"
+          @block-click="emit('blockClick', $event)"
+        />
       </section>
 
       <footer class="flex items-center justify-center gap-2 pt-12 text-center text-sm text-[var(--page-muted)]">

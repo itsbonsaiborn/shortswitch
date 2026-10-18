@@ -54,4 +54,35 @@ describe('PageRenderer', () => {
     await publicView.get('a').trigger('click');
     expect(publicView.emitted('blockClick')?.[0]?.[0]).toMatchObject({ id: 'link-1' });
   });
+
+  test('exposes stable block ids and interactions only in editor preview mode', async () => {
+    const editorPreview = mount(PageRenderer, {
+      props: { page, preview: true, editorInteractive: true, activeBlockId: 'nested-link' }
+    });
+    const nested = editorPreview.get('[data-page-block-id="nested-link"]');
+    expect(nested.classes()).toContain('page-preview-editor-block-active');
+    await nested.trigger('pointerover');
+    await nested.trigger('click');
+    expect(editorPreview.emitted('previewBlockEnter')?.[0]).toEqual(['nested-link']);
+    expect(editorPreview.emitted('previewBlockActivate')?.[0]).toEqual(['nested-link']);
+
+    const publicView = mount(PageRenderer, { props: { page } });
+    expect(publicView.find('[data-page-block-id]').exists()).toBe(false);
+    expect(publicView.find('.page-preview-editor-block').exists()).toBe(false);
+  });
+
+  test('does not retry a failed favicon when only preview design changes', async () => {
+    const preview = mount(PageRenderer, { props: { page, preview: true } });
+    await preview.findAll('[data-page-favicon]')[0].trigger('error');
+    expect(preview.findAll('[data-page-favicon]')).toHaveLength(1);
+
+    await preview.setProps({
+      page: {
+        ...page,
+        patternIntensity: 80,
+        blocks: page.blocks.map((block) => ({ ...block, config: { ...block.config } }))
+      }
+    });
+    expect(preview.findAll('[data-page-favicon]')).toHaveLength(1);
+  });
 });

@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { LinkRecord, LiveActivitySummary, PageBlockType, PageNestedBlock, PageNestedBlockType } from '@/shared/types';
+import LinkPicker from './LinkPicker.vue';
 import LiveActivityPicker from './LiveActivityPicker.vue';
 import PageBlockIcon from './PageBlockIcon.vue';
 
@@ -15,12 +15,7 @@ const props = defineProps<{
   column: number;
 }>();
 
-const search = ref('');
 const nestedTypes: PageNestedBlockType[] = ['heading', 'text', 'link', 'existing_link', 'live_activity', 'email', 'divider', 'spacer', 'image'];
-const filteredLinks = computed(() => {
-  const query = search.value.trim().toLowerCase();
-  return props.links.filter((item) => !query || item.slug.toLowerCase().includes(query) || item.targetUrl.toLowerCase().includes(query)).slice(0, 30);
-});
 const defaultConfig = (type: PageNestedBlockType) => {
   if (type === 'heading') return { text: t('editor.defaultSectionHeading'), alignment: 'left' as const, size: 'medium' as const };
   if (type === 'text') return { text: t('editor.defaultText'), alignment: 'left' as const };
@@ -36,7 +31,6 @@ const changeType = (event: Event) => {
   const type = (event.target as HTMLSelectElement).value as PageNestedBlockType;
   props.block.type = type;
   props.block.config = defaultConfig(type);
-  search.value = '';
 };
 </script>
 
@@ -67,8 +61,7 @@ const changeType = (event: Event) => {
         <label class="flex items-center gap-2 text-sm"><input v-model="block.config.openInNewTab" type="checkbox" /> {{ t('editor.openNewTab') }}</label>
       </template>
       <template v-else-if="block.type === 'existing_link'">
-        <label><span class="field-label">{{ t('editor.searchLinks') }}</span><input v-model="search" class="input px-3 py-2" :placeholder="t('links.search')" /></label>
-        <label><span class="field-label">{{ t('editor.linkSelect') }}</span><select v-model="block.config.resourceId" class="input px-3 py-2"><option value="">{{ t('editor.selectLink') }}</option><option v-for="link in filteredLinks" :key="link.id" :value="link.id">/{{ link.slug }} · {{ link.targetUrl }}</option></select></label>
+        <LinkPicker v-model="block.config.resourceId" :links="links" />
         <label><span class="field-label">{{ t('editor.buttonTitle') }}</span><input v-model="block.config.title" class="input px-3 py-2" maxlength="120" /></label>
         <label><span class="field-label">{{ t('editor.subtitle') }}</span><input v-model="block.config.subtitle" class="input px-3 py-2" maxlength="240" /></label>
       </template>
