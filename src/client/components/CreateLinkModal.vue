@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import { useI18n } from 'vue-i18n';
 import { api } from '../lib/api';
 import { useToast } from '../composables/useToast';
 import type { LinkFormInput, LinkRecord } from '@/shared/types';
@@ -23,6 +24,7 @@ const advanced = ref(false);
 const loading = ref(false);
 const error = ref('');
 const { pushToast } = useToast();
+const { t } = useI18n();
 const passwordInput = ref('');
 const passwordTouched = ref(false);
 const expirationTouched = ref(false);
@@ -35,7 +37,7 @@ const parseExpirationInput = (value: string) => {
 
   const match = normalized.match(/^(\d+)\s*(minute|minutes|hour|hours|day|days)$/);
   if (!match) {
-    throw new Error('Expiration must look like "2 minutes", "2 hours", or "2 days".');
+    throw new Error(t('linkForm.expirationError'));
   }
 
   const amount = Number(match[1]);
@@ -117,16 +119,16 @@ const submit = async () => {
 
     if (isEditing.value) {
       emit('updated', link);
-      pushToast({ tone: 'success', title: 'Link updated', description: `${link.slug} was saved successfully.` });
+      pushToast({ tone: 'success', title: t('linkForm.updated'), description: t('linkForm.updatedDescription', { slug: link.slug }) });
     } else {
       emit('created', link);
-      pushToast({ tone: 'success', title: 'Link created', description: `${link.slug} is ready to share.` });
+      pushToast({ tone: 'success', title: t('linkForm.created'), description: t('linkForm.createdDescription', { slug: link.slug }) });
     }
     emit('close');
     resetForm();
   } catch (err) {
     error.value = (err as Error).message;
-    pushToast({ tone: 'error', title: isEditing.value ? 'Failed to update link' : 'Failed to create link', description: error.value });
+    pushToast({ tone: 'error', title: t(isEditing.value ? 'linkForm.updateFailed' : 'linkForm.createFailed'), description: error.value });
   } finally {
     loading.value = false;
   }
@@ -147,51 +149,51 @@ const submit = async () => {
       <div class="flex items-start justify-between gap-4">
         <div>
           <p class="text-sm font-semibold uppercase tracking-[0.25em] text-accent-600 dark:text-accent-300">
-            {{ isEditing ? 'Edit Link' : 'New Link' }}
+            {{ t(isEditing ? 'linkForm.edit' : 'linkForm.new') }}
           </p>
           <h2 class="mt-1 text-2xl font-semibold">
-            {{ isEditing ? 'Update link settings' : 'Create a fast, tracked short link' }}
+            {{ t(isEditing ? 'linkForm.updateTitle' : 'linkForm.createTitle') }}
           </h2>
         </div>
-        <button class="btn-secondary" @click="emit('close')">Close</button>
+        <button class="btn-secondary" @click="emit('close')">{{ t('common.close') }}</button>
       </div>
 
       <div class="mt-6 space-y-4">
         <label class="block">
-          <span class="mb-2 block text-sm font-medium">Destination URL</span>
-          <input v-model="form.targetUrl" class="input" placeholder="Enter destination URL" />
+          <span class="mb-2 block text-sm font-medium">{{ t('linkForm.destination') }}</span>
+          <input v-model="form.targetUrl" class="input" :placeholder="t('linkForm.destinationPlaceholder')" />
         </label>
 
         <button class="text-sm font-medium text-accent-600 dark:text-accent-300" @click="advanced = !advanced">
-          {{ advanced ? 'Hide' : 'Show' }} advanced options
+          {{ t(advanced ? 'linkForm.hide' : 'linkForm.show') }} {{ t('linkForm.advanced') }}
         </button>
 
         <div v-if="advanced" class="grid gap-4 md:grid-cols-2">
           <label class="block">
             <span class="mb-2 block text-sm font-medium">domain.com/</span>
-            <input v-model="form.slug" class="input" placeholder="Custom path" />
+            <input v-model="form.slug" class="input" :placeholder="t('linkForm.customPath')" />
           </label>
           <label class="block">
-            <span class="mb-2 block text-sm font-medium">Password protection</span>
+            <span class="mb-2 block text-sm font-medium">{{ t('linkForm.passwordProtection') }}</span>
             <input
               v-model="passwordInput"
               class="input"
               type="password"
-              :placeholder="isEditing ? 'Leave blank to keep current password' : 'Enter password if needed'"
+              :placeholder="t(isEditing ? 'linkForm.passwordKeep' : 'linkForm.passwordNew')"
               @input="passwordTouched = true"
             />
           </label>
           <label class="block md:col-span-2">
-            <span class="mb-2 block text-sm font-medium">Comment</span>
-            <input v-model="form.comment" class="input" placeholder="Add an optional note for this link" />
+            <span class="mb-2 block text-sm font-medium">{{ t('linkForm.comment') }}</span>
+            <input v-model="form.comment" class="input" :placeholder="t('linkForm.commentPlaceholder')" />
           </label>
           <label class="block md:col-span-2">
-            <span class="mb-2 block text-sm font-medium">Expiration</span>
+            <span class="mb-2 block text-sm font-medium">{{ t('linkForm.expiration') }}</span>
             <input
               v-model="expirationInput"
               class="input"
               type="text"
-              placeholder="Enter expiration like 2 minutes, 2 hours, or 2 days"
+              :placeholder="t('linkForm.expirationPlaceholder')"
               @input="expirationTouched = true"
             />
           </label>
@@ -201,7 +203,7 @@ const submit = async () => {
 
         <div class="flex justify-end">
           <button class="btn-primary" :disabled="loading" @click="submit">
-            {{ loading ? (isEditing ? 'Saving...' : 'Creating...') : (isEditing ? 'Save changes' : 'Create link') }}
+            {{ loading ? (isEditing ? t('common.saving') : t('linkForm.creating')) : (isEditing ? t('linkForm.saveChanges') : t('linkForm.create')) }}
           </button>
         </div>
       </div>

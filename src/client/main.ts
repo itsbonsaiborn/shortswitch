@@ -3,6 +3,7 @@ import { createRouter, createWebHistory } from 'vue-router';
 import App from './App.vue';
 import { routes } from './router';
 import './styles.css';
+import { i18n } from './i18n';
 
 const router = createRouter({
   history: createWebHistory(),
@@ -11,6 +12,7 @@ const router = createRouter({
 
 const app = createApp(App);
 app.use(router);
+app.use(i18n);
 
 // Resolve the initial URL before App's auth watcher is mounted. Otherwise a
 // cold load of a public `/:slug` route can briefly look protected and redirect

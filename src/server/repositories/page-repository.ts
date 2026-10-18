@@ -5,6 +5,7 @@ import type {
   PageBlockType,
   PageDetail,
   PageInput,
+  PageBackgroundPattern,
   PageLayout,
   PageListResponse,
   PageNestedBlock,
@@ -26,6 +27,8 @@ interface PageRow {
   avatarUrl: string | null;
   theme: PageTheme;
   layout: PageLayout;
+  backgroundPattern: PageBackgroundPattern;
+  patternIntensity: number;
   status: PageStatus;
   seoTitle: string | null;
   seoDescription: string | null;
@@ -50,7 +53,8 @@ interface BlockRow {
 const pageSelect = `
   SELECT
     p.id, p.user_id as userId, p.slug, p.title, p.description, p.emoji,
-    p.avatar_url as avatarUrl, p.theme, p.layout, p.status,
+    p.avatar_url as avatarUrl, p.theme, p.layout, p.background_pattern as backgroundPattern,
+    p.pattern_intensity as patternIntensity, p.status,
     p.seo_title as seoTitle, p.seo_description as seoDescription,
     p.created_at as createdAt, p.updated_at as updatedAt,
     (SELECT COUNT(*) FROM page_blocks b WHERE b.page_id = p.id) as blockCount,
@@ -62,7 +66,8 @@ const pageSelect = `
 const publicPageSelect = `
   SELECT
     p.id, p.user_id as userId, p.slug, p.title, p.description, p.emoji,
-    p.avatar_url as avatarUrl, p.theme, p.layout, p.status,
+    p.avatar_url as avatarUrl, p.theme, p.layout, p.background_pattern as backgroundPattern,
+    p.pattern_intensity as patternIntensity, p.status,
     p.seo_title as seoTitle, p.seo_description as seoDescription,
     p.created_at as createdAt, p.updated_at as updatedAt,
     0 as blockCount, 0 as totalViews, 0 as uniqueVisitors, 0 as totalLinkClicks
@@ -155,6 +160,8 @@ export class PageRepository {
       avatarUrl: row.avatarUrl,
       theme: row.theme,
       layout: row.layout,
+      backgroundPattern: row.backgroundPattern,
+      patternIntensity: Number(row.patternIntensity),
       status: row.status,
       seoTitle: row.seoTitle,
       seoDescription: row.seoDescription,
@@ -326,10 +333,10 @@ export class PageRepository {
       this.db.prepare(`INSERT INTO public_slugs (slug, resource_type, resource_id, created_at) VALUES (?, 'page', ?, ?)`).run(slug, id, timestamp);
       this.db
         .prepare(
-          `INSERT INTO pages (id, user_id, slug, title, description, emoji, avatar_url, theme, layout, status, seo_title, seo_description, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          `INSERT INTO pages (id, user_id, slug, title, description, emoji, avatar_url, theme, layout, background_pattern, pattern_intensity, status, seo_title, seo_description, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
-        .run(id, userId, slug, input.title, input.description || null, input.emoji || null, input.avatarUrl || null, input.theme, input.layout, input.status, input.seoTitle || null, input.seoDescription || null, timestamp, timestamp);
+        .run(id, userId, slug, input.title, input.description || null, input.emoji || null, input.avatarUrl || null, input.theme, input.layout, input.backgroundPattern, input.patternIntensity, input.status, input.seoTitle || null, input.seoDescription || null, timestamp, timestamp);
       this.insertBlocks(id, input.blocks, timestamp);
       this.db.exec('COMMIT');
     } catch (error) {
@@ -352,9 +359,9 @@ export class PageRepository {
       }
       this.db
         .prepare(
-          `UPDATE pages SET slug = ?, title = ?, description = ?, emoji = ?, avatar_url = ?, theme = ?, layout = ?, status = ?, seo_title = ?, seo_description = ?, updated_at = ? WHERE id = ?`
+          `UPDATE pages SET slug = ?, title = ?, description = ?, emoji = ?, avatar_url = ?, theme = ?, layout = ?, background_pattern = ?, pattern_intensity = ?, status = ?, seo_title = ?, seo_description = ?, updated_at = ? WHERE id = ?`
         )
-        .run(slug, input.title, input.description || null, input.emoji || null, input.avatarUrl || null, input.theme, input.layout, input.status, input.seoTitle || null, input.seoDescription || null, timestamp, id);
+        .run(slug, input.title, input.description || null, input.emoji || null, input.avatarUrl || null, input.theme, input.layout, input.backgroundPattern, input.patternIntensity, input.status, input.seoTitle || null, input.seoDescription || null, timestamp, id);
       this.db.prepare('DELETE FROM page_blocks WHERE page_id = ?').run(id);
       this.insertBlocks(id, input.blocks, timestamp, existingCreated);
       this.db.exec('COMMIT');
@@ -380,6 +387,8 @@ export class PageRepository {
       avatarUrl: source.avatarUrl ?? '',
       theme: source.theme,
       layout: source.layout,
+      backgroundPattern: source.backgroundPattern,
+      patternIntensity: source.patternIntensity,
       status: 'draft',
       seoTitle: source.seoTitle ?? '',
       seoDescription: source.seoDescription ?? '',

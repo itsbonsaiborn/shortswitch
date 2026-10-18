@@ -1,4 +1,4 @@
-import type { PageBlockConfig, PageBlockType, PageInput, PageLayout, PageNestedBlockType, PageStatus, PageTheme, PublicPage } from '@/shared/types.js';
+import type { PageBackgroundPattern, PageBlockConfig, PageBlockType, PageInput, PageLayout, PageNestedBlockType, PageStatus, PageTheme, PublicPage } from '@/shared/types.js';
 import { UAParser } from 'ua-parser-js';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
@@ -10,6 +10,7 @@ import { createId, createSlugGenerator, hmacSha256, humanReferrer, validateCusto
 
 const THEMES = new Set<PageTheme>(['classic_cream', 'forest_dark', 'soft_lavender', 'ocean_blue', 'minimal_light']);
 const LAYOUTS = new Set<PageLayout>(['classic', 'minimal', 'soft', 'bold']);
+const BACKGROUND_PATTERNS = new Set<PageBackgroundPattern>(['none', 'dots', 'grid', 'waves', 'soft_glow', 'contours', 'crosses']);
 const STATUSES = new Set<PageStatus>(['draft', 'published', 'disabled']);
 const BLOCK_TYPES = new Set<PageBlockType>(['heading', 'text', 'link', 'existing_link', 'live_activity', 'email', 'divider', 'spacer', 'image', 'double']);
 const NESTED_BLOCK_TYPES = new Set<PageNestedBlockType>(['heading', 'text', 'link', 'existing_link', 'live_activity', 'email', 'divider', 'spacer', 'image']);
@@ -173,6 +174,11 @@ export class PageService {
     if (raw.blocks.length > MAX_BLOCKS) throw new Error(`A Page can contain at most ${MAX_BLOCKS} blocks.`);
     const theme = choice(raw.theme, THEMES, 'classic_cream', 'Theme');
     const layout = choice(raw.layout, LAYOUTS, 'classic', 'Layout');
+    const backgroundPattern = choice(raw.backgroundPattern, BACKGROUND_PATTERNS, 'none', 'Background pattern');
+    const patternIntensityValue = Number(raw.patternIntensity ?? 35);
+    if (!Number.isFinite(patternIntensityValue) || patternIntensityValue < 0 || patternIntensityValue > 100) {
+      throw new Error('Pattern intensity must be between 0 and 100.');
+    }
     const status = choice(raw.status, STATUSES, 'draft', 'Status');
     const blockIds = new Set<string>();
     return {
@@ -183,6 +189,8 @@ export class PageService {
       avatarUrl: httpsUrl(raw.avatarUrl, 'Avatar URL'),
       theme,
       layout,
+      backgroundPattern,
+      patternIntensity: Math.round(patternIntensityValue),
       status,
       seoTitle: text(raw.seoTitle, 'SEO title', 120),
       seoDescription: text(raw.seoDescription, 'SEO description', 300),
@@ -318,6 +326,8 @@ export class PageService {
       avatarUrl: page.avatarUrl,
       theme: page.theme,
       layout: page.layout,
+      backgroundPattern: page.backgroundPattern,
+      patternIntensity: page.patternIntensity,
       blocks: page.blocks
     };
   }

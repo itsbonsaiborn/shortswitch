@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { useI18n } from 'vue-i18n';
 import type { LinkRecord } from '@/shared/types';
 import QrCodePopover from './QrCodePopover.vue';
 
@@ -12,6 +13,7 @@ const emit = defineEmits<{
   removePassword: [link: LinkRecord];
   toggleEnabled: [link: LinkRecord, enabled: boolean, clearExpirationOnEnable: boolean];
 }>();
+const { t, locale } = useI18n();
 
 const actionsOpen = ref(false);
 const rootRef = ref<HTMLElement | null>(null);
@@ -83,7 +85,7 @@ const remainingLifetime = computed(() => {
   const diffMs = new Date(props.link.expiresAt).getTime() - Date.now();
   if (diffMs <= 0) {
     return {
-      label: 'Expired',
+      label: t('linkCard.expired'),
       tone: 'expired' as const
     };
   }
@@ -96,11 +98,11 @@ const remainingLifetime = computed(() => {
 
   let label = '';
   if (totalDays >= 1) {
-    label = `${totalDays}d ${remainingHours}h ${remainingMinutes}m left`;
+    label = t('linkCard.daysLeft', { days: totalDays, hours: remainingHours, minutes: remainingMinutes });
   } else if (totalHours >= 1) {
-    label = `${totalHours}h ${remainingMinutes}m left`;
+    label = t('linkCard.hoursLeft', { hours: totalHours, minutes: remainingMinutes });
   } else {
-    label = `${Math.max(totalMinutes, 1)}m left`;
+    label = t('linkCard.minutesLeft', { minutes: Math.max(totalMinutes, 1) });
   }
 
   return {
@@ -111,7 +113,7 @@ const remainingLifetime = computed(() => {
 
 const isExpired = computed(() => Boolean(props.link.expiresAt && new Date(props.link.expiresAt).getTime() <= Date.now()));
 const isDisabled = computed(() => !props.link.enabled || isExpired.value);
-const statusLabel = computed(() => (isDisabled.value ? 'Disabled' : 'Enabled'));
+const statusLabel = computed(() => t(isDisabled.value ? 'common.disabled' : 'common.enabled'));
 const statusClass = computed(() =>
   isDisabled.value
     ? 'border-transparent bg-[#FCE8DB] text-[#AF3029] dark:bg-[#321F1C] dark:text-[#F89A8A]'
@@ -225,13 +227,7 @@ onBeforeUnmount(() => {
   window.removeEventListener(menuOpenEventName, closeMenusFromOtherCards as EventListener);
 });
 
-const formatDate = (value: string) => {
-  const date = new Date(value);
-  const day = String(date.getDate()).padStart(2, '0');
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const year = date.getFullYear();
-  return `${day}-${month}-${year}`;
-};
+const formatDate = (value: string) => new Intl.DateTimeFormat(locale.value, { dateStyle: 'short' }).format(new Date(value));
 </script>
 
 <template>
@@ -276,7 +272,7 @@ const formatDate = (value: string) => {
       </div>
 
       <div class="relative z-20 flex items-center gap-2" data-no-open="true">
-        <button class="icon-button" :aria-label="copied ? 'Copied' : 'Copy link'" @click.stop="copy">
+        <button class="icon-button" :aria-label="copied ? t('common.copied') : t('linkCard.copy')" @click.stop="copy">
           <svg
             v-if="!copied"
             xmlns="http://www.w3.org/2000/svg"
@@ -314,7 +310,7 @@ const formatDate = (value: string) => {
           <button
             ref="actionsButtonRef"
             class="icon-button"
-            aria-label="Link actions"
+            :aria-label="t('common.actions')"
             @click.stop="toggleActions"
           >
             <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
@@ -343,20 +339,20 @@ const formatDate = (value: string) => {
                   class="flex w-full items-center rounded-2xl border border-transparent px-4 py-3 text-left text-sm transition hover:border-[var(--ui-border)] hover:bg-[#FFFBEF] dark:hover:border-[var(--ui-border)] dark:hover:bg-[#1C1A19]"
                   @click="actionsOpen = false; emit('edit', props.link)"
                 >
-                  Edit
+                  {{ t('common.edit') }}
                 </button>
                 <button
                   v-if="props.link.passwordProtected"
                   class="mt-1 flex w-full items-center rounded-2xl border border-transparent px-4 py-3 text-left text-sm transition hover:border-[var(--ui-border)] hover:bg-[#FFFBEF] dark:hover:border-[var(--ui-border)] dark:hover:bg-[#1C1A19]"
                   @click="actionsOpen = false; emit('removePassword', props.link)"
                 >
-                  Remove password
+                  {{ t('linkCard.removePassword') }}
                 </button>
                 <button
                   class="mt-1 flex w-full items-center rounded-2xl border border-transparent px-4 py-3 text-left text-sm text-[#AF3029] transition hover:border-[#AF3029]/20 hover:bg-[#FCE8DB] dark:text-[#F89A8A] dark:hover:border-[#F89A8A]/20 dark:hover:bg-[#321F1C]"
                   @click="actionsOpen = false; emit('clearAnalytics', props.link)"
                 >
-                  Clear analytics
+                  {{ t('linkCard.clearAnalytics') }}
                 </button>
                 <button
                   class="mt-1 flex w-full items-center rounded-2xl border border-transparent px-4 py-3 text-left text-sm transition"
@@ -367,13 +363,13 @@ const formatDate = (value: string) => {
                   "
                   @click="actionsOpen = false; emit('toggleEnabled', props.link, isDisabled, isExpired)"
                 >
-                  {{ isDisabled ? 'Enable' : 'Disable' }}
+                  {{ t(isDisabled ? 'linkCard.enable' : 'linkCard.disable') }}
                 </button>
                 <button
                   class="mt-1 flex w-full items-center rounded-2xl border border-transparent px-4 py-3 text-left text-sm text-[#AF3029] transition hover:border-[#AF3029]/20 hover:bg-[#FCE8DB] dark:text-[#F89A8A] dark:hover:border-[#F89A8A]/20 dark:hover:bg-[#321F1C]"
                   @click="actionsOpen = false; emit('delete', props.link)"
                 >
-                  Delete
+                  {{ t('common.delete') }}
                 </button>
               </div>
             </Teleport>
@@ -390,10 +386,10 @@ const formatDate = (value: string) => {
 
     <div class="flex flex-wrap gap-2">
       <div class="rounded-full border border-transparent bg-[var(--ui-pill-bg)] px-3 py-1.5 text-xs font-medium text-[var(--ui-text-muted)] transition-colors">
-        Total clicks: {{ props.link.clickCount }}
+        {{ t('linkCard.totalClicks', { count: props.link.clickCount }) }}
       </div>
       <div class="rounded-full border border-transparent bg-[var(--ui-pill-bg)] px-3 py-1.5 text-xs font-medium text-[var(--ui-text-muted)] transition-colors">
-        Unique clicks: {{ props.link.uniqueClickCount }}
+        {{ t('linkCard.uniqueClicks', { count: props.link.uniqueClickCount }) }}
       </div>
       <div
         v-if="remainingLifetime && !isDisabled"
@@ -409,7 +405,7 @@ const formatDate = (value: string) => {
         v-if="props.link.passwordProtected"
         class="rounded-full border border-transparent bg-[var(--ui-pill-bg)] px-3 py-1.5 text-xs font-medium text-[var(--ui-accent)]"
       >
-        Protected
+        {{ t('linkCard.protected') }}
       </div>
     </div>
   </article>

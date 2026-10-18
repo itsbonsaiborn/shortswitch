@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import { useI18n } from 'vue-i18n';
 import type { LiveActivitySummary } from '@/shared/types';
 
 const props = defineProps<{
@@ -7,6 +8,7 @@ const props = defineProps<{
   activities: LiveActivitySummary[];
 }>();
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>();
+const { t } = useI18n();
 
 const open = ref(false);
 const query = ref('');
@@ -62,11 +64,11 @@ onBeforeUnmount(() => {
 
 <template>
   <label class="relative block">
-    <span class="field-label">Live Activity</span>
+    <span class="field-label">{{ t('live.title') }}</span>
     <input
       :value="query"
       class="input px-3 py-2"
-      placeholder="Search by title or slug"
+      :placeholder="t('live.search')"
       autocomplete="off"
       role="combobox"
       :aria-expanded="open"
@@ -94,7 +96,7 @@ onBeforeUnmount(() => {
         <span class="truncate text-xs text-[var(--ui-text-muted)]">/{{ activity.slug }}</span>
       </button>
       <p v-if="!filteredActivities.length" class="px-3 py-5 text-center text-sm text-[var(--ui-text-muted)]">
-        No Live activities found.
+        {{ t('live.noMatches') }}
       </p>
     </div>
   </label>

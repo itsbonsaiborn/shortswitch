@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
+import { useI18n } from 'vue-i18n';
 import type { PageBlock, PageNestedBlock } from '@/shared/types';
 
 defineOptions({ name: 'PageBlockRenderer' });
 const props = defineProps<{ block: PageBlock; preview?: boolean }>();
 const emit = defineEmits<{ blockClick: [block: PageBlock] }>();
+const { t } = useI18n();
 const imageFailed = ref(false);
 const faviconFailed = ref(false);
 
@@ -54,7 +56,7 @@ watch(() => [props.block.config.url, props.block.href], () => { faviconFailed.va
       <span v-else-if="block.config.emoji" class="text-lg" aria-hidden="true">{{ block.config.emoji }}</span>
       <svg v-else xmlns="http://www.w3.org/2000/svg" class="h-4.5 w-4.5" viewBox="0 0 24 24"><path d="M0 0h24v24H0z" fill="none"/><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M13.544 10.456a4.37 4.37 0 0 0-6.176 0l-3.089 3.088a4.367 4.367 0 1 0 6.177 6.177L12 18.177"/><path d="M10.456 13.544a4.37 4.37 0 0 0 6.176 0l3.089-3.088a4.367 4.367 0 1 0-6.177-6.177L12 5.823"/></g></svg>
     </span>
-    <span class="min-w-0 flex-1"><span class="block break-words font-semibold">{{ block.config.title || 'Untitled link' }}</span><span v-if="block.config.subtitle" class="mt-0.5 block break-words text-xs text-[var(--page-muted)]">{{ block.config.subtitle }}</span><span v-if="block.available === false" class="mt-0.5 block text-xs text-[var(--page-muted)]">Unavailable</span></span>
+    <span class="min-w-0 flex-1"><span class="block break-words font-semibold">{{ block.config.title || t('pages.untitledLink') }}</span><span v-if="block.config.subtitle" class="mt-0.5 block break-words text-xs text-[var(--page-muted)]">{{ block.config.subtitle }}</span><span v-if="block.available === false" class="mt-0.5 block text-xs text-[var(--page-muted)]">{{ t('pages.contentUnavailable') }}</span></span>
     <svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true" class="h-5 w-5 shrink-0 opacity-55 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" viewBox="0 0 24 24"><path d="M0 0h24v24H0z" fill="none"/><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 6L6 18M8 6h10v10"/></svg>
   </a>
 

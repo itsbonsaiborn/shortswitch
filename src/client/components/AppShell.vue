@@ -5,30 +5,17 @@ import { useWindowSize } from '@vueuse/core';
 import { useAuth } from '../composables/useAuth';
 import { useAppConfig } from '../composables/useAppConfig';
 import { useTheme } from '../composables/useTheme';
+import { usePreferences } from '../composables/usePreferences';
+import { useI18n } from 'vue-i18n';
 
 const route = useRoute();
 const router = useRouter();
 const { user, logout } = useAuth();
 const { appName, loadAppConfig } = useAppConfig();
-const { resolvedTheme, setTheme } = useTheme();
+const { theme, setTheme } = useTheme();
+const { sidebarCollapsed: savedSidebarCollapsed, setSidebarCollapsed } = usePreferences();
+const { t } = useI18n();
 const emit = defineEmits<{ createLink: []; createLive: []; createPage: [] }>();
-
-const readSessionCookie = (name: string) => {
-  if (typeof document === 'undefined') return null;
-  return (
-    document.cookie
-      .split('; ')
-      .find((item) => item.startsWith(`${name}=`))
-      ?.split('=')
-      .slice(1)
-      .join('=') ?? null
-  );
-};
-
-const writeSessionCookie = (name: string, value: string) => {
-  if (typeof document === 'undefined') return;
-  document.cookie = `${name}=${encodeURIComponent(value)}; path=/; SameSite=Lax`;
-};
 
 const mobileOpen = ref(false);
 const sidebarRef = ref<HTMLElement | null>(null);
@@ -37,30 +24,30 @@ const createMenuRef = ref<HTMLElement | null>(null);
 const createMenuOpen = ref(false);
 const { width } = useWindowSize();
 
-const manualCollapsed = ref(false);
+const manualCollapsed = ref(savedSidebarCollapsed.value);
 const tabs = [
   {
-    name: 'Links',
+    name: 'navigation.links',
     path: '/app/links',
     icon: 'links'
   },
   {
-    name: 'Live',
+    name: 'navigation.live',
     path: '/app/live',
     icon: 'live'
   },
   {
-    name: 'Pages',
+    name: 'navigation.pages',
     path: '/app/pages',
     icon: 'pages'
   },
   {
-    name: 'Analytics',
+    name: 'navigation.analytics',
     path: '/app/analytics',
     icon: 'analytics'
   },
   {
-    name: 'Settings',
+    name: 'navigation.settings',
     path: '/app/settings',
     icon: 'settings'
   }
@@ -69,6 +56,10 @@ const tabs = [
 const activePath = computed(() =>
   tabs.find((tab) => route.path.startsWith(tab.path))?.path ?? '/app/links'
 );
+const currentTitle = computed(() => {
+  const tab = tabs.find((item) => item.path === activePath.value);
+  return tab ? t(tab.name) : appName.value;
+});
 const hasInlineSidebar = computed(() => width.value >= 1100);
 const autoCollapsed = computed(() => hasInlineSidebar.value && width.value < 1360);
 const sidebarCollapsed = computed(() => hasInlineSidebar.value && (autoCollapsed.value || manualCollapsed.value));
@@ -89,7 +80,7 @@ const shellGridStyle = computed(() =>
 watch(
   manualCollapsed,
   (value) => {
-    writeSessionCookie('ss_sidebar_collapsed', value ? '1' : '0');
+    setSidebarCollapsed(value);
   },
   { flush: 'post' }
 );
@@ -127,8 +118,6 @@ const closeSidebarOnOutsideClick = (event: MouseEvent) => {
 };
 
 onMounted(() => {
-  const savedValue = readSessionCookie('ss_sidebar_collapsed');
-  manualCollapsed.value = savedValue === '1';
   loadAppConfig();
   document.addEventListener('click', closeSidebarOnOutsideClick);
 });
@@ -167,7 +156,7 @@ onBeforeUnmount(() => {
             />
             <div v-if="!sidebarCollapsed" class="min-w-0">
               <p class="truncate text-lg font-semibold">{{ appName }}</p>
-              <p class="truncate text-sm text-[var(--ui-text-muted)]">Self-hosted control tower</p>
+              <p class="truncate text-sm text-[var(--ui-text-muted)]">{{ t('shell.subtitle') }}</p>
             </div>
           </div>
 
@@ -184,7 +173,7 @@ onBeforeUnmount(() => {
               @click="router.push(tab.path); mobileOpen = false"
             >
               <span class="flex w-full items-center" :class="sidebarCollapsed ? 'justify-center' : 'justify-between gap-3'">
-                <span v-if="!sidebarCollapsed">{{ tab.name }}</span>
+                <span v-if="!sidebarCollapsed">{{ t(tab.name) }}</span>
                 <span
                   class="flex h-5 w-5 items-center justify-center"
                   :class="sidebarCollapsed ? 'scale-110' : 'opacity-85'"
@@ -222,8 +211,8 @@ onBeforeUnmount(() => {
                 type="button"
                 class="flex shrink-0 items-center justify-center rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-panel)] text-[var(--ui-text-muted)] transition-all duration-200 hover:border-[var(--ui-accent)] hover:bg-[var(--ui-accent-soft)] hover:text-[var(--ui-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ui-accent)]"
                 :class="sidebarCollapsed ? 'h-10 w-10' : 'h-11 w-12'"
-                aria-label="Sign out"
-                title="Sign out"
+                :aria-label="t('navigation.signOut')"
+                :title="t('navigation.signOut')"
                 @click="doLogout"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" viewBox="0 0 24 24" aria-hidden="true">
@@ -249,7 +238,7 @@ onBeforeUnmount(() => {
       >
         <button
           v-if="mobileOpen && showMenuButton"
-          aria-label="Close menu overlay"
+          :aria-label="t('common.close')"
           class="fixed inset-0 z-50 bg-black/45 backdrop-blur-sm"
           @click="mobileOpen = false"
         />
@@ -266,24 +255,24 @@ onBeforeUnmount(() => {
                   class="btn-secondary h-11 px-4"
                   @click.stop="mobileOpen = !mobileOpen"
                 >
-                  Menu
+                  {{ t('common.actions') }}
                 </button>
                 <button
                   v-else
                   class="btn-secondary h-11 shrink-0 gap-2 px-3"
-                  :aria-label="sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'"
+                  :aria-label="sidebarCollapsed ? t('navigation.expand') : t('navigation.collapse')"
                   @click="toggleSidebar"
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" viewBox="0 0 24 24" fill="currentColor">
                     <path d="M9.367 2.25h5.266c1.092 0 1.958 0 2.655.057c.714.058 1.317.18 1.869.46a4.75 4.75 0 0 1 2.075 2.077c.281.55.403 1.154.461 1.868c.057.697.057 1.563.057 2.655v5.266c0 1.092 0 1.958-.057 2.655c-.058.714-.18 1.317-.46 1.869a4.75 4.75 0 0 1-2.076 2.075c-.552.281-1.155.403-1.869.461c-.697.057-1.563.057-2.655.057H9.367c-1.092 0-1.958 0-2.655-.057c-.714-.058-1.317-.18-1.868-.46a4.75 4.75 0 0 1-2.076-2.076c-.281-.552-.403-1.155-.461-1.869c-.057-.697-.057-1.563-.057-2.655V9.367c0-1.092 0-1.958.057-2.655c.058-.714.18-1.317.46-1.868a4.75 4.75 0 0 1 2.077-2.076c.55-.281 1.154-.403 1.868-.461c.697-.057 1.563-.057 2.655-.057M6.834 3.802c-.62.05-1.005.147-1.31.302a3.25 3.25 0 0 0-1.42 1.42c-.155.305-.251.69-.302 1.31c-.051.63-.052 1.434-.052 2.566v5.2c0 1.133 0 1.937.052 2.566c.05.62.147 1.005.302 1.31a3.25 3.25 0 0 0 1.42 1.42c.305.155.69.251 1.31.302c.392.032.851.044 1.416.05V3.752c-.565.005-1.024.017-1.416.049" />
                   </svg>
                   <span class="text-sm font-medium">
-                    {{ sidebarCollapsed ? 'Expand' : 'Collapse' }}
+                    {{ sidebarCollapsed ? t('navigation.expand') : t('navigation.collapse') }}
                   </span>
                 </button>
                 <div class="min-w-0">
-                  <p class="text-xs font-semibold uppercase tracking-[0.3em] text-[var(--ui-accent)]">Dashboard</p>
-                  <h1 class="truncate text-xl font-semibold text-[var(--ui-text)]">{{ route.meta?.title ?? appName }}</h1>
+                  <p class="text-xs font-semibold uppercase tracking-[0.3em] text-[var(--ui-accent)]">{{ t('shell.dashboard') }}</p>
+                  <h1 class="truncate text-xl font-semibold text-[var(--ui-text)]">{{ currentTitle }}</h1>
                 </div>
               </div>
             </div>
@@ -298,7 +287,7 @@ onBeforeUnmount(() => {
                   :aria-expanded="createMenuOpen"
                   aria-haspopup="menu"
                   @click.stop="createMenuOpen = !createMenuOpen"
-                >Create</button>
+                >{{ t('navigation.create') }}</button>
                 <Transition
                   enter-active-class="transition duration-200 ease-out"
                   enter-from-class="-translate-y-1 opacity-0"
@@ -308,24 +297,24 @@ onBeforeUnmount(() => {
                   leave-to-class="opacity-0"
                 >
                   <div v-if="createMenuOpen" class="absolute right-0 z-[70] mt-2 w-48 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-dropdown-bg)] p-2 shadow-xl" role="menu">
-                    <button class="w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-[var(--ui-panel-muted)]" role="menuitem" @click="runCreateAction('link')">Create Link</button>
-                    <button class="w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-[var(--ui-panel-muted)]" role="menuitem" @click="runCreateAction('live')">Create Live</button>
-                    <button class="w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-[var(--ui-panel-muted)]" role="menuitem" @click="runCreateAction('page')">Create Page</button>
+                    <button class="w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-[var(--ui-panel-muted)]" role="menuitem" @click="runCreateAction('link')">{{ t('navigation.createLink') }}</button>
+                    <button class="w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-[var(--ui-panel-muted)]" role="menuitem" @click="runCreateAction('live')">{{ t('navigation.createLive') }}</button>
+                    <button class="w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-[var(--ui-panel-muted)]" role="menuitem" @click="runCreateAction('page')">{{ t('navigation.createPage') }}</button>
                   </div>
                 </Transition>
               </div>
               <div
-                class="grid h-11 shrink-0 grid-cols-2 divide-x divide-[var(--ui-border)] overflow-hidden rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-panel)]"
+                class="grid h-11 shrink-0 grid-cols-3 divide-x divide-[var(--ui-border)] overflow-hidden rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-panel)]"
                 role="group"
-                aria-label="Color theme"
+                :aria-label="t('theme.label')"
               >
                 <button
                   type="button"
                   class="flex h-full w-11 items-center justify-center transition-colors duration-200 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ui-accent)]"
-                  :class="resolvedTheme === 'light' ? 'bg-[var(--ui-accent-soft)] text-[var(--ui-accent)]' : 'text-[var(--ui-text-muted)] hover:text-[var(--ui-text)]'"
-                  :aria-pressed="resolvedTheme === 'light'"
-                  aria-label="Use light theme"
-                  title="Light theme"
+                  :class="theme === 'light' ? 'bg-[var(--ui-accent-soft)] text-[var(--ui-accent)]' : 'text-[var(--ui-text-muted)] hover:text-[var(--ui-text)]'"
+                  :aria-pressed="theme === 'light'"
+                  :aria-label="t('theme.lightAria')"
+                  :title="t('theme.light')"
                   @click="setTheme('light')"
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 24 24" aria-hidden="true">
@@ -337,10 +326,24 @@ onBeforeUnmount(() => {
                 <button
                   type="button"
                   class="flex h-full w-11 items-center justify-center transition-colors duration-200 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ui-accent)]"
-                  :class="resolvedTheme === 'dark' ? 'bg-[var(--ui-accent-soft)] text-[var(--ui-accent)]' : 'text-[var(--ui-text-muted)] hover:text-[var(--ui-text)]'"
-                  :aria-pressed="resolvedTheme === 'dark'"
-                  aria-label="Use dark theme"
-                  title="Dark theme"
+                  :class="theme === 'system' ? 'bg-[var(--ui-accent-soft)] text-[var(--ui-accent)]' : 'text-[var(--ui-text-muted)] hover:text-[var(--ui-text)]'"
+                  :aria-pressed="theme === 'system'"
+                  :aria-label="t('theme.systemAria')"
+                  :title="t('theme.system')"
+                  @click="setTheme('system')"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M0 0h24v24H0z" fill="none" />
+                    <path fill="currentColor" d="M10.85 12.65h2.3L12 9zM20 8.69V4h-4.69L12 .69L8.69 4H4v4.69L.69 12L4 15.31V20h4.69L12 23.31L15.31 20H20v-4.69L23.31 12zM14.3 16l-.7-2h-3.2l-.7 2H7.8L11 7h2l3.2 9z" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  class="flex h-full w-11 items-center justify-center transition-colors duration-200 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ui-accent)]"
+                  :class="theme === 'dark' ? 'bg-[var(--ui-accent-soft)] text-[var(--ui-accent)]' : 'text-[var(--ui-text-muted)] hover:text-[var(--ui-text)]'"
+                  :aria-pressed="theme === 'dark'"
+                  :aria-label="t('theme.darkAria')"
+                  :title="t('theme.dark')"
                   @click="setTheme('dark')"
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 1024 1024" aria-hidden="true">

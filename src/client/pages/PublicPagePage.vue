@@ -4,8 +4,11 @@ import { useRoute } from 'vue-router';
 import type { PageBlock, PublicPage } from '@/shared/types';
 import { api } from '../lib/api';
 import PageRenderer from '../components/PageRenderer.vue';
+import { useI18n } from 'vue-i18n';
+import { localizePublicError } from '../lib/public-error';
 
 const route = useRoute();
+const { t } = useI18n();
 const page = ref<PublicPage | null>(null);
 const loading = ref(true);
 const error = ref('');
@@ -26,7 +29,7 @@ onMounted(async () => {
     page.value = await api<PublicPage>(`/api/pages/public/${encodeURIComponent(String(route.params.slug))}`);
     document.title = page.value.title;
   } catch (caught) {
-    error.value = (caught as Error).message || 'This Page is unavailable.';
+    error.value = localizePublicError(caught, t, 'page');
   } finally {
     loading.value = false;
   }
@@ -35,10 +38,10 @@ onMounted(async () => {
 
 <template>
   <div class="min-h-dvh">
-    <div v-if="loading" class="flex min-h-dvh items-center justify-center bg-[#f8f8f6] px-6 text-center text-sm text-[#6f6f69]">Loading Page…</div>
+    <div v-if="loading" class="flex min-h-dvh items-center justify-center bg-[#f8f8f6] px-6 text-center text-sm text-[#6f6f69]">{{ t('pages.loading') }}</div>
     <div v-else-if="error || !page" class="flex min-h-dvh items-center justify-center bg-[#f8f8f6] px-6">
       <div class="max-w-md text-center">
-        <p class="text-2xl font-semibold text-[#1f1f1d]">Page unavailable</p>
+        <p class="text-2xl font-semibold text-[#1f1f1d]">{{ t('pages.unavailable') }}</p>
         <p class="mt-3 text-sm text-[#6f6f69]">{{ error }}</p>
       </div>
     </div>

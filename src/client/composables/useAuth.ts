@@ -1,6 +1,7 @@
 import { computed, reactive } from 'vue';
 import { api } from '../lib/api';
 import type { CurrentUser } from '@/shared/types';
+import { usePreferences } from './usePreferences';
 
 const state = reactive<{
   user: CurrentUser | null;
@@ -11,11 +12,14 @@ const state = reactive<{
 });
 
 export const useAuth = () => {
+  const preferences = usePreferences();
   const loadUser = async () => {
     try {
       state.user = await api<CurrentUser>('/api/auth/me');
+      preferences.hydrateUser(state.user);
     } catch {
       state.user = null;
+      preferences.reset();
     } finally {
       state.initialized = true;
     }
@@ -26,12 +30,14 @@ export const useAuth = () => {
       method: 'POST',
       body: JSON.stringify({ email, password })
     });
+    preferences.hydrateUser(state.user);
     return state.user;
   };
 
   const logout = async () => {
     await api('/api/auth/logout', { method: 'POST', body: JSON.stringify({}) });
     state.user = null;
+    preferences.reset();
   };
 
   return {

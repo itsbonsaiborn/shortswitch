@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
-import { useWindowSize } from '@vueuse/core';
+import { useElementSize, useWindowSize } from '@vueuse/core';
 import type { ApexOptions } from 'apexcharts';
 import VueApexCharts from 'vue3-apexcharts';
+import { useI18n } from 'vue-i18n';
 import AnalyticsBreakdownGrid from '../components/AnalyticsBreakdownGrid.vue';
 import AnalyticsVisitTable from '../components/AnalyticsVisitTable.vue';
 import { api } from '../lib/api';
@@ -31,6 +32,7 @@ const writeSessionCookie = (name: string, value: string) => {
 const route = useRoute();
 const { width } = useWindowSize();
 const { resolvedTheme } = useTheme();
+const { t } = useI18n();
 const range = ref<'day' | 'week' | 'month'>(
   readSessionCookie('ss_link_analytics_range', ['day', 'week', 'month'] as const, 'day')
 );
@@ -40,16 +42,18 @@ const limit = ref<10 | 20 | 50>(
 const data = ref<LinkDetailsResponse | null>(null);
 const loading = ref(true);
 const analyticsFaviconIndex = ref(0);
+const trendChartContainer = ref<HTMLElement | null>(null);
+const { width: trendChartWidth } = useElementSize(trendChartContainer);
 
-const load = async () => {
-  loading.value = true;
+const load = async (initial = data.value === null) => {
+  if (initial) loading.value = true;
   try {
     const timezoneOffsetMinutes = -new Date().getTimezoneOffset();
     data.value = await api<LinkDetailsResponse>(
       `/api/links/${route.params.id}/analytics?range=${range.value}&limit=${limit.value}&timezoneOffsetMinutes=${timezoneOffsetMinutes}`
     );
   } finally {
-    loading.value = false;
+    if (initial) loading.value = false;
   }
 };
 
@@ -64,9 +68,9 @@ const setLimit = (next: 10 | 20 | 50) => {
 };
 
 const rangeLabel = computed(() => {
-  if (range.value === 'month') return 'Month trend';
-  if (range.value === 'week') return 'Weekly trend';
-  return 'Daily trend';
+  if (range.value === 'month') return t('pageAnalytics.monthTrend');
+  if (range.value === 'week') return t('pageAnalytics.weeklyTrend');
+  return t('pageAnalytics.dailyTrend');
 });
 
 const analyticsTargetHost = computed(() => {
@@ -123,20 +127,29 @@ const analyticsFaviconFallback = computed(() => {
 
 const chartSeries = computed(() => [
   {
-    name: 'Visitors',
+    name: t('analytics.visitors'),
     data: data.value?.overview.points.map((point) => point.clicks) ?? []
   },
   {
-    name: 'Uniq visitors',
+    name: t('analytics.uniqueVisitors'),
     data: data.value?.overview.points.map((point) => point.uniqueVisitors) ?? []
   },
   {
-    name: 'Failed auth',
+    name: t('linkAnalytics.failedAuth'),
     data: data.value?.overview.points.map((point) => point.failedAuths) ?? []
   }
 ]);
 
 const chartCategories = computed(() => data.value?.overview.points.map((point) => point.label) ?? []);
+const chartLabelStride = computed(() => {
+  const categoryCount = chartCategories.value.length;
+  if (categoryCount <= 1) return 1;
+  const availableWidth = trendChartWidth.value || width.value;
+  const labelWidth = range.value === 'week' ? 72 : range.value === 'day' ? 52 : 58;
+  const visibleLabels = Math.max(2, Math.floor(availableWidth / labelWidth));
+  const minimumStride = range.value === 'week' ? 1 : 2;
+  return Math.max(minimumStride, Math.ceil(categoryCount / visibleLabels));
+});
 
 const isMobileChart = computed(() => width.value < 640);
 const isDark = computed(() => resolvedTheme.value === 'dark');
@@ -191,12 +204,13 @@ const chartOptions = computed<ApexOptions>(() => ({
     axisTicks: { show: false },
     labels: {
       rotate: 0,
-      hideOverlappingLabels: false,
+      hideOverlappingLabels: true,
       trim: false,
-      formatter: (value) => {
-        if (range.value === 'week') return String(value);
-        const index = chartCategories.value.indexOf(String(value));
-        return index === -1 || index % 2 === 0 ? String(value) : '';
+      formatter: (value, _timestamp, options) => {
+        const index = typeof options?.i === 'number'
+          ? options.i
+          : chartCategories.value.indexOf(String(value));
+        return index === -1 || index % chartLabelStride.value === 0 ? String(value) : '';
       }
     }
   },
@@ -223,22 +237,22 @@ const statCards = computed(() => {
 
   return [
     {
-      label: 'Visits',
+      label: t('analytics.visits'),
       value: overview.totalClicks,
       icon: 'visits'
     },
     {
-      label: 'Uniq visitors',
+      label: t('analytics.uniqueVisitors'),
       value: overview.uniqueVisitors,
       icon: 'users'
     },
     {
-      label: 'Referrers',
+      label: t('analytics.referrers'),
       value: overview.referrers,
       icon: 'referrers'
     },
     {
-      label: 'Trend',
+      label: t('linkAnalytics.trend'),
       value: `${overview.trend}%`,
       icon: 'trend'
     }
@@ -250,8 +264,8 @@ const buttonClass = (active: boolean) =>
     ? 'border-transparent bg-[var(--ui-accent-soft)] text-[var(--ui-accent)]'
     : 'border-[var(--ui-border)] bg-[var(--ui-panel)] text-[var(--ui-text-muted)]';
 
-onMounted(load);
-watch([range, limit], load);
+onMounted(() => void load(true));
+watch([range, limit], () => void load(false));
 watch(
   () => data.value?.link.targetUrl,
   () => {
@@ -271,7 +285,7 @@ const handleAnalyticsFaviconError = () => {
 <template>
   <div class="space-y-6">
     <section v-if="loading" class="panel p-8 text-center text-slate-500 dark:text-slate-400">
-      Loading analytics...
+      {{ t('common.loading') }}
     </section>
 
     <template v-else-if="data">
@@ -375,11 +389,12 @@ const handleAnalyticsFaviconError = () => {
           <div class="grid w-full gap-2 sm:flex sm:w-auto">
             <button
               v-for="option in [
-                { label: 'Month trend', value: 'month' },
-                { label: 'Weekly trend', value: 'week' },
-                { label: 'Daily trend', value: 'day' }
+                { label: t('pageAnalytics.monthTrend'), value: 'month' },
+                { label: t('pageAnalytics.weeklyTrend'), value: 'week' },
+                { label: t('pageAnalytics.dailyTrend'), value: 'day' }
               ]"
               :key="option.value"
+              type="button"
               class="rounded-2xl border px-4 py-2 text-sm font-medium transition-all duration-200"
               :class="buttonClass(range === option.value)"
               @click="setRange(option.value as 'day' | 'week' | 'month')"
@@ -393,8 +408,9 @@ const handleAnalyticsFaviconError = () => {
           class="app-scrollbar mt-6 rounded-[2rem] border border-[var(--ui-border)] bg-[var(--ui-panel-muted)] p-3 sm:p-4"
           :class="isMobileChart ? 'overflow-x-auto overflow-y-hidden' : 'overflow-hidden'"
         >
-          <div :class="isMobileChart ? 'min-w-[720px]' : 'min-w-0'">
+          <div ref="trendChartContainer" :class="isMobileChart ? 'min-w-[720px]' : 'min-w-0'">
             <VueApexCharts
+              :key="`link-trend-${resolvedTheme}`"
               type="area"
               height="330"
               width="100%"
@@ -409,8 +425,8 @@ const handleAnalyticsFaviconError = () => {
       <AnalyticsVisitTable
         :rows="data.recentClicks"
         :limit="limit"
-        title="Recent click details"
-        description="Clean last-click details without extra geographic noise."
+        :title="t('analytics.recentDetails')"
+        :description="t('linkAnalytics.recentDescription')"
         @update:limit="setLimit"
       />
     </template>

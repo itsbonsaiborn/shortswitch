@@ -20,19 +20,20 @@ Privacy-aware self-hosted URL shortener with a modern Vue 3 dashboard, interacti
 - Fastify + TypeScript backend
 - SQLite storage with Docker volume persistence
 - Responsive mobile-first dashboard
-- Light and dark themes
+- Light, system-following, and dark themes with per-user synchronization
+- English and Latvian localization for the dashboard and all public Links, Pages and Live states; public language follows the visitor's primary browser language with English fallback
 - Password-protected and expiring links
 - Live open-answer, word-cloud, multiple-choice and scale activities
 - Anonymous or named participation with live SSE result boards
 - Global ban filter and manual moderation queue
-- Linktree-style public Pages with reusable blocks, themes, preview and independent analytics
+- Linktree-style public Pages with reusable blocks, themes, CSS/SVG background patterns, preview and independent analytics
 - Per-link analytics and global analytics
 - Cookie-based authentication with server-side sessions
 - Single-container Docker deployment
 
 ## Stack
 
-- Frontend: Vue 3, TypeScript, TailwindCSS
+- Frontend: Vue 3, TypeScript, TailwindCSS, vue-i18n
 - Backend: Fastify, TypeScript
 - Database: SQLite
 - Deployment: Docker, Docker Compose

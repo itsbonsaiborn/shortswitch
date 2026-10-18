@@ -233,6 +233,47 @@ describe.sequential('server security hardening', () => {
     await expect(import('./config.js')).rejects.toThrow('COOKIE_SECURE must be enabled');
   });
 
+  test('localizes public HTML from only the primary Accept-Language value', async () => {
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+    const cases = [
+      { language: 'lv-LV', locale: 'lv', heading: 'Adrese nav atrasta' },
+      { language: 'en-US', locale: 'en', heading: 'Address not found' },
+      { language: 'ru-RU,lv-LV;q=0.9', locale: 'en', heading: 'Address not found' },
+      { language: 'zz-ZZ', locale: 'en', heading: 'Address not found' }
+    ];
+
+    for (const item of cases) {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/missing-public-resource',
+        headers: { 'accept-language': item.language }
+      });
+      expect(response.statusCode).toBe(404);
+      expect(response.body).toContain(`<html lang="${item.locale}">`);
+      expect(response.body).toContain(item.heading);
+    }
+
+    await app.close();
+  });
+
+  test('renders localized protected, expired and disabled public states', async () => {
+    const {
+      renderLinkDisabledPage,
+      renderLinkExpiredPage,
+      renderProtectedLinkPage,
+      renderPublicServiceUnavailablePage
+    } = await import('./views/error-pages.js');
+
+    expect(renderProtectedLinkPage({ locale: 'lv', error: 'Nepareiza parole.' }))
+      .toContain('Ievadi paroli');
+    expect(renderProtectedLinkPage({ locale: 'lv', error: 'Nepareiza parole.' }))
+      .toContain('Nepareiza parole.');
+    expect(renderLinkExpiredPage('lv', 'live')).toContain('Aktivitātes termiņš ir beidzies');
+    expect(renderLinkDisabledPage('lv', 'page')).toContain('Lapa ir atspējota');
+    expect(renderPublicServiceUnavailablePage('lv')).toContain('Pakalpojums nav pieejams');
+  });
+
   test('upgrades the shared slug registry for Pages without losing legacy rows', async () => {
     const { DatabaseSync } = await import('node:sqlite');
     const legacy = new DatabaseSync(testDbPath);
@@ -286,7 +327,8 @@ describe.sequential('server security hardening', () => {
         FOREIGN KEY (page_id) REFERENCES pages(id) ON DELETE CASCADE
       );
       INSERT INTO users VALUES ('owner', 'owner@example.com', 'Owner', 'hash', 0, 'system', 1, '2026-01-01', '2026-01-01');
-      INSERT INTO pages VALUES ('page', 'owner', 'legacy-page', 'Legacy', NULL, NULL, NULL, 'classic_cream', 'classic', 'draft', NULL, NULL, '2026-01-01', '2026-01-01');
+      INSERT INTO pages (id, user_id, slug, title, description, emoji, avatar_url, theme, layout, status, seo_title, seo_description, created_at, updated_at)
+      VALUES ('page', 'owner', 'legacy-page', 'Legacy', NULL, NULL, NULL, 'classic_cream', 'classic', 'draft', NULL, NULL, '2026-01-01', '2026-01-01');
       INSERT INTO page_blocks VALUES ('legacy-heading', 'page', 'heading', '{"text":"Preserved"}', 0, 1, '2026-01-01', '2026-01-01');
       INSERT INTO page_views VALUES ('legacy-view', 'page', '2026-01-01', 'visitor', NULL);
       INSERT INTO page_block_clicks VALUES ('legacy-click', 'page', 'legacy-heading', 'Preserved', 'legacy-event', '2026-01-01', 'visitor');
@@ -306,9 +348,48 @@ describe.sequential('server security hardening', () => {
     expect(db.prepare('SELECT visitor_hash, device_type, browser, os, referrer, language FROM page_block_clicks WHERE id = ?').get('legacy-click')).toMatchObject({
       visitor_hash: 'visitor', device_type: 'unknown', browser: 'Unknown', os: 'Unknown', referrer: 'Direct', language: null
     });
+    expect(db.prepare('SELECT sidebar_collapsed, locale, preferences_initialized FROM users WHERE id = ?').get('owner')).toMatchObject({
+      sidebar_collapsed: 0, locale: 'en', preferences_initialized: 0
+    });
+    expect(db.prepare('SELECT background_pattern, pattern_intensity FROM pages WHERE id = ?').get('page')).toMatchObject({
+      background_pattern: 'none', pattern_intensity: 35
+    });
     expect(() => db.prepare('INSERT INTO page_blocks VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(
       'double-block', 'page', 'double', '{"children":[]}', 1, 1, '2026-01-01', '2026-01-01'
     )).not.toThrow();
+  });
+
+  test('user preferences are validated, persisted and scoped to the authenticated user', async () => {
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+    const otherUserId = await seedUser('other@example.com', 'other-password-42');
+    const csrf = await getCsrfBundle(app);
+    const admin = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
+    const headers = { cookie: admin.cookies, 'x-csrf-token': csrf.csrfToken };
+
+    const updated = await app.inject({
+      method: 'PATCH', url: '/api/settings/preferences', headers,
+      payload: { theme: 'dark', sidebarCollapsed: true, locale: 'lv', userId: otherUserId }
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json()).toEqual({ theme: 'dark', sidebarCollapsed: true, locale: 'lv', initialized: true });
+
+    const preferences = await app.inject({ method: 'GET', url: '/api/settings/preferences', headers: { cookie: admin.cookies } });
+    expect(preferences.statusCode).toBe(200);
+    expect(preferences.headers['cache-control']).toBe('private, no-store');
+    expect(preferences.json()).toEqual({ theme: 'dark', sidebarCollapsed: true, locale: 'lv', initialized: true });
+
+    const me = await app.inject({ method: 'GET', url: '/api/auth/me', headers: { cookie: admin.cookies } });
+    expect(me.json()).toMatchObject({ theme: 'dark', sidebarCollapsed: true, locale: 'lv', preferencesInitialized: true });
+    const { getDb } = await import('./db.js');
+    expect(getDb().prepare('SELECT theme, sidebar_collapsed, locale FROM users WHERE id = ?').get(otherUserId)).toMatchObject({
+      theme: 'system', sidebar_collapsed: 0, locale: 'en'
+    });
+
+    expect((await app.inject({ method: 'PATCH', url: '/api/settings/preferences', headers, payload: { locale: 'de' } })).statusCode).toBe(400);
+    expect((await app.inject({ method: 'PATCH', url: '/api/settings/preferences', payload: { locale: 'lv' } })).statusCode).toBe(403);
+    expect((await app.inject({ method: 'GET', url: '/api/settings/preferences' })).statusCode).toBe(401);
+    await app.close();
   });
 
   test('allowed CORS origin works and unknown origin is not trusted', async () => {
@@ -638,18 +719,32 @@ describe.sequential('server security hardening', () => {
       }
     });
 
-    await app.inject({
+    const form = await app.inject({
+      method: 'GET',
+      url: '/access/secret1',
+      headers: { 'accept-language': 'lv-LV,en;q=0.9' }
+    });
+    expect(form.statusCode).toBe(200);
+    expect(form.body).toContain('Ievadi paroli');
+    expect(form.body).toContain('<html lang="lv">');
+
+    const invalid = await app.inject({
       method: 'POST',
       url: '/access/secret1',
-      payload: { password: 'wrong' }
+      payload: { password: 'wrong' },
+      headers: { 'accept-language': 'lv-LV,en;q=0.9' }
     });
+    expect(invalid.statusCode).toBe(401);
+    expect(invalid.body).toContain('Nepareiza parole');
 
     const blocked = await app.inject({
       method: 'POST',
       url: '/access/secret1',
-      payload: { password: 'wrong' }
+      payload: { password: 'wrong' },
+      headers: { 'accept-language': 'lv-LV,en;q=0.9' }
     });
     expect(blocked.statusCode).toBe(429);
+    expect(blocked.body).toContain('Pārāk daudz mēģinājumu');
 
     await app.close();
   });
@@ -1952,7 +2047,8 @@ describe.sequential('server security hardening', () => {
     const liveActivity = liveResponse.json();
     const pagePayload = {
       title: '<script>alert(1)</script> Datorika', slug: 'datorika-page', description: 'Useful resources', emoji: '💻',
-      avatarUrl: 'https://images.example.com/avatar.png', theme: 'ocean_blue', layout: 'soft', status: 'draft',
+      avatarUrl: 'https://images.example.com/avatar.png', theme: 'ocean_blue', layout: 'soft',
+      backgroundPattern: 'waves', patternIntensity: 60, status: 'draft',
       seoTitle: 'Datorika resources', seoDescription: 'Learning links and activities',
       blocks: [
         { type: 'heading', visible: true, config: { text: 'Start here', alignment: 'left', size: 'large' } },
@@ -1975,6 +2071,7 @@ describe.sequential('server security hardening', () => {
     const created = createdResponse.json();
     expect(created.blocks).toHaveLength(10);
     expect(created.status).toBe('draft');
+    expect(created).toMatchObject({ backgroundPattern: 'waves', patternIntensity: 60 });
     const { getDb } = await import('./db.js');
     const blockQueryPlan = getDb().prepare('EXPLAIN QUERY PLAN SELECT * FROM page_blocks WHERE page_id = ? ORDER BY position').all(created.id) as Array<{ detail: string }>;
     expect(blockQueryPlan.some((step) => step.detail.includes('idx_page_blocks_page_position'))).toBe(true);
@@ -1993,6 +2090,8 @@ describe.sequential('server security hardening', () => {
     invalidImage.blocks[8].config.url = 'http://images.example.com/lesson.png';
     expect((await app.inject({ method: 'POST', url: '/api/pages', headers: adminHeaders, payload: invalidImage })).statusCode).toBe(400);
     expect((await app.inject({ method: 'POST', url: '/api/pages', headers: adminHeaders, payload: { ...pagePayload, slug: 'invalid-theme', theme: 'unknown' } })).statusCode).toBe(400);
+    expect((await app.inject({ method: 'POST', url: '/api/pages', headers: adminHeaders, payload: { ...pagePayload, slug: 'invalid-pattern', backgroundPattern: 'noise' } })).statusCode).toBe(400);
+    expect((await app.inject({ method: 'POST', url: '/api/pages', headers: adminHeaders, payload: { ...pagePayload, slug: 'invalid-intensity', patternIntensity: 101 } })).statusCode).toBe(400);
     const duplicateBlocks = structuredClone(pagePayload);
     duplicateBlocks.slug = 'duplicate-blocks';
     (duplicateBlocks.blocks[1] as any).id = 'duplicate-block-id';
@@ -2031,6 +2130,7 @@ describe.sequential('server security hardening', () => {
     expect(publicResponse.statusCode).toBe(200);
     expect(publicResponse.headers['cache-control']).toBe('no-store');
     const publicPage = publicResponse.json();
+    expect(publicPage).toMatchObject({ backgroundPattern: 'waves', patternIntensity: 60 });
     expect(publicPage.blocks).toHaveLength(9);
     expect(publicPage.status).toBeUndefined();
     expect(publicPage.seoTitle).toBeUndefined();

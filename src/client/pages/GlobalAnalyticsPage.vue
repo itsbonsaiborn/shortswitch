@@ -8,6 +8,8 @@ import StatCard from '../components/StatCard.vue';
 import { useTheme } from '../composables/useTheme';
 import { api } from '../lib/api';
 import { createDonutTooltip } from '../lib/chart-tooltip';
+import { chartCategoryColors, chartDonutDividerColor } from '../lib/chart-colors';
+import { useI18n } from 'vue-i18n';
 import type { GlobalAnalytics, GlobalAnalyticsModuleFilter } from '@/shared/types';
 
 type AnalyticsRange = 'day' | 'week' | 'month';
@@ -30,11 +32,11 @@ const isCoarsePointer = useMediaQuery('(hover: none), (pointer: coarse)');
 const isMobileLayout = useMediaQuery('(max-width: 767px)');
 const allowDonutSelection = computed(() => isCoarsePointer.value && isMobileLayout.value);
 const { resolvedTheme } = useTheme();
+const { t, locale } = useI18n();
 const activityChartContainer = ref<HTMLElement | null>(null);
 const { width: activityChartWidth } = useElementSize(activityChartContainer);
 const data = ref<GlobalAnalytics | null>(null);
 const loading = ref(true);
-const refreshing = ref(false);
 const errorMessage = ref('');
 const range = ref<AnalyticsRange>(readRange());
 const moduleMetric = ref<ModuleMetric>('clicks');
@@ -54,7 +56,6 @@ const load = async () => {
   const requestId = ++loadRequestId;
   const isInitialLoad = data.value === null;
   loading.value = isInitialLoad;
-  refreshing.value = !isInitialLoad;
   if (isInitialLoad) errorMessage.value = '';
   try {
     const timezoneOffsetMinutes = -new Date().getTimezoneOffset();
@@ -67,12 +68,11 @@ const load = async () => {
   } catch (error) {
     if (requestId !== loadRequestId) return;
     if (isInitialLoad) {
-      errorMessage.value = error instanceof Error ? error.message : 'Unable to load analytics.';
+      errorMessage.value = error instanceof Error ? error.message : t('errors.load');
     }
   } finally {
     if (requestId === loadRequestId) {
       loading.value = false;
-      refreshing.value = false;
     }
   }
 };
@@ -83,7 +83,6 @@ const loadActivityOverTime = async () => {
     return;
   }
   const requestId = ++loadRequestId;
-  refreshing.value = true;
   try {
     const timezoneOffsetMinutes = -new Date().getTimezoneOffset();
     const nextActivity = await api<GlobalAnalytics['activityOverTime']>(
@@ -93,8 +92,6 @@ const loadActivityOverTime = async () => {
     data.value.activityOverTime = nextActivity;
   } catch {
     // Keep the last successful chart visible; a later range change can retry.
-  } finally {
-    if (requestId === loadRequestId) refreshing.value = false;
   }
 };
 
@@ -118,9 +115,9 @@ const activityLabelStride = computed(() => {
   return Math.max(minimumStride, Math.ceil(categoryCount / visibleLabels));
 });
 const activitySeries = computed(() => [
-  { name: 'Clicks', data: data.value?.activityOverTime.map((point) => point.clicks) ?? [] },
-  { name: 'Views', data: data.value?.activityOverTime.map((point) => point.views) ?? [] },
-  { name: 'Unique visitors', data: data.value?.activityOverTime.map((point) => point.uniqueVisitors) ?? [] }
+  { name: t('analytics.clicks'), data: data.value?.activityOverTime.map((point) => point.clicks) ?? [] },
+  { name: t('analytics.views'), data: data.value?.activityOverTime.map((point) => point.views) ?? [] },
+  { name: t('analytics.uniqueVisitors'), data: data.value?.activityOverTime.map((point) => point.uniqueVisitors) ?? [] }
 ]);
 
 const activityChartOptions = computed<ApexOptions>(() => ({
@@ -160,8 +157,10 @@ const activityChartOptions = computed<ApexOptions>(() => ({
       rotate: 0,
       hideOverlappingLabels: true,
       trim: false,
-      formatter: (value) => {
-        const index = activityCategories.value.indexOf(String(value));
+      formatter: (value, _timestamp, options) => {
+        const index = typeof options?.i === 'number'
+          ? options.i
+          : activityCategories.value.indexOf(String(value));
         return index === -1 || index % activityLabelStride.value === 0 ? String(value) : '';
       }
     }
@@ -179,24 +178,26 @@ const activityChartOptions = computed<ApexOptions>(() => ({
   }
 }));
 
-const moduleColors = computed(() =>
-  isDark.value ? ['#87d3c3', '#eccb60', '#f9ae83'] : ['#24837b', '#ad8301', '#bc5215']
-);
 const moduleTotal = computed(() =>
   (data.value?.modules ?? []).reduce((sum, item) => sum + item[moduleMetric.value], 0)
 );
 const moduleItems = computed(() => {
-  const labels = { links: 'Links', pages: 'Pages', live: 'Live' } as const;
-  return (data.value?.modules ?? []).map((item, index) => {
+  const labels = { links: t('navigation.links'), pages: t('navigation.pages'), live: t('navigation.live') } as const;
+  const rows = (data.value?.modules ?? []).map((item) => {
     const value = item[moduleMetric.value];
     return {
       ...item,
       label: labels[item.module],
       value,
-      color: moduleColors.value[index],
       percentage: moduleTotal.value > 0 ? (value / moduleTotal.value) * 100 : 0
     };
   });
+  const colors = chartCategoryColors(
+    rows.map((item) => item.module),
+    isDark.value,
+    rows.map((item) => item.value)
+  );
+  return rows.map((item, index) => ({ ...item, color: colors[index] }));
 });
 const moduleSeries = computed(() => moduleItems.value.map((item) => item.value));
 const selectedModuleItem = computed(() => selectedModuleIndex.value === null
@@ -220,10 +221,10 @@ const moduleChartOptions = computed<ApexOptions>(() => ({
   },
   theme: { mode: isDark.value ? 'dark' : 'light' },
   labels: moduleItems.value.map((item) => item.label),
-  colors: moduleColors.value,
+  colors: moduleItems.value.map((item) => item.color),
   dataLabels: { enabled: false },
   legend: { show: false },
-  stroke: { width: 3, colors: [isDark.value ? '#1c1b1a' : '#fffcf0'] },
+  stroke: { width: 2, colors: [chartDonutDividerColor(isDark.value)] },
   plotOptions: {
     pie: {
       expandOnClick: false,
@@ -241,17 +242,22 @@ const moduleChartOptions = computed<ApexOptions>(() => ({
   tooltip: {
     enabled: !allowDonutSelection.value,
     followCursor: true,
-    custom: createDonutTooltip(moduleItems.value, moduleColors.value)
+    custom: createDonutTooltip(
+      moduleItems.value,
+      moduleItems.value.map((item) => item.color),
+      locale.value
+    )
   }
 }));
 
-const weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const weekdays = computed(() => Array.from({ length: 7 }, (_, index) =>
+  new Intl.DateTimeFormat(locale.value, { weekday: 'short' }).format(new Date(Date.UTC(2024, 0, index + 1)))));
 const heatmapHours = Array.from({ length: 12 }, (_, index) => index * 2);
 const heatmapMatrix = computed(() => {
   const valueMap = new Map(
     (data.value?.activityByTime ?? []).map((cell) => [`${cell.day}-${cell.hour}`, cell[heatmapMetric.value]])
   );
-  return weekdays.map((label, dayIndex) => ({
+  return weekdays.value.map((label, dayIndex) => ({
     label,
     day: dayIndex + 1,
     cells: heatmapHours.map((hour) => ({ hour, value: valueMap.get(`${dayIndex + 1}-${hour}`) ?? 0 }))
@@ -266,10 +272,10 @@ const heatmapCellStyle = (value: number) => {
   return { backgroundColor: isDark.value ? `rgba(135, 211, 195, ${opacity})` : `rgba(36, 131, 123, ${opacity})` };
 };
 const heatmapMetricLabel = computed(() => heatmapMetric.value === 'uniqueVisitors'
-  ? 'Unique visitors'
+  ? t('analytics.uniqueVisitors')
   : heatmapMetric.value === 'clicks'
-    ? 'Clicks'
-    : 'Views');
+    ? t('analytics.clicks')
+    : t('analytics.views'));
 const heatmapTooltip = ref({
   visible: false,
   x: 0,
@@ -327,16 +333,20 @@ const hideHeatmapTooltip = () => {
   heatmapTooltip.value.visible = false;
 };
 
-const moduleFilters: Array<{ label: string; value: GlobalAnalyticsModuleFilter }> = [
-  { label: 'All', value: 'all' },
-  { label: 'Links', value: 'links' },
-  { label: 'Pages', value: 'pages' },
-  { label: 'Live', value: 'live' }
-];
+const moduleFilters = computed<Array<{ label: string; value: GlobalAnalyticsModuleFilter }>>(() => [
+  { label: t('filters.all'), value: 'all' },
+  { label: t('navigation.links'), value: 'links' },
+  { label: t('navigation.pages'), value: 'pages' },
+  { label: t('navigation.live'), value: 'live' }
+]);
 const topReferrerItems = computed(() => data.value?.topReferrers[referrerModule.value] ?? []);
 const topSlugItems = computed(() => data.value?.topSlugs[slugModule.value] ?? []);
 const referrerTotal = computed(() => data.value?.referrerTotals[referrerModule.value] ?? 0);
-const referrerLabel = (label: string) => label === 'Direct' ? 'Direct' : label.replace(/^www\./i, '');
+const referrerLabel = (label: string) => label === 'Direct'
+  ? t('analytics.direct')
+  : label === 'Unknown'
+    ? t('analytics.unknown')
+    : label.replace(/^www\./i, '');
 
 const buttonClass = (active: boolean) =>
   active
@@ -351,35 +361,35 @@ watch(moduleMetric, () => { selectedModuleIndex.value = null; });
 <template>
   <div class="analytics-page min-w-0 space-y-6">
     <section v-if="loading" class="panel p-8 text-center text-[var(--ui-text-muted)]">
-      Loading analytics...
+      {{ t('common.loading') }}
     </section>
 
     <section v-else-if="errorMessage" class="panel p-8 text-center">
       <p class="text-sm text-red-600 dark:text-red-300">{{ errorMessage }}</p>
-      <button class="btn-secondary mt-4" type="button" @click="load">Try again</button>
+      <button class="btn-secondary mt-4" type="button" @click="load">{{ t('common.retry') }}</button>
     </section>
 
     <template v-else-if="data">
       <section class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="Total clicks" :value="data.totals.clicks" icon="clicks" />
-        <StatCard label="Total views" :value="data.totals.views" icon="views" />
-        <StatCard label="Unique visitors" :value="data.totals.uniqueVisitors" icon="visitors" />
-        <StatCard label="Total devices" :value="data.totals.devices" icon="devices" />
+        <StatCard :label="t('analytics.totalClicks')" :value="data.totals.clicks" icon="clicks" />
+        <StatCard :label="t('analytics.totalViews')" :value="data.totals.views" icon="views" />
+        <StatCard :label="t('analytics.uniqueVisitors')" :value="data.totals.uniqueVisitors" icon="visitors" />
+        <StatCard :label="t('analytics.devices')" :value="data.totals.devices" icon="devices" />
       </section>
 
       <section class="grid min-w-0 items-stretch gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(24rem,0.75fr)]">
         <div class="panel flex min-w-0 flex-col p-5 sm:p-6">
           <div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
             <div>
-              <h2 class="text-xl font-semibold">Activity over time</h2>
-              <p class="mt-1 text-sm text-[var(--ui-text-muted)]">Clicks, views and unique visitors across every module.</p>
+              <h2 class="text-xl font-semibold">{{ t('analytics.activityOverTime') }}</h2>
+              <p class="mt-1 text-sm text-[var(--ui-text-muted)]">{{ t('analytics.allModulesDescription') }}</p>
             </div>
             <div class="grid w-full grid-cols-3 gap-2 sm:flex sm:w-auto">
               <button
                 v-for="option in [
-                  { label: 'Daily', value: 'day' },
-                  { label: 'Weekly', value: 'week' },
-                  { label: 'Monthly', value: 'month' }
+                  { label: t('analytics.daily'), value: 'day' },
+                  { label: t('analytics.weekly'), value: 'week' },
+                  { label: t('analytics.monthly'), value: 'month' }
                 ]"
                 :key="option.value"
                 type="button"
@@ -394,13 +404,11 @@ watch(moduleMetric, () => { selectedModuleIndex.value = null; });
 
           <div
             class="app-scrollbar mt-6 min-w-0 rounded-[2rem] border border-[var(--ui-border)] bg-[var(--ui-panel-muted)] p-3 sm:p-4"
-            :class="[
-              isMobileChart ? 'overflow-x-auto overflow-y-hidden' : 'overflow-hidden',
-              refreshing ? 'opacity-70' : ''
-            ]"
+            :class="isMobileChart ? 'overflow-x-auto overflow-y-hidden' : 'overflow-hidden'"
           >
             <div ref="activityChartContainer" :class="isMobileChart ? 'min-w-[720px]' : 'min-w-0'">
               <VueApexCharts
+                :key="`global-trend-${resolvedTheme}`"
                 type="area"
                 height="330"
                 width="100%"
@@ -413,16 +421,16 @@ watch(moduleMetric, () => { selectedModuleIndex.value = null; });
 
         <div class="panel flex min-w-0 flex-col p-5 sm:p-6">
           <div>
-            <h2 class="text-xl font-semibold">Activity by module</h2>
-            <p class="mt-1 text-sm text-[var(--ui-text-muted)]">Compare Links, Pages and Live.</p>
+            <h2 class="text-xl font-semibold">{{ t('analytics.activityByModule') }}</h2>
+            <p class="mt-1 text-sm text-[var(--ui-text-muted)]">{{ t('analytics.compareModules') }}</p>
           </div>
 
           <div class="mt-4 grid grid-cols-3 gap-2">
             <button
               v-for="option in [
-                { label: 'Clicks', value: 'clicks' },
-                { label: 'Views', value: 'views' },
-                { label: 'Unique', value: 'uniqueVisitors' }
+                { label: t('analytics.clicks'), value: 'clicks' },
+                { label: t('analytics.views'), value: 'views' },
+                { label: t('analytics.unique'), value: 'uniqueVisitors' }
               ]"
               :key="option.value"
               type="button"
@@ -485,15 +493,15 @@ watch(moduleMetric, () => { selectedModuleIndex.value = null; });
         <div class="panel flex min-w-0 flex-col p-5 sm:p-6">
           <div class="flex flex-col gap-4">
             <div>
-              <h2 class="text-xl font-semibold">Activity by day and hour</h2>
-              <p class="mt-1 text-sm text-[var(--ui-text-muted)]">Activity grouped into two-hour intervals.</p>
+              <h2 class="text-xl font-semibold">{{ t('analytics.activityByTime') }}</h2>
+              <p class="mt-1 text-sm text-[var(--ui-text-muted)]">{{ t('analytics.twoHourDescription') }}</p>
             </div>
             <div class="grid w-full min-w-0 grid-cols-3 gap-2">
               <button
                 v-for="option in [
-                  { label: 'Clicks', value: 'clicks' },
-                  { label: 'Views', value: 'views' },
-                  { label: 'Unique', value: 'uniqueVisitors' }
+                  { label: t('analytics.clicks'), value: 'clicks' },
+                  { label: t('analytics.views'), value: 'views' },
+                  { label: t('analytics.unique'), value: 'uniqueVisitors' }
                 ]"
                 :key="option.value"
                 type="button"
@@ -535,8 +543,8 @@ watch(moduleMetric, () => { selectedModuleIndex.value = null; });
 
         <div class="panel flex min-w-0 flex-col p-5 sm:p-6">
           <div>
-            <h2 class="text-xl font-semibold">Top referrers</h2>
-            <p class="mt-1 text-sm text-[var(--ui-text-muted)]">Top 8 traffic sources.</p>
+            <h2 class="text-xl font-semibold">{{ t('analytics.topReferrers') }}</h2>
+            <p class="mt-1 text-sm text-[var(--ui-text-muted)]">{{ t('analytics.topReferrersDescription') }}</p>
           </div>
           <div class="mt-4 grid grid-cols-4 gap-1.5">
             <button
@@ -551,7 +559,7 @@ watch(moduleMetric, () => { selectedModuleIndex.value = null; });
             </button>
           </div>
           <div class="mt-5 grid grid-cols-[minmax(0,1fr)_4.5rem_3.25rem] gap-3 border-b border-[var(--ui-border)] px-2 pb-2 text-[11px] font-semibold uppercase tracking-wide text-[var(--ui-text-muted)]">
-            <span>Referrer</span><span class="text-center">Visits</span><span class="text-right">%</span>
+            <span>{{ t('analytics.referrer') }}</span><span class="text-center">{{ t('analytics.visits') }}</span><span class="text-right">%</span>
           </div>
           <div v-if="topReferrerItems.length" class="divide-y divide-[var(--ui-border)]">
             <div
@@ -577,13 +585,13 @@ watch(moduleMetric, () => { selectedModuleIndex.value = null; });
               </span>
             </div>
           </div>
-          <div v-else class="flex min-h-40 items-center justify-center text-sm text-[var(--ui-text-muted)]">No referrers yet.</div>
+          <div v-else class="flex min-h-40 items-center justify-center text-sm text-[var(--ui-text-muted)]">{{ t('analytics.noReferrers') }}</div>
         </div>
 
         <div class="panel flex min-w-0 flex-col p-5 sm:p-6">
           <div>
-            <h2 class="text-xl font-semibold">Top slugs</h2>
-            <p class="mt-1 text-sm text-[var(--ui-text-muted)]">Top 8 public resources.</p>
+            <h2 class="text-xl font-semibold">{{ t('analytics.topSlugs') }}</h2>
+            <p class="mt-1 text-sm text-[var(--ui-text-muted)]">{{ t('analytics.topSlugsDescription') }}</p>
           </div>
           <div class="mt-4 grid grid-cols-4 gap-1.5">
             <button
@@ -598,7 +606,7 @@ watch(moduleMetric, () => { selectedModuleIndex.value = null; });
             </button>
           </div>
           <div class="mt-5 grid grid-cols-[minmax(0,1fr)_5.5rem_4rem] gap-3 border-b border-[var(--ui-border)] px-2 pb-2 text-[11px] font-semibold uppercase tracking-wide text-[var(--ui-text-muted)]">
-            <span>Slug</span><span class="text-center">Type</span><span class="text-right">Visits</span>
+            <span>{{ t('common.slug') }}</span><span class="text-center">{{ t('analytics.type') }}</span><span class="text-right">{{ t('analytics.visits') }}</span>
           </div>
           <div v-if="topSlugItems.length" class="divide-y divide-[var(--ui-border)]">
             <div
@@ -622,7 +630,7 @@ watch(moduleMetric, () => { selectedModuleIndex.value = null; });
               <strong class="text-right text-lg leading-none">{{ item.value }}</strong>
             </div>
           </div>
-          <div v-else class="flex min-h-40 items-center justify-center text-sm text-[var(--ui-text-muted)]">No slugs yet.</div>
+          <div v-else class="flex min-h-40 items-center justify-center text-sm text-[var(--ui-text-muted)]">{{ t('analytics.noSlugs') }}</div>
         </div>
       </section>
 

@@ -3,10 +3,12 @@ import { reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { useAppConfig } from '../composables/useAppConfig';
 import { useAuth } from '../composables/useAuth';
+import { useI18n } from 'vue-i18n';
 
 const router = useRouter();
 const { appName, loadAppConfig } = useAppConfig();
 const { login } = useAuth();
+const { t } = useI18n();
 const form = reactive({ email: '', password: '' });
 const loading = ref(false);
 const error = ref('');
@@ -39,21 +41,22 @@ loadAppConfig();
         <p class="mt-5 text-sm font-semibold uppercase tracking-[0.35em] text-accent-600 dark:text-accent-300">
           {{ appName }}
         </p>
-        <h2 class="mt-3 text-3xl font-semibold">Sign in</h2>
+        <h2 class="mt-3 text-3xl font-semibold">{{ t('auth.title') }}</h2>
+        <p class="mt-2 text-sm text-[var(--ui-text-muted)]">{{ t('auth.description') }}</p>
       </div>
 
       <form class="mt-8 space-y-4" @submit.prevent="submit">
         <label class="block">
-          <span class="mb-2 block text-sm font-medium">Email</span>
-          <input v-model="form.email" class="input" type="email" placeholder="Email address" />
+          <span class="mb-2 block text-sm font-medium">{{ t('auth.email') }}</span>
+          <input v-model="form.email" class="input" type="email" :placeholder="t('auth.email')" />
         </label>
         <label class="block">
-          <span class="mb-2 block text-sm font-medium">Password</span>
-          <input v-model="form.password" class="input" type="password" placeholder="Password" />
+          <span class="mb-2 block text-sm font-medium">{{ t('auth.password') }}</span>
+          <input v-model="form.password" class="input" type="password" :placeholder="t('auth.password')" />
         </label>
         <p v-if="error" class="rounded-2xl bg-rose-500/10 px-4 py-3 text-sm text-rose-600 dark:text-rose-300">{{ error }}</p>
         <button type="submit" class="btn-primary w-full" :disabled="loading">
-          {{ loading ? 'Signing in...' : 'Sign in' }}
+          {{ loading ? t('auth.signingIn') : t('auth.signIn') }}
         </button>
       </form>
     </div>

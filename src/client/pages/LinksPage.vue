@@ -6,6 +6,7 @@ import LinkCard from '../components/LinkCard.vue';
 import StatCard from '../components/StatCard.vue';
 import CreateLinkModal from '../components/CreateLinkModal.vue';
 import type { LinkRecord } from '@/shared/types';
+import { useI18n } from 'vue-i18n';
 
 const links = ref<LinkRecord[]>([]);
 const loading = ref(true);
@@ -14,6 +15,7 @@ const editOpen = ref(false);
 const search = ref('');
 const sort = ref<'newest' | 'oldest' | 'slug' | 'clicks'>('newest');
 const { pushToast } = useToast();
+const { t } = useI18n();
 
 const load = async () => {
   loading.value = true;
@@ -54,9 +56,9 @@ const removeLink = async (link: LinkRecord) => {
   try {
     await api(`/api/links/${link.id}`, { method: 'DELETE', body: JSON.stringify({}) });
     links.value = links.value.filter((candidate) => candidate.id !== link.id);
-    pushToast({ tone: 'error', title: 'Link deleted', description: `${link.slug} was removed.` });
+    pushToast({ tone: 'error', title: t('notices.linkDeleted'), description: t('notices.linkRemoved', { name: link.slug }) });
   } catch (error) {
-    pushToast({ tone: 'error', title: 'Failed to delete link', description: (error as Error).message });
+    pushToast({ tone: 'error', title: t('notices.deleteLinkFailed'), description: (error as Error).message });
   }
 };
 
@@ -69,11 +71,11 @@ const toggleEnabled = async (link: LinkRecord, enabled: boolean, clearExpiration
     links.value = links.value.map((candidate) => (candidate.id === updated.id ? updated : candidate));
     pushToast({
       tone: enabled ? 'success' : 'error',
-      title: enabled ? 'Link enabled' : 'Link disabled',
-      description: `${updated.slug} is now ${enabled ? 'active' : 'disabled'}.`
+      title: t(enabled ? 'notices.linkEnabled' : 'notices.linkDisabled'),
+      description: `${updated.slug} · ${t(enabled ? 'common.active' : 'common.disabled')}`
     });
   } catch (error) {
-    pushToast({ tone: 'error', title: 'Failed to change link status', description: (error as Error).message });
+    pushToast({ tone: 'error', title: t('notices.statusFailed'), description: (error as Error).message });
   }
 };
 
@@ -86,11 +88,11 @@ const removePassword = async (link: LinkRecord) => {
     links.value = links.value.map((candidate) => (candidate.id === updated.id ? updated : candidate));
     pushToast({
       tone: 'success',
-      title: 'Password removed',
-      description: `${updated.slug} is no longer password-protected.`
+      title: t('notices.passwordRemoved'),
+      description: `${updated.slug} · ${t('notices.passwordRemovedDescription')}`
     });
   } catch (error) {
-    pushToast({ tone: 'error', title: 'Failed to remove password', description: (error as Error).message });
+    pushToast({ tone: 'error', title: t('notices.passwordFailed'), description: (error as Error).message });
   }
 };
 
@@ -103,11 +105,11 @@ const clearAnalytics = async (link: LinkRecord) => {
     links.value = links.value.map((candidate) => (candidate.id === updated.id ? updated : candidate));
     pushToast({
       tone: 'error',
-      title: 'Analytics cleared',
-      description: `${updated.slug} analytics history was removed.`
+      title: t('notices.analyticsCleared'),
+      description: t('notices.linkAnalyticsCleared', { name: updated.slug })
     });
   } catch (error) {
-    pushToast({ tone: 'error', title: 'Failed to clear analytics', description: (error as Error).message });
+    pushToast({ tone: 'error', title: t('notices.analyticsClearFailed'), description: (error as Error).message });
   }
 };
 
@@ -133,33 +135,33 @@ onUnmounted(() => {
 <template>
   <div class="space-y-4 sm:space-y-6">
     <section class="grid gap-3 sm:grid-cols-3">
-      <StatCard label="Total links" :value="links.length" icon="links" />
-      <StatCard label="Total clicks" :value="links.reduce((sum, item) => sum + item.clickCount, 0)" icon="clicks" />
-      <StatCard label="Unique clicks" :value="totalUniqueClicks" icon="clicks" />
+      <StatCard :label="t('links.total')" :value="links.length" icon="links" />
+      <StatCard :label="t('links.clicks')" :value="links.reduce((sum, item) => sum + item.clickCount, 0)" icon="clicks" />
+      <StatCard :label="t('links.unique')" :value="totalUniqueClicks" icon="clicks" />
     </section>
 
     <section class="flex justify-end">
       <div class="grid w-full gap-2 sm:w-auto sm:grid-cols-[minmax(220px,1fr)_170px]">
-        <label class="sr-only" for="link-search">Search Links</label>
-        <input id="link-search" v-model="search" class="input" placeholder="Search target or slug" />
-        <label class="sr-only" for="link-sort">Sort Links</label>
+        <label class="sr-only" for="link-search">{{ t('links.search') }}</label>
+        <input id="link-search" v-model="search" class="input" :placeholder="t('links.search')" />
+        <label class="sr-only" for="link-sort">{{ t('common.actions') }}</label>
         <select id="link-sort" v-model="sort" class="input">
-          <option value="newest">Newest first</option>
-          <option value="oldest">Oldest first</option>
-          <option value="slug">Slug</option>
-          <option value="clicks">Most clicked</option>
+          <option value="newest">{{ t('common.newest') }}</option>
+          <option value="oldest">{{ t('common.oldest') }}</option>
+          <option value="slug">{{ t('common.slug') }}</option>
+          <option value="clicks">{{ t('common.mostClicked') }}</option>
         </select>
       </div>
     </section>
 
-    <section v-if="loading" class="panel p-8 text-center text-slate-500 dark:text-slate-400">Loading links...</section>
+    <section v-if="loading" class="panel p-8 text-center text-slate-500 dark:text-slate-400">{{ t('links.loading') }}</section>
     <section v-else-if="!links.length" class="panel p-10 text-center">
-      <h2 class="text-2xl font-semibold">No links yet</h2>
-      <p class="mt-2 text-sm text-slate-500 dark:text-slate-400">Create your first short link from the header to get started.</p>
+      <h2 class="text-2xl font-semibold">{{ t('links.empty') }}</h2>
+      <p class="mt-2 text-sm text-slate-500 dark:text-slate-400">{{ t('links.emptyDescription') }}</p>
     </section>
     <section v-else-if="!visibleLinks.length" class="panel p-10 text-center">
-      <h2 class="text-2xl font-semibold">No matching links</h2>
-      <p class="mt-2 text-sm text-slate-500 dark:text-slate-400">Try another target URL, slug, or comment.</p>
+      <h2 class="text-2xl font-semibold">{{ t('links.noMatches') }}</h2>
+      <p class="mt-2 text-sm text-slate-500 dark:text-slate-400">{{ t('links.noMatchesDescription') }}</p>
     </section>
     <section v-else class="grid min-w-0 gap-4 lg:grid-cols-3">
       <LinkCard

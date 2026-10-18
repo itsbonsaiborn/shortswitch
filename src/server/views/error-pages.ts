@@ -1,4 +1,6 @@
 import { config } from '../config.js';
+import { publicText } from '../public-i18n.js';
+import type { Locale } from '../../shared/types.js';
 
 const escapeHtml = (value: string) =>
   value
@@ -11,7 +13,7 @@ const escapeHtml = (value: string) =>
 const appMetaDescription = config.appDescription;
 const appOgImage = '/og/app-og.png';
 
-const renderCommonHead = (title: string, description: string, image = appOgImage, siteName = config.appName) => `
+const renderCommonHead = (title: string, description: string, image = appOgImage, siteName = config.appName, locale: Locale = 'en') => `
     <title>${escapeHtml(title)}</title>
     <meta name="description" content="${escapeHtml(description)}" />
     <meta name="theme-color" content="#100F0F" />
@@ -25,7 +27,7 @@ const renderCommonHead = (title: string, description: string, image = appOgImage
     <meta property="og:image:type" content="image/png" />
     <meta property="og:image:width" content="1280" />
     <meta property="og:image:height" content="640" />
-    <meta property="og:locale" content="en_US" />
+    <meta property="og:locale" content="${locale === 'lv' ? 'lv_LV' : 'en_US'}" />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="${escapeHtml(title)}" />
     <meta name="twitter:description" content="${escapeHtml(description)}" />
@@ -35,12 +37,12 @@ const renderCommonHead = (title: string, description: string, image = appOgImage
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
 `;
 
-const pageShell = (title: string, heading: string, body: string) => `<!doctype html>
-<html lang="en">
+const pageShell = (locale: Locale, title: string, heading: string, body: string) => `<!doctype html>
+<html lang="${locale}">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-${renderCommonHead(`${config.appName} - ${title}`, body)}
+${renderCommonHead(`${config.appName} - ${title}`, body, appOgImage, config.appName, locale)}
     <style>
       :root {
         color-scheme: light dark;
@@ -126,14 +128,18 @@ export const renderProtectedLinkPage = (options?: {
   error?: string;
   title?: string;
   description?: string;
+  locale?: Locale;
 }) => `<!doctype html>
-<html lang="en">
+<html lang="${options?.locale ?? 'en'}">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
 ${renderCommonHead(
-  options?.title ?? `${config.appName} - Protected link`,
-  options?.description ?? appMetaDescription
+  options?.title ?? `${config.appName} - ${publicText(options?.locale ?? 'en', 'protectedLinkTitle')}`,
+  options?.description ?? appMetaDescription,
+  appOgImage,
+  config.appName,
+  options?.locale ?? 'en'
 )}
     <style>
       :root {
@@ -256,14 +262,14 @@ ${renderCommonHead(
   <body>
     <article>
       <div class="badge">${escapeHtml(config.appName)}</div>
-      <h1>Enter password</h1>
-      <p>This short link is protected. Enter the password to continue to the destination.</p>
+      <h1>${escapeHtml(publicText(options?.locale ?? 'en', 'enterPassword'))}</h1>
+      <p>${escapeHtml(publicText(options?.locale ?? 'en', 'protectedLinkDescription'))}</p>
       <form method="post">
         <label>
-          <span class="label">Password</span>
-          <input type="password" name="password" placeholder="Enter link password" required />
+          <span class="label">${escapeHtml(publicText(options?.locale ?? 'en', 'password'))}</span>
+          <input type="password" name="password" placeholder="${escapeHtml(publicText(options?.locale ?? 'en', 'passwordPlaceholder'))}" required />
         </label>
-        <button type="submit">Continue</button>
+        <button type="submit">${escapeHtml(publicText(options?.locale ?? 'en', 'continue'))}</button>
         ${options?.error ? `<div class="error">${escapeHtml(options.error)}</div>` : ''}
       </form>
     </article>
@@ -275,12 +281,13 @@ export const renderShortLinkPreviewPage = (options: {
   description: string;
   shortUrl: string;
   targetUrl?: string;
+  locale?: Locale;
 }) => `<!doctype html>
-<html lang="en">
+<html lang="${options.locale ?? 'en'}">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-${renderCommonHead(options.title, options.description)}
+${renderCommonHead(options.title, options.description, appOgImage, config.appName, options.locale ?? 'en')}
     <meta property="og:url" content="${escapeHtml(options.shortUrl)}" />
     ${options.targetUrl ? `<meta http-equiv="refresh" content="0;url=${escapeHtml(options.targetUrl)}" />` : ''}
     <style>
@@ -366,11 +373,30 @@ ${renderCommonHead(options.title, options.description)}
   </body>
 </html>`;
 
-export const renderLinkExpiredPage = () =>
-  pageShell('Link expired', 'Link expired', 'This short link is no longer active because its expiration time has passed.');
+export const renderLinkExpiredPage = (locale: Locale = 'en', resource: 'link' | 'live' = 'link') => {
+  const titleKey = resource === 'live' ? 'activityExpiredTitle' : 'linkExpiredTitle';
+  const descriptionKey = resource === 'live' ? 'activityExpiredDescription' : 'linkExpiredDescription';
+  return pageShell(locale, publicText(locale, titleKey), publicText(locale, titleKey), publicText(locale, descriptionKey));
+};
 
-export const renderLinkDisabledPage = () =>
-  pageShell('Link disabled', 'Link disabled', 'This short link has been disabled by its owner and is currently unavailable.');
+export const renderLinkDisabledPage = (locale: Locale = 'en', resource: 'link' | 'page' = 'link') => {
+  const titleKey = resource === 'page' ? 'pageDisabledTitle' : 'linkDisabledTitle';
+  const descriptionKey = resource === 'page' ? 'pageDisabledDescription' : 'linkDisabledDescription';
+  return pageShell(locale, publicText(locale, titleKey), publicText(locale, titleKey), publicText(locale, descriptionKey));
+};
 
-export const renderLinkNotFoundPage = () =>
-  pageShell('Link not found', 'Link not found', 'This short link does not exist, or the address was entered incorrectly.');
+export const renderLinkNotFoundPage = (locale: Locale = 'en') =>
+  pageShell(
+    locale,
+    publicText(locale, 'addressNotFoundTitle'),
+    publicText(locale, 'addressNotFoundTitle'),
+    publicText(locale, 'addressNotFoundDescription')
+  );
+
+export const renderPublicServiceUnavailablePage = (locale: Locale = 'en') =>
+  pageShell(
+    locale,
+    publicText(locale, 'serviceUnavailableTitle'),
+    publicText(locale, 'serviceUnavailableTitle'),
+    publicText(locale, 'serviceUnavailableDescription')
+  );

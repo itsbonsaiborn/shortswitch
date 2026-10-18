@@ -20,6 +20,9 @@ export const getDb = () => {
         password_hash TEXT NOT NULL,
         is_bootstrap_admin INTEGER NOT NULL DEFAULT 0,
         theme TEXT NOT NULL DEFAULT 'system',
+        sidebar_collapsed INTEGER NOT NULL DEFAULT 0,
+        locale TEXT NOT NULL DEFAULT 'en',
+        preferences_initialized INTEGER NOT NULL DEFAULT 0,
         session_version INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -193,6 +196,8 @@ export const getDb = () => {
         avatar_url TEXT,
         theme TEXT NOT NULL DEFAULT 'classic_cream' CHECK (theme IN ('classic_cream', 'forest_dark', 'soft_lavender', 'ocean_blue', 'minimal_light')),
         layout TEXT NOT NULL DEFAULT 'classic' CHECK (layout IN ('classic', 'minimal', 'soft', 'bold')),
+        background_pattern TEXT NOT NULL DEFAULT 'none',
+        pattern_intensity INTEGER NOT NULL DEFAULT 35,
         status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'published', 'disabled')),
         seo_title TEXT,
         seo_description TEXT,
@@ -360,6 +365,10 @@ export const getDb = () => {
       .prepare(`PRAGMA table_info(page_block_clicks)`)
       .all() as Array<{ name: string }>;
 
+    const pageColumns = dbInstance
+      .prepare(`PRAGMA table_info(pages)`)
+      .all() as Array<{ name: string }>;
+
     const liveViewColumns = dbInstance
       .prepare(`PRAGMA table_info(live_views)`)
       .all() as Array<{ name: string }>;
@@ -374,6 +383,21 @@ export const getDb = () => {
 
     if (!userColumns.some((column) => column.name === 'is_bootstrap_admin')) {
       dbInstance.exec(`ALTER TABLE users ADD COLUMN is_bootstrap_admin INTEGER NOT NULL DEFAULT 0;`);
+    }
+    if (!userColumns.some((column) => column.name === 'sidebar_collapsed')) {
+      dbInstance.exec(`ALTER TABLE users ADD COLUMN sidebar_collapsed INTEGER NOT NULL DEFAULT 0;`);
+    }
+    if (!userColumns.some((column) => column.name === 'locale')) {
+      dbInstance.exec(`ALTER TABLE users ADD COLUMN locale TEXT NOT NULL DEFAULT 'en';`);
+    }
+    if (!userColumns.some((column) => column.name === 'preferences_initialized')) {
+      dbInstance.exec(`ALTER TABLE users ADD COLUMN preferences_initialized INTEGER NOT NULL DEFAULT 0;`);
+    }
+    if (!pageColumns.some((column) => column.name === 'background_pattern')) {
+      dbInstance.exec(`ALTER TABLE pages ADD COLUMN background_pattern TEXT NOT NULL DEFAULT 'none';`);
+    }
+    if (!pageColumns.some((column) => column.name === 'pattern_intensity')) {
+      dbInstance.exec(`ALTER TABLE pages ADD COLUMN pattern_intensity INTEGER NOT NULL DEFAULT 35;`);
     }
 
     if (!analyticsColumns.some((column) => column.name === 'auth_outcome')) {

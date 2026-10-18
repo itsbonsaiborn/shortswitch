@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import type { LiveActivitySummary, LiveResultsSnapshot, PublicLiveActivity } from '@/shared/types';
+import { useI18n } from 'vue-i18n';
 
 const props = defineProps<{
   activity: Pick<LiveActivitySummary | PublicLiveActivity, 'type' | 'scaleMin' | 'scaleMax'>;
   results: LiveResultsSnapshot;
   presentation?: boolean;
 }>();
+const { t } = useI18n();
 
 const maxChoice = computed(() => Math.max(1, ...props.results.choices.map((choice) => choice.count)));
 const maxScale = computed(() => Math.max(1, ...(props.results.scale?.distribution.map((item) => item.count) ?? [1])));
@@ -50,8 +52,8 @@ const wordStyle = (text: string, count: number) => {
 <template>
   <div class="min-w-0">
     <div v-if="results.responseCount === 0" class="panel-muted px-6 py-12 text-center">
-      <p class="text-lg font-semibold">No published responses yet</p>
-      <p class="mt-2 text-sm text-[var(--ui-text-muted)]">Responses may still be arriving or waiting for moderation.</p>
+      <p class="text-lg font-semibold">{{ t('live.noPublished') }}</p>
+      <p class="mt-2 text-sm text-[var(--ui-text-muted)]">{{ t('live.noPublishedDescription') }}</p>
     </div>
 
     <div v-else-if="activity.type === 'open_answer'" class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
@@ -59,7 +61,7 @@ const wordStyle = (text: string, count: number) => {
         <p :class="presentation ? 'text-2xl leading-relaxed' : 'text-base leading-relaxed'">{{ answer.text }}</p>
         <div class="mt-4 flex flex-wrap gap-2 text-xs text-[var(--ui-text-muted)]">
           <span v-if="answer.participantName">{{ answer.participantName }}</span>
-          <span v-if="answer.editedByModerator" class="rounded-full bg-[var(--ui-pill-bg)] px-2 py-1">Edited by moderator</span>
+          <span v-if="answer.editedByModerator" class="rounded-full bg-[var(--ui-pill-bg)] px-2 py-1">{{ t('live.editedByModerator') }}</span>
         </div>
       </article>
     </div>
@@ -90,7 +92,7 @@ const wordStyle = (text: string, count: number) => {
 
     <div v-else-if="activity.type === 'scale'" class="space-y-5">
       <div class="panel-muted p-6 text-center">
-        <p class="text-sm uppercase tracking-[0.2em] text-[var(--ui-text-muted)]">Average</p>
+        <p class="text-sm uppercase tracking-[0.2em] text-[var(--ui-text-muted)]">{{ t('live.average') }}</p>
         <p :class="presentation ? 'mt-3 text-7xl font-semibold' : 'mt-3 text-5xl font-semibold'">{{ results.scale?.average ?? '—' }}</p>
       </div>
       <div data-scale-results class="grid min-w-0 items-end gap-1 sm:gap-2" :style="{ gridTemplateColumns: `repeat(${results.scale?.distribution.length ?? 1}, minmax(0, 1fr))` }">

@@ -23,8 +23,10 @@ import { LiveRealtimeService } from './services/live-realtime-service.js';
 import { registerLiveRoutes } from './live-routes.js';
 import { registerPageRoutes } from './page-routes.js';
 import { PageService } from './services/page-service.js';
-import { renderLinkDisabledPage, renderLinkExpiredPage, renderLinkNotFoundPage, renderProtectedLinkPage, renderShortLinkPreviewPage } from './views/error-pages.js';
+import { renderLinkDisabledPage, renderLinkExpiredPage, renderLinkNotFoundPage, renderProtectedLinkPage, renderPublicServiceUnavailablePage, renderShortLinkPreviewPage } from './views/error-pages.js';
 import { isSafeRouteSlug, isTrustedCorsOrigin } from './utils.js';
+import { resolvePublicLocale } from '../shared/public-locale.js';
+import { publicText } from './public-i18n.js';
 
 export const buildApp = async () => {
   const app = Fastify({
@@ -300,6 +302,7 @@ export const buildApp = async () => {
       reply.header('Cache-Control', 'no-store');
     } else if (
       pathname === '/api/live' || pathname.startsWith('/api/live/') || pathname.startsWith('/api/moderation/') ||
+      pathname.startsWith('/api/settings/') ||
       pathname === '/api/pages' || pathname.startsWith('/api/pages/')
     ) {
       reply.header('Cache-Control', 'private, no-store');
@@ -471,8 +474,47 @@ export const buildApp = async () => {
     const authenticated = await sessions.requireAuth(request, reply);
     if (!authenticated) return;
     const body = request.body as { theme: 'light' | 'dark' | 'system' };
-    users.updateTheme(authenticated.currentUser.id, body.theme);
+    if (!['light', 'dark', 'system'].includes(body.theme)) {
+      return reply.code(400).send({ message: 'Invalid theme.' });
+    }
+    users.updatePreferences(authenticated.currentUser.id, { theme: body.theme });
     return { ok: true };
+  });
+
+  app.get('/api/settings/preferences', async (request, reply) => {
+    const authenticated = await sessions.requireAuth(request, reply);
+    if (!authenticated) return;
+    const user = users.findById(authenticated.currentUser.id);
+    if (!user) return reply.code(404).send({ message: 'User not found.' });
+    return {
+      theme: user.theme,
+      sidebarCollapsed: user.sidebarCollapsed,
+      locale: user.locale,
+      initialized: user.preferencesInitialized
+    };
+  });
+
+  app.patch('/api/settings/preferences', { onRequest: app.csrfProtection }, async (request, reply) => {
+    const authenticated = await sessions.requireAuth(request, reply);
+    if (!authenticated) return;
+    const body = (request.body ?? {}) as { theme?: unknown; sidebarCollapsed?: unknown; locale?: unknown };
+    if (body.theme !== undefined && !['light', 'dark', 'system'].includes(String(body.theme))) {
+      return reply.code(400).send({ message: 'Invalid theme.' });
+    }
+    if (body.sidebarCollapsed !== undefined && typeof body.sidebarCollapsed !== 'boolean') {
+      return reply.code(400).send({ message: 'Invalid sidebar preference.' });
+    }
+    if (body.locale !== undefined && !['en', 'lv'].includes(String(body.locale))) {
+      return reply.code(400).send({ message: 'Invalid locale.' });
+    }
+    if (body.theme === undefined && body.sidebarCollapsed === undefined && body.locale === undefined) {
+      return reply.code(400).send({ message: 'No preferences supplied.' });
+    }
+    return users.updatePreferences(authenticated.currentUser.id, {
+      ...(body.theme !== undefined ? { theme: body.theme as 'light' | 'dark' | 'system' } : {}),
+      ...(body.sidebarCollapsed !== undefined ? { sidebarCollapsed: body.sidebarCollapsed } : {}),
+      ...(body.locale !== undefined ? { locale: body.locale as 'en' | 'lv' } : {})
+    });
   });
 
   app.post('/api/settings/password', { onRequest: app.csrfProtection }, async (request, reply) => {
@@ -618,19 +660,20 @@ export const buildApp = async () => {
   });
 
   app.get('/access/:slug', async (request, reply) => {
+    const locale = resolvePublicLocale(request.headers['accept-language']);
     const slug = (request.params as { slug: string }).slug;
     if (isInvalidSlugRequest(slug)) {
-      return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage());
+      return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage(locale));
     }
     const link = links.getLinkBySlug(slug);
-    if (!link) return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage());
+    if (!link) return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage(locale));
     if (!link.enabled) {
       logger.info({ slug }, 'disabled link access');
-      return applyNoStore(reply).code(403).type('text/html').send(renderLinkDisabledPage());
+      return applyNoStore(reply).code(403).type('text/html').send(renderLinkDisabledPage(locale));
     }
     if (links.isExpired(link.expiresAt)) {
       logger.info({ slug }, 'expired link access');
-      return applyNoStore(reply).code(410).type('text/html').send(renderLinkExpiredPage());
+      return applyNoStore(reply).code(410).type('text/html').send(renderLinkExpiredPage(locale));
     }
     if (!link.passwordHash) {
       return applyNoStore(reply).redirect(`/${encodeURIComponent(slug)}`);
@@ -639,26 +682,28 @@ export const buildApp = async () => {
     const preview = getLinkPreviewMeta(link);
     return applyNoStore(reply).type('text/html').send(renderProtectedLinkPage({
       title: preview.title,
-      description: preview.description
+      description: preview.description,
+      locale
     }));
   });
 
   app.post(
     '/access/:slug',
     async (request, reply) => {
+      const locale = resolvePublicLocale(request.headers['accept-language']);
       const slug = (request.params as { slug: string }).slug;
       if (isInvalidSlugRequest(slug)) {
-        return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage());
+        return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage(locale));
       }
       const link = links.getLinkBySlug(slug);
-      if (!link) return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage());
+      if (!link) return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage(locale));
       if (!link.enabled) {
         logger.info({ slug }, 'disabled link access');
-        return applyNoStore(reply).code(403).type('text/html').send(renderLinkDisabledPage());
+        return applyNoStore(reply).code(403).type('text/html').send(renderLinkDisabledPage(locale));
       }
       if (links.isExpired(link.expiresAt)) {
         logger.info({ slug }, 'expired link access');
-        return applyNoStore(reply).code(410).type('text/html').send(renderLinkExpiredPage());
+        return applyNoStore(reply).code(410).type('text/html').send(renderLinkExpiredPage(locale));
       }
       if (!link.passwordHash) {
         return applyNoStore(reply).redirect(`/${encodeURIComponent(slug)}`);
@@ -677,7 +722,8 @@ export const buildApp = async () => {
       );
       if (!allowed) {
         return applyNoStore(reply).code(429).type('text/html').send(renderProtectedLinkPage({
-          error: 'Too many attempts. Please wait a bit and try again.'
+          error: publicText(locale, 'tooManyAttempts'),
+          locale
         }));
       }
 
@@ -695,7 +741,8 @@ export const buildApp = async () => {
           city: request.headers['x-city'] as string | undefined
         });
         return applyNoStore(reply).code(401).type('text/html').send(renderProtectedLinkPage({
-          error: 'Invalid password. Check it and try again.'
+          error: publicText(locale, 'invalidPassword'),
+          locale
         }));
       }
 
@@ -718,58 +765,60 @@ export const buildApp = async () => {
   });
 
   app.get('/present/:slug', async (request, reply) => {
+    const locale = resolvePublicLocale(request.headers['accept-language']);
     const slug = (request.params as { slug: string }).slug;
     const liveActivity = isInvalidSlugRequest(slug) ? undefined : live.findBySlug(slug);
     if (!liveActivity) {
-      return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage());
+      return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage(locale));
     }
     if (live.isExpired(liveActivity.expiresAt)) {
-      return applyNoStore(reply).code(410).type('text/html').send(renderLinkExpiredPage());
+      return applyNoStore(reply).code(410).type('text/html').send(renderLinkExpiredPage(locale, 'live'));
     }
     if (!fs.existsSync(clientIndexPath)) {
-      return reply.code(503).send({ message: 'Client application is not built.' });
+      return applyNoStore(reply).code(503).type('text/html').send(renderPublicServiceUnavailablePage(locale));
     }
     return sendClientIndex(request, reply);
   });
 
   app.get('/:slug', async (request, reply) => {
+    const locale = resolvePublicLocale(request.headers['accept-language']);
     const slug = (request.params as { slug: string }).slug;
     if (config.reservedSlugs.has(slug.toLowerCase())) return applyNoStore(reply).redirect('/app/links');
     if (isInvalidSlugRequest(slug)) {
-      return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage());
+      return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage(locale));
     }
     const liveActivity = live.findBySlug(slug);
     if (liveActivity) {
       if (live.isExpired(liveActivity.expiresAt)) {
-        return applyNoStore(reply).code(410).type('text/html').send(renderLinkExpiredPage());
+        return applyNoStore(reply).code(410).type('text/html').send(renderLinkExpiredPage(locale, 'live'));
       }
       if (!fs.existsSync(clientIndexPath)) {
-        return reply.code(503).send({ message: 'Client application is not built.' });
+        return applyNoStore(reply).code(503).type('text/html').send(renderPublicServiceUnavailablePage(locale));
       }
       return sendClientIndex(request, reply, getLiveIndexPayloads());
     }
     const page = pages.findPublicRoute(slug);
     if (page) {
       if (page.status === 'draft') {
-        return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage());
+        return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage(locale));
       }
       if (page.status === 'disabled') {
-        return applyNoStore(reply).code(403).type('text/html').send(renderLinkDisabledPage());
+        return applyNoStore(reply).code(403).type('text/html').send(renderLinkDisabledPage(locale, 'page'));
       }
       if (!fs.existsSync(clientIndexPath)) {
-        return reply.code(503).send({ message: 'Client application is not built.' });
+        return applyNoStore(reply).code(503).type('text/html').send(renderPublicServiceUnavailablePage(locale));
       }
       return sendClientIndex(request, reply, getPageIndexPayloads(page));
     }
     const link = links.getLinkBySlug(slug);
-    if (!link) return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage());
+    if (!link) return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage(locale));
     if (!link.enabled) {
       logger.info({ slug }, 'disabled link access');
-      return applyNoStore(reply).code(403).type('text/html').send(renderLinkDisabledPage());
+      return applyNoStore(reply).code(403).type('text/html').send(renderLinkDisabledPage(locale));
     }
     if (links.isExpired(link.expiresAt)) {
       logger.info({ slug }, 'expired link access');
-      return applyNoStore(reply).code(410).type('text/html').send(renderLinkExpiredPage());
+      return applyNoStore(reply).code(410).type('text/html').send(renderLinkExpiredPage(locale));
     }
     if (config.defaults.redirectRateLimitEnabled) {
       const allowed = rateLimiter.consume(
@@ -783,11 +832,11 @@ export const buildApp = async () => {
         { slug }
       );
       if (!allowed) {
-        return applyNoStore(reply).code(429).type('text/plain; charset=utf-8').send('Too many requests. Please try again later.');
+        return applyNoStore(reply).code(429).type('text/plain; charset=utf-8').send(publicText(locale, 'tooManyRequests'));
       }
     }
     if (isPreviewBot(request.headers['user-agent'])) {
-      return applyNoStore(reply).type('text/html').send(renderShortLinkPreviewPage(getLinkPreviewMeta(link)));
+      return applyNoStore(reply).type('text/html').send(renderShortLinkPreviewPage({ ...getLinkPreviewMeta(link), locale }));
     }
 
     if (link.passwordHash) return applyNoStore(reply).redirect(`/access/${encodeURIComponent(slug)}`);
@@ -831,7 +880,8 @@ export const buildApp = async () => {
         }
         return sendClientIndex(request, reply);
       }
-      return reply.code(404).send({ message: 'Not found.' });
+      const locale = resolvePublicLocale(request.headers['accept-language']);
+      return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage(locale));
     });
   }
 

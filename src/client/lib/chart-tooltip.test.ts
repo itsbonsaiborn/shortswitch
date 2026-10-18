@@ -15,4 +15,19 @@ describe('createDonutTooltip', () => {
     expect(html).toContain('75.0%');
     expect(html).toContain('--ss-tooltip-color:#24837b');
   });
+
+  test('formats values with the selected interface locale', () => {
+    const tooltip = createDonutTooltip(
+      [{ label: 'Desktop', value: 1200 }],
+      ['#24837b'],
+      'lv-LV'
+    );
+    const html = tooltip({ series: [1200], seriesIndex: 0 });
+
+    expect(html).toContain(new Intl.NumberFormat('lv-LV').format(1200));
+    expect(html).toContain(`${new Intl.NumberFormat('lv-LV', {
+      minimumFractionDigits: 1,
+      maximumFractionDigits: 1
+    }).format(100)}%`);
+  });
 });

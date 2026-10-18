@@ -48,7 +48,7 @@ services:
       LIVE_SUBMIT_WINDOW_MINUTES: 1
       BLOCK_LOCAL_URLS: "true"
       BLOCK_PRIVATE_IPS: "false"
-      STORE_RAW_IP: "true"
+      STORE_RAW_IP: "false"
       IP_HASH_SECRET: local-dev-change-me-to-a-long-random-secret
       ANALYTICS_RETENTION_DAYS: 90
     volumes:

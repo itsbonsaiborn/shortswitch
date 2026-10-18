@@ -31,6 +31,8 @@ Changing browser storage or device can create a new participant. This is an expl
 
 `GET /:slug` resolves a Live activity before looking for a redirect link. Live receives the Vue participant shell; existing link redirect behavior remains unchanged. `/present/:slug` serves the public presentation shell.
 
+Participant and Presentation system labels use the shared English/Latvian locale files. The visitor locale is resolved from `navigator.language`: only `lv`/`lv-*` selects Latvian; English, unsupported or unavailable values fall back to English. The public locale is neither persisted nor derived from the activity owner's dashboard preference. Server-rendered expired/not-found states use the same primary-language rule with `Accept-Language`.
+
 ## Moderation
 
 Global rules live in `moderation_rules` and belong to the admin user:

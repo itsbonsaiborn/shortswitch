@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { useWindowSize } from '@vueuse/core';
+import { useElementSize, useWindowSize } from '@vueuse/core';
 import type { ApexOptions } from 'apexcharts';
 import VueApexCharts from 'vue3-apexcharts';
+import { useI18n } from 'vue-i18n';
 import type { PageAnalytics, PageDetail } from '@/shared/types';
 import { api } from '../lib/api';
 import { useTheme } from '../composables/useTheme';
@@ -15,11 +16,14 @@ const route = useRoute();
 const router = useRouter();
 const { width } = useWindowSize();
 const { resolvedTheme } = useTheme();
+const { t } = useI18n();
 const page = ref<PageDetail | null>(null);
 const analytics = ref<PageAnalytics | null>(null);
 const loading = ref(true);
 const error = ref('');
 const failedFavicons = ref(new Set<string>());
+const trendChartContainer = ref<HTMLElement | null>(null);
+const { width: trendChartWidth } = useElementSize(trendChartContainer);
 const displayUrl = (url: string) => url.replace(/^https?:\/\//i, '');
 const readRange = () => {
   if (typeof document === 'undefined') return 'day' as const;
@@ -41,15 +45,24 @@ const setLimit = (next: 10 | 20 | 50) => {
   limit.value = next;
   document.cookie = `ss_page_analytics_limit=${next}; path=/; SameSite=Lax`;
 };
-const rangeLabel = computed(() => range.value === 'month' ? 'Month trend' : range.value === 'week' ? 'Weekly trend' : 'Daily trend');
+const rangeLabel = computed(() => t(range.value === 'month' ? 'pageAnalytics.monthTrend' : range.value === 'week' ? 'pageAnalytics.weeklyTrend' : 'pageAnalytics.dailyTrend'));
 const buttonClass = (active: boolean) => active
   ? 'border-transparent bg-[var(--ui-accent-soft)] text-[var(--ui-accent)]'
   : 'border-[var(--ui-border)] bg-[var(--ui-panel)] text-[var(--ui-text-muted)]';
 
 const chartCategories = computed(() => analytics.value?.viewsOverTime.map((point) => point.label) ?? []);
+const chartLabelStride = computed(() => {
+  const categoryCount = chartCategories.value.length;
+  if (categoryCount <= 1) return 1;
+  const availableWidth = trendChartWidth.value || width.value;
+  const labelWidth = range.value === 'week' ? 72 : range.value === 'day' ? 52 : 58;
+  const visibleLabels = Math.max(2, Math.floor(availableWidth / labelWidth));
+  const minimumStride = range.value === 'week' ? 1 : 2;
+  return Math.max(minimumStride, Math.ceil(categoryCount / visibleLabels));
+});
 const chartSeries = computed(() => [
-  { name: 'Views', data: analytics.value?.viewsOverTime.map((point) => point.views) ?? [] },
-  { name: 'Unique visitors', data: analytics.value?.viewsOverTime.map((point) => point.uniqueVisitors) ?? [] }
+  { name: t('analytics.views'), data: analytics.value?.viewsOverTime.map((point) => point.views) ?? [] },
+  { name: t('analytics.uniqueVisitors'), data: analytics.value?.viewsOverTime.map((point) => point.uniqueVisitors) ?? [] }
 ]);
 const isDark = computed(() => resolvedTheme.value === 'dark');
 const isMobileChart = computed(() => width.value < 640);
@@ -69,10 +82,11 @@ const chartOptions = computed<ApexOptions>(() => ({
   legend: { position: 'top', horizontalAlign: 'left', labels: { colors: isDark.value ? '#9f9d96' : '#6f6e69' } },
   xaxis: {
     categories: chartCategories.value, axisBorder: { show: false }, axisTicks: { show: false },
-    labels: { rotate: 0, hideOverlappingLabels: false, trim: false, formatter: (value) => {
-      if (range.value === 'week') return String(value);
-      const index = chartCategories.value.indexOf(String(value));
-      return index === -1 || index % 2 === 0 ? String(value) : '';
+    labels: { rotate: 0, hideOverlappingLabels: true, trim: false, formatter: (value, _timestamp, options) => {
+      const index = typeof options?.i === 'number'
+        ? options.i
+        : chartCategories.value.indexOf(String(value));
+      return index === -1 || index % chartLabelStride.value === 0 ? String(value) : '';
     } }
   },
   yaxis: { min: 0, forceNiceScale: true, labels: { formatter: (value) => `${Math.round(value)}` } },
@@ -93,54 +107,62 @@ const faviconFor = (item: PageAnalytics['blockClicks'][number]) => {
 };
 const failFavicon = (id: string) => { failedFavicons.value = new Set([...failedFavicons.value, id]); };
 
-const load = async () => {
-  loading.value = true;
+const load = async (initial = page.value === null || analytics.value === null) => {
+  if (initial) loading.value = true;
   error.value = '';
   try {
     const timezoneOffsetMinutes = -new Date().getTimezoneOffset();
-    [page.value, analytics.value] = await Promise.all([
-      api<PageDetail>(`/api/pages/${route.params.id}`),
-      api<PageAnalytics>(`/api/pages/${route.params.id}/analytics?range=${range.value}&limit=${limit.value}&timezoneOffsetMinutes=${timezoneOffsetMinutes}`)
-    ]);
-  } catch (caught) { error.value = (caught as Error).message || 'Could not load Page analytics.'; }
-  finally { loading.value = false; }
+    const analyticsRequest = api<PageAnalytics>(`/api/pages/${route.params.id}/analytics?range=${range.value}&limit=${limit.value}&timezoneOffsetMinutes=${timezoneOffsetMinutes}`);
+    if (initial) {
+      [page.value, analytics.value] = await Promise.all([
+        api<PageDetail>(`/api/pages/${route.params.id}`),
+        analyticsRequest
+      ]);
+    } else {
+      analytics.value = await analyticsRequest;
+    }
+  } catch (caught) { error.value = (caught as Error).message || t('errors.pageAnalyticsUnavailable'); }
+  finally {
+    if (initial) loading.value = false;
+  }
 };
 
-watch([range, limit], () => void load());
-onMounted(load);
+watch([range, limit], () => void load(false));
+onMounted(() => void load(true));
 </script>
 
 <template>
-  <div v-if="loading" class="panel py-20 text-center text-[var(--ui-text-muted)]">Loading analytics…</div>
+  <div v-if="loading" class="panel py-20 text-center text-[var(--ui-text-muted)]">{{ t('common.loading') }}</div>
   <div v-else-if="error" class="panel px-6 py-16 text-center">
-    <h2 class="text-xl font-semibold">Analytics unavailable</h2>
+    <h2 class="text-xl font-semibold">{{ t('pageAnalytics.unavailable') }}</h2>
     <p class="mx-auto mt-2 max-w-md text-sm text-[var(--ui-text-muted)]">{{ error }}</p>
-    <button class="btn-primary mt-5" @click="router.push('/app/pages')">Back to Pages</button>
+    <button class="btn-primary mt-5" @click="router.push('/app/pages')">{{ t('pageAnalytics.back') }}</button>
   </div>
   <div v-else-if="page && analytics" class="space-y-4 sm:space-y-6">
     <section class="panel flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between sm:p-6">
       <div><a :href="page.publicUrl" target="_blank" rel="noopener noreferrer" class="block text-sm text-[var(--ui-accent)] hover:underline">{{ displayUrl(page.publicUrl) }}</a><h2 class="mt-1 text-2xl font-semibold">{{ page.title }}</h2></div>
       <div class="flex gap-2">
-        <a class="btn-secondary gap-2" :href="page.publicUrl" target="_blank" rel="noopener noreferrer">Open Page<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24"><path d="M0 0h24v24H0z" fill="none"/><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 6L6 18M8 6h10v10"/></svg></a>
-        <button class="btn-primary" @click="router.push(`/app/pages/${page.id}`)">Edit Page</button>
+        <a class="btn-secondary gap-2" :href="page.publicUrl" target="_blank" rel="noopener noreferrer">{{ t('pageAnalytics.open') }}<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24"><path d="M0 0h24v24H0z" fill="none"/><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 6L6 18M8 6h10v10"/></svg></a>
+        <button class="btn-primary" @click="router.push(`/app/pages/${page.id}`)">{{ t('pageAnalytics.edit') }}</button>
       </div>
     </section>
     <section class="grid gap-3 sm:grid-cols-3">
-      <StatCard label="Total Views" :value="analytics.totalViews" icon="views" />
-      <StatCard label="Unique Visitors" :value="analytics.uniqueVisitors" icon="visitors" />
-      <StatCard label="Link Clicks" :value="analytics.totalLinkClicks" icon="clicks" />
+      <StatCard :label="t('analytics.totalViews')" :value="analytics.totalViews" icon="views" />
+      <StatCard :label="t('analytics.uniqueVisitors')" :value="analytics.uniqueVisitors" icon="visitors" />
+      <StatCard :label="t('pageAnalytics.linkClicks')" :value="analytics.totalLinkClicks" icon="clicks" />
     </section>
     <section class="panel p-5 sm:p-6">
       <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div><h3 class="text-xl font-semibold">{{ rangeLabel }}</h3><p class="mt-1 text-sm text-[var(--ui-text-muted)]">Views and unique visitors for the selected period.</p></div>
+        <div><h3 class="text-xl font-semibold">{{ rangeLabel }}</h3><p class="mt-1 text-sm text-[var(--ui-text-muted)]">{{ t('pageAnalytics.periodDescription') }}</p></div>
         <div class="grid w-full gap-2 sm:flex sm:w-auto">
           <button
             v-for="option in [
-              { label: 'Month trend', value: 'month' },
-              { label: 'Weekly trend', value: 'week' },
-              { label: 'Daily trend', value: 'day' }
+              { label: t('pageAnalytics.monthTrend'), value: 'month' },
+              { label: t('pageAnalytics.weeklyTrend'), value: 'week' },
+              { label: t('pageAnalytics.dailyTrend'), value: 'day' }
             ]"
             :key="option.value"
+            type="button"
             class="rounded-2xl border px-4 py-2 text-sm font-medium transition-all duration-200"
             :class="buttonClass(range === option.value)"
             @click="setRange(option.value as 'day' | 'week' | 'month')"
@@ -150,16 +172,16 @@ onMounted(load);
         </div>
       </div>
       <div class="app-scrollbar mt-6 rounded-[2rem] border border-[var(--ui-border)] bg-[var(--ui-panel-muted)] p-3 sm:p-4" :class="isMobileChart ? 'overflow-x-auto overflow-y-hidden' : 'overflow-hidden'">
-        <div :class="isMobileChart ? 'min-w-[720px]' : 'min-w-0'">
-          <VueApexCharts type="area" height="330" width="100%" :options="chartOptions" :series="chartSeries" />
+        <div ref="trendChartContainer" :class="isMobileChart ? 'min-w-[720px]' : 'min-w-0'">
+          <VueApexCharts :key="`page-trend-${resolvedTheme}`" type="area" height="330" width="100%" :options="chartOptions" :series="chartSeries" />
         </div>
       </div>
     </section>
     <AnalyticsBreakdownGrid :breakdowns="analytics.breakdowns" />
     <section class="panel p-5 sm:p-6">
-      <h3 class="text-xl font-semibold">Top links</h3>
-      <p class="mt-1 text-sm text-[var(--ui-text-muted)]">Clicks are shown for every clickable block on this Page.</p>
-      <div v-if="!analytics.blockClicks.length" class="py-10 text-center text-sm text-[var(--ui-text-muted)]">No links on this Page yet.</div>
+      <h3 class="text-xl font-semibold">{{ t('pageAnalytics.topLinks') }}</h3>
+      <p class="mt-1 text-sm text-[var(--ui-text-muted)]">{{ t('pageAnalytics.topLinksDescription') }}</p>
+      <div v-if="!analytics.blockClicks.length" class="py-10 text-center text-sm text-[var(--ui-text-muted)]">{{ t('pageAnalytics.noLinks') }}</div>
       <div v-else class="mt-4 space-y-3">
         <div v-for="item in analytics.blockClicks" :key="item.blockId" class="panel-muted flex items-center gap-3 p-3 sm:p-4">
           <div class="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-[var(--ui-border)] bg-white text-[var(--ui-text-muted)]">
@@ -171,7 +193,7 @@ onMounted(load);
               <p class="truncate text-sm font-semibold">{{ item.label }}</p>
               <p class="shrink-0 text-sm"><span class="font-semibold">{{ item.clicks }}</span> <span class="text-[var(--ui-text-muted)]">· {{ clickPercent(item.clicks) }}%</span></p>
             </div>
-            <div class="mt-2 h-2 overflow-hidden rounded-full bg-[var(--ui-pill-bg)]" role="progressbar" :aria-label="`${item.label}: ${clickPercent(item.clicks)}% of clicks`" :aria-valuenow="clickPercent(item.clicks)" aria-valuemin="0" aria-valuemax="100">
+            <div class="mt-2 h-2 overflow-hidden rounded-full bg-[var(--ui-pill-bg)]" role="progressbar" :aria-label="t('pageAnalytics.clickPercentage', { label: item.label, percentage: clickPercent(item.clicks) })" :aria-valuenow="clickPercent(item.clicks)" aria-valuemin="0" aria-valuemax="100">
               <div class="h-full rounded-full bg-[var(--ui-accent)] transition-[width] duration-500" :style="{ width: `${clickPercent(item.clicks)}%` }" />
             </div>
           </div>
@@ -181,9 +203,9 @@ onMounted(load);
     <AnalyticsVisitTable
       :rows="analytics.recentClicks"
       :limit="limit"
-      title="Recent click details"
-      description="Latest clicks on the public Page and their visit context."
-      context-label="Block"
+      :title="t('analytics.recentDetails')"
+      :description="t('pageAnalytics.recentDescription')"
+      :context-label="t('pageAnalytics.block')"
       @update:limit="setLimit"
     />
   </div>

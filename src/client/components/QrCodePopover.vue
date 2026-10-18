@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue';
+import { useI18n } from 'vue-i18n';
 import QRCode from 'qrcode';
 
 const props = defineProps<{
@@ -8,6 +9,7 @@ const props = defineProps<{
   instanceId: string;
 }>();
 const emit = defineEmits<{ open: [] }>();
+const { t } = useI18n();
 
 const open = ref(false);
 const dataUrl = ref('');
@@ -87,7 +89,7 @@ defineExpose({ close });
 
 <template>
   <span ref="rootRef" class="relative inline-flex" data-no-open="true">
-    <button ref="buttonRef" class="icon-button" aria-label="Show QR code" @click.stop="toggle">
+    <button ref="buttonRef" class="icon-button" :aria-label="t('qr.show')" @click.stop="toggle">
       <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24">
         <path d="M0 0h24v24H0z" fill="none" />
         <path fill="currentColor" d="M3 4.5v5c0 .83.67 1.5 1.5 1.5h5c.83 0 1.5-.67 1.5-1.5v-5c0-.83-.67-1.5-1.5-1.5h-5C3.67 3 3 3.67 3 4.5M5 5h4v4H5zM3 19.5c0 .83.67 1.5 1.5 1.5h5c.83 0 1.5-.67 1.5-1.5v-5c0-.83-.67-1.5-1.5-1.5h-5c-.83 0-1.5.67-1.5 1.5zM5 15h4v4H5zM19.5 3h-5c-.83 0-1.5.67-1.5 1.5v5c0 .83.67 1.5 1.5 1.5h5c.83 0 1.5-.67 1.5-1.5v-5c0-.83-.67-1.5-1.5-1.5M19 9h-4V5h4zm-6 4h2v2h-2zm2 2h2v2h-2zm-2 2h2v2h-2zm4 0h2v2h-2zm2 2h2v2h-2zm-4 0h2v2h-2zm2-6h2v2h-2zm2 2h2v2h-2z" />
@@ -118,7 +120,7 @@ defineExpose({ close });
                 <path d="m7 10 5 5 5-5"></path>
                 <path d="M12 15V3"></path>
               </svg>
-              Download QR
+              {{ t('qr.download') }}
             </button>
           </div>
         </div>

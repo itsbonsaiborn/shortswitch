@@ -6,7 +6,8 @@ import PageRenderer from './PageRenderer.vue';
 
 const page: PageDetail = {
   id: 'page-1', slug: 'datorika', publicUrl: 'https://example.com/datorika', title: 'Datorika',
-  description: 'Useful links', emoji: '💻', avatarUrl: null, theme: 'soft_lavender', layout: 'bold', status: 'published',
+  description: 'Useful links', emoji: '💻', avatarUrl: null, theme: 'soft_lavender', layout: 'bold',
+  backgroundPattern: 'dots', patternIntensity: 55, status: 'published',
   seoTitle: null, seoDescription: null, blockCount: 4, totalViews: 0, uniqueVisitors: 0, totalLinkClicks: 0,
   createdAt: '', updatedAt: '',
   blocks: [
@@ -25,6 +26,8 @@ describe('PageRenderer', () => {
     const wrapper = mount(PageRenderer, { props: { page } });
     expect(wrapper.classes()).toContain('page-theme-soft_lavender');
     expect(wrapper.classes()).toContain('page-layout-bold');
+    expect(wrapper.classes()).toContain('page-pattern-dots');
+    expect(wrapper.attributes('style')).toContain('--page-pattern-opacity: 0.55');
     expect(wrapper.classes()).toContain('min-h-dvh');
     expect(wrapper.text()).toContain('<img src=x onerror=alert(1)>');
     expect(wrapper.find('img[src="x"]').exists()).toBe(false);

@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
-import { useWindowSize } from '@vueuse/core';
+import { useElementSize, useWindowSize } from '@vueuse/core';
 import type { ApexOptions } from 'apexcharts';
 import VueApexCharts from 'vue3-apexcharts';
+import { useI18n } from 'vue-i18n';
 import { api } from '../lib/api';
 import { useToast } from '../composables/useToast';
 import { useTheme } from '../composables/useTheme';
@@ -19,6 +20,7 @@ const route = useRoute();
 const { pushToast } = useToast();
 const { width } = useWindowSize();
 const { resolvedTheme } = useTheme();
+const { t, locale } = useI18n();
 const details = ref<Details | null>(null);
 const loading = ref(true);
 const editOpen = ref(false);
@@ -36,13 +38,33 @@ let events: EventSource | null = null;
 const pending = computed(() => details.value?.responses.filter((response) => response.status === 'pending') ?? []);
 const published = computed(() => details.value?.responses.filter((response) => response.status === 'approved') ?? []);
 const optionLabels = computed(() => new Map(details.value?.activity.options.map((option) => [option.id, option.label]) ?? []));
-const rangeLabel = computed(() => range.value === 'month' ? 'Month trend' : range.value === 'week' ? 'Weekly trend' : 'Daily trend');
+const rangeLabel = computed(() => t(range.value === 'month' ? 'pageAnalytics.monthTrend' : range.value === 'week' ? 'pageAnalytics.weeklyTrend' : 'pageAnalytics.dailyTrend'));
+const localeCode = computed(() => locale.value === 'lv' ? 'lv-LV' : 'en-US');
+const formatResponseTime = (value: string) => new Intl.DateTimeFormat(localeCode.value, {
+  hour: '2-digit',
+  minute: '2-digit'
+}).format(new Date(value));
+const formatResponseDateTime = (value: string) => new Intl.DateTimeFormat(localeCode.value, {
+  dateStyle: 'short',
+  timeStyle: 'short'
+}).format(new Date(value));
 const isDark = computed(() => resolvedTheme.value === 'dark');
 const isMobileChart = computed(() => width.value < 640);
+const trendChartContainer = ref<HTMLElement | null>(null);
+const { width: trendChartWidth } = useElementSize(trendChartContainer);
 const chartCategories = computed(() => details.value?.analytics.viewsOverTime.map((point) => point.label) ?? []);
+const chartLabelStride = computed(() => {
+  const categoryCount = chartCategories.value.length;
+  if (categoryCount <= 1) return 1;
+  const availableWidth = trendChartWidth.value || width.value;
+  const labelWidth = range.value === 'week' ? 72 : range.value === 'day' ? 52 : 58;
+  const visibleLabels = Math.max(2, Math.floor(availableWidth / labelWidth));
+  const minimumStride = range.value === 'week' ? 1 : 2;
+  return Math.max(minimumStride, Math.ceil(categoryCount / visibleLabels));
+});
 const chartSeries = computed(() => [
-  { name: 'Views', data: details.value?.analytics.viewsOverTime.map((point) => point.views) ?? [] },
-  { name: 'Unique visitors', data: details.value?.analytics.viewsOverTime.map((point) => point.uniqueVisitors) ?? [] }
+  { name: t('analytics.views'), data: details.value?.analytics.viewsOverTime.map((point) => point.views) ?? [] },
+  { name: t('analytics.uniqueVisitors'), data: details.value?.analytics.viewsOverTime.map((point) => point.uniqueVisitors) ?? [] }
 ]);
 const chartOptions = computed<ApexOptions>(() => ({
   chart: { type: 'area', toolbar: { show: false }, zoom: { enabled: false }, background: 'transparent',
@@ -56,10 +78,11 @@ const chartOptions = computed<ApexOptions>(() => ({
   legend: { position: 'top', horizontalAlign: 'left', labels: { colors: isDark.value ? '#9f9d96' : '#6f6e69' } },
   xaxis: { categories: chartCategories.value, axisBorder: { show: false }, axisTicks: { show: false }, labels: {
     rotate: 0, hideOverlappingLabels: true, trim: false,
-    formatter: (value) => {
-      if (range.value === 'week') return String(value);
-      const index = chartCategories.value.indexOf(String(value));
-      return index === -1 || index % 2 === 0 ? String(value) : '';
+    formatter: (value, _timestamp, options) => {
+      const index = typeof options?.i === 'number'
+        ? options.i
+        : chartCategories.value.indexOf(String(value));
+      return index === -1 || index % chartLabelStride.value === 0 ? String(value) : '';
     }
   } },
   yaxis: { min: 0, forceNiceScale: true, labels: { formatter: (value) => `${Math.round(value)}` } },
@@ -116,24 +139,25 @@ const moderate = async (response: LiveResponseRecord, status: LiveResponseStatus
     await load(false);
   } catch (error) {
     const message = (error as Error).message;
-    if (status === 'approved' && message.includes('Confirm to approve') && window.confirm(`${message}\n\nApprove anyway?`)) {
+    if (status === 'approved' && message.includes('Confirm to approve') && window.confirm(`${message}\n\n${t('liveAdmin.approveAnyway')}`)) {
       await moderate(response, status, true);
       return;
     }
-    pushToast({ tone: 'error', title: 'Moderation failed', description: message });
+    pushToast({ tone: 'error', title: t('liveAdmin.moderationFailed'), description: message });
   }
 };
 const responseValue = (response: LiveResponseRecord) => {
   if (response.originalText !== null) return response.originalText;
   if (response.scaleValue !== null) return String(response.scaleValue);
-  return response.selectedOptionIds.map((id) => optionLabels.value.get(id) ?? 'Unavailable option').join(', ');
+  return response.selectedOptionIds.map((id) => optionLabels.value.get(id) ?? t('liveAdmin.unavailableOption')).join(', ');
 };
 const editLabel = (response: LiveResponseRecord) => {
   if (details.value?.activity.identityMode === 'named') {
-    return response.originalText !== null ? 'Edit name & answer' : 'Edit name';
+    return t(response.originalText !== null ? 'liveAdmin.editNameAnswer' : 'liveAdmin.editName');
   }
-  return 'Edit answer';
+  return t('liveAdmin.editAnswer');
 };
+const activityStatusLabel = computed(() => t(details.value?.activity.status === 'active' ? 'common.active' : 'common.closed'));
 
 onMounted(async () => { await load(); connect(); });
 onBeforeUnmount(() => events?.close());
@@ -141,67 +165,67 @@ watch([range, limit], () => void load(false));
 </script>
 
 <template>
-  <div v-if="loading" class="panel p-12 text-center text-[var(--ui-text-muted)]">Loading activity…</div>
+  <div v-if="loading" class="panel p-12 text-center text-[var(--ui-text-muted)]">{{ t('common.loading') }}</div>
   <div v-else-if="details" class="space-y-4 sm:space-y-6">
     <section class="panel p-5 sm:p-6">
       <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div><p class="text-xs font-semibold uppercase tracking-[0.25em] text-[var(--ui-accent)]">{{ details.activity.status }}</p><h2 class="mt-2 text-2xl font-semibold">{{ details.activity.title }}</h2><p class="mt-2 text-[var(--ui-text-muted)]">{{ details.activity.question }}</p><a :href="details.activity.publicUrl" target="_blank" class="mt-3 inline-block text-sm text-[var(--ui-accent)]">{{ details.activity.publicUrl }}</a></div>
-        <div class="flex flex-wrap gap-2"><button class="btn-secondary" @click="editOpen = true">Edit</button><a class="btn-primary" :href="`/present/${details.activity.slug}`" target="_blank">Presentation Mode</a></div>
+        <div><p class="text-xs font-semibold uppercase tracking-[0.25em] text-[var(--ui-accent)]">{{ activityStatusLabel }}</p><h2 class="mt-2 text-2xl font-semibold">{{ details.activity.title }}</h2><p class="mt-2 text-[var(--ui-text-muted)]">{{ details.activity.question }}</p><a :href="details.activity.publicUrl" target="_blank" class="mt-3 inline-block text-sm text-[var(--ui-accent)]">{{ details.activity.publicUrl }}</a></div>
+        <div class="flex flex-wrap gap-2"><button class="btn-secondary" @click="editOpen = true">{{ t('liveAdmin.edit') }}</button><a class="btn-primary" :href="`/present/${details.activity.slug}`" target="_blank">{{ t('liveAdmin.presentation') }}</a></div>
       </div>
     </section>
     <section class="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
-      <StatCard label="Total Responses" :value="details.activity.responseCount" icon="responses" />
-      <StatCard label="Unique Participants" :value="details.activity.uniqueParticipantCount" icon="participants" />
-      <StatCard label="Approved" :value="details.activity.approvedCount" icon="approved" />
-      <StatCard label="Pending" :value="details.activity.pendingCount" icon="pending" />
-      <StatCard label="Rejected" :value="details.activity.rejectedCount" icon="rejected" />
-      <StatCard label="Last response" :value="details.activity.lastResponseAt ? new Date(details.activity.lastResponseAt).toLocaleTimeString() : '—'" icon="last-response" />
+      <StatCard :label="t('live.responses')" :value="details.activity.responseCount" icon="responses" />
+      <StatCard :label="t('liveAdmin.uniqueParticipants')" :value="details.activity.uniqueParticipantCount" icon="participants" />
+      <StatCard :label="t('liveAdmin.approved')" :value="details.activity.approvedCount" icon="approved" />
+      <StatCard :label="t('liveAdmin.pending')" :value="details.activity.pendingCount" icon="pending" />
+      <StatCard :label="t('liveAdmin.rejected')" :value="details.activity.rejectedCount" icon="rejected" />
+      <StatCard :label="t('liveAdmin.lastResponse')" :value="details.activity.lastResponseAt ? formatResponseTime(details.activity.lastResponseAt) : '—'" icon="last-response" />
     </section>
-    <section class="panel p-5 sm:p-6"><h2 class="text-xl font-semibold">Live results</h2><div class="mt-5"><LiveResultsBoard :activity="details.activity" :results="details.results" /></div></section>
+    <section class="panel p-5 sm:p-6"><h2 class="text-xl font-semibold">{{ t('live.results') }}</h2><div class="mt-5"><LiveResultsBoard :activity="details.activity" :results="details.results" /></div></section>
     <section class="panel p-5 sm:p-6">
-      <div class="flex items-center justify-between"><div><h2 class="text-xl font-semibold">Moderation Queue</h2><p class="mt-1 text-sm text-[var(--ui-text-muted)]">Pending responses require a decision before publication.</p></div><span class="rounded-full bg-[var(--ui-pill-bg)] px-3 py-1 text-sm">{{ pending.length }}</span></div>
-      <div v-if="pending.length === 0" class="panel-muted mt-5 p-8 text-center text-sm text-[var(--ui-text-muted)]">Nothing is waiting for review.</div>
+      <div class="flex items-center justify-between"><div><h2 class="text-xl font-semibold">{{ t('liveAdmin.moderationQueue') }}</h2><p class="mt-1 text-sm text-[var(--ui-text-muted)]">{{ t('liveAdmin.moderationDescription') }}</p></div><span class="rounded-full bg-[var(--ui-pill-bg)] px-3 py-1 text-sm">{{ pending.length }}</span></div>
+      <div v-if="pending.length === 0" class="panel-muted mt-5 p-8 text-center text-sm text-[var(--ui-text-muted)]">{{ t('liveAdmin.nothingPending') }}</div>
       <div v-else class="mt-5 space-y-3">
         <article v-for="response in pending" :key="response.id" class="panel-muted p-4">
           <div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
             <div class="min-w-0 flex-1">
-              <p v-if="editingResponseId !== response.id" class="font-medium">{{ response.participantName ?? 'Anonymous' }}</p>
+              <p v-if="editingResponseId !== response.id" class="font-medium">{{ response.participantName ?? t('liveAdmin.anonymous') }}</p>
               <div v-else class="space-y-3">
                 <label v-if="details.activity.identityMode === 'named'" class="block">
-                  <span class="mb-2 block text-sm font-medium">Participant name</span>
+                  <span class="mb-2 block text-sm font-medium">{{ t('liveAdmin.participantName') }}</span>
                   <input v-model="editedParticipantName" class="input px-4 py-3" maxlength="80" required />
                 </label>
                 <label v-if="response.originalText !== null" class="block">
-                  <span class="mb-2 block text-sm font-medium">Answer</span>
+                  <span class="mb-2 block text-sm font-medium">{{ t('liveAdmin.answer') }}</span>
                   <textarea v-model="editedText" class="input min-h-24 px-4 py-3" :maxlength="details.activity.maxAnswerLength" />
                 </label>
               </div>
-              <p class="mt-1 text-xs text-[var(--ui-text-muted)]">{{ new Date(response.createdAt).toLocaleString() }} · {{ response.moderationReason }}</p>
+              <p class="mt-1 text-xs text-[var(--ui-text-muted)]">{{ formatResponseDateTime(response.createdAt) }} · {{ response.moderationReason }}</p>
               <p v-if="editingResponseId !== response.id || response.originalText === null" class="mt-3 whitespace-pre-wrap">{{ responseValue(response) }}</p>
             </div>
             <div class="flex shrink-0 flex-wrap gap-2">
               <button v-if="response.originalText !== null || details.activity.identityMode === 'named'" class="btn-secondary text-sm" @click="startEdit(response)">{{ editLabel(response) }}</button>
-              <button class="btn-primary text-sm" @click="moderate(response, 'approved')">Approve</button>
-              <button class="btn-secondary text-sm text-[#AF3029] dark:text-[#F89A8A]" @click="moderate(response, 'rejected')">Reject</button>
+              <button class="btn-primary text-sm" @click="moderate(response, 'approved')">{{ t('liveAdmin.approve') }}</button>
+              <button class="btn-secondary text-sm text-[#AF3029] dark:text-[#F89A8A]" @click="moderate(response, 'rejected')">{{ t('liveAdmin.reject') }}</button>
             </div>
           </div>
         </article>
       </div>
     </section>
-    <section class="panel p-5 sm:p-6"><h2 class="text-xl font-semibold">Published responses</h2><div class="mt-5 space-y-3"><article v-for="response in published" :key="response.id" class="panel-muted flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between"><div><p>{{ response.publishedText ?? responseValue(response) }}</p><p class="mt-1 text-xs text-[var(--ui-text-muted)]">{{ response.participantName ?? 'Anonymous' }}<span v-if="response.editedByModerator"> · Answer edited by moderator</span><span v-if="response.nameEditedByModerator"> · Name edited by moderator (original: {{ response.originalParticipantName }})</span></p></div><button class="btn-secondary shrink-0 text-sm text-[#AF3029] dark:text-[#F89A8A]" @click="moderate(response, 'rejected')">Hide</button></article><p v-if="published.length === 0" class="text-sm text-[var(--ui-text-muted)]">No published responses.</p></div></section>
+    <section class="panel p-5 sm:p-6"><h2 class="text-xl font-semibold">{{ t('liveAdmin.publishedResponses') }}</h2><div class="mt-5 space-y-3"><article v-for="response in published" :key="response.id" class="panel-muted flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between"><div><p>{{ response.publishedText ?? responseValue(response) }}</p><p class="mt-1 text-xs text-[var(--ui-text-muted)]">{{ response.participantName ?? t('liveAdmin.anonymous') }}<span v-if="response.editedByModerator"> · {{ t('liveAdmin.answerEdited') }}</span><span v-if="response.nameEditedByModerator"> · {{ t('liveAdmin.nameEdited', { name: response.originalParticipantName }) }}</span></p></div><button class="btn-secondary shrink-0 text-sm text-[#AF3029] dark:text-[#F89A8A]" @click="moderate(response, 'rejected')">{{ t('liveAdmin.hide') }}</button></article><p v-if="published.length === 0" class="text-sm text-[var(--ui-text-muted)]">{{ t('liveAdmin.noPublished') }}</p></div></section>
     <section class="panel p-5 sm:p-6">
       <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div><h3 class="text-xl font-semibold">{{ rangeLabel }}</h3><p class="mt-1 text-sm text-[var(--ui-text-muted)]">Views and unique visitors for this Live Activity.</p></div>
+        <div><h3 class="text-xl font-semibold">{{ rangeLabel }}</h3><p class="mt-1 text-sm text-[var(--ui-text-muted)]">{{ t('liveAdmin.viewsDescription') }}</p></div>
         <div class="grid w-full grid-cols-3 gap-2 sm:flex sm:w-auto">
-          <button v-for="option in [{ label: 'Month trend', value: 'month' }, { label: 'Weekly trend', value: 'week' }, { label: 'Daily trend', value: 'day' }]" :key="option.value" class="rounded-2xl border px-4 py-2 text-sm font-medium transition-all duration-200" :class="buttonClass(range === option.value)" @click="setRange(option.value as 'day' | 'week' | 'month')">{{ option.label }}</button>
+          <button v-for="option in [{ label: t('pageAnalytics.monthTrend'), value: 'month' }, { label: t('pageAnalytics.weeklyTrend'), value: 'week' }, { label: t('pageAnalytics.dailyTrend'), value: 'day' }]" :key="option.value" class="rounded-2xl border px-4 py-2 text-sm font-medium transition-all duration-200" :class="buttonClass(range === option.value)" @click="setRange(option.value as 'day' | 'week' | 'month')">{{ option.label }}</button>
         </div>
       </div>
       <div class="app-scrollbar mt-6 rounded-[2rem] border border-[var(--ui-border)] bg-[var(--ui-panel-muted)] p-3 sm:p-4" :class="isMobileChart ? 'overflow-x-auto overflow-y-hidden' : 'overflow-hidden'">
-        <div :class="isMobileChart ? 'min-w-[720px]' : 'min-w-0'"><VueApexCharts type="area" height="330" width="100%" :options="chartOptions" :series="chartSeries" /></div>
+        <div ref="trendChartContainer" :class="isMobileChart ? 'min-w-[720px]' : 'min-w-0'"><VueApexCharts :key="`live-trend-${resolvedTheme}`" type="area" height="330" width="100%" :options="chartOptions" :series="chartSeries" /></div>
       </div>
     </section>
     <AnalyticsBreakdownGrid :breakdowns="details.analytics.breakdowns" />
-    <AnalyticsVisitTable :rows="details.analytics.recentViews" :limit="limit" title="Recent visit details" description="Latest participant-page visits for this Live Activity." @update:limit="setLimit" />
+    <AnalyticsVisitTable :rows="details.analytics.recentViews" :limit="limit" :title="t('analytics.recentVisits')" :description="t('liveAdmin.recentDescription')" @update:limit="setLimit" />
     <LiveActivityModal :open="editOpen" :activity="details.activity" @close="editOpen = false" @saved="saveActivity" />
   </div>
 </template>

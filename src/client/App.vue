@@ -2,7 +2,10 @@
 import { computed, defineAsyncComponent, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useAuth } from './composables/useAuth';
+import { usePreferences } from './composables/usePreferences';
+import { setDocumentLocale } from './i18n';
 import type { LinkRecord, LiveActivitySummary } from '@/shared/types';
+import { resolvePublicLocale } from '@/shared/public-locale';
 
 const AppShell = defineAsyncComponent(() => import('./components/AppShell.vue'));
 const CreateLinkModal = defineAsyncComponent(() => import('./components/CreateLinkModal.vue'));
@@ -10,6 +13,7 @@ const LiveActivityModal = defineAsyncComponent(() => import('./components/LiveAc
 const ToastViewport = defineAsyncComponent(() => import('./components/ToastViewport.vue'));
 
 const { initialized, loadUser, user } = useAuth();
+const { locale: preferenceLocale } = usePreferences();
 const route = useRoute();
 const router = useRouter();
 const createOpen = ref(false);
@@ -41,6 +45,18 @@ watch(
   isPublicRoute,
   (publicRoute) => {
     if (!publicRoute && !initialized.value) void loadUser();
+  },
+  { immediate: true }
+);
+
+watch(
+  [isPublicRoute, initialized, preferenceLocale],
+  ([publicRoute, ready, savedLocale]) => {
+    if (publicRoute) {
+      setDocumentLocale(resolvePublicLocale(window.navigator.language));
+    } else if (ready) {
+      setDocumentLocale(savedLocale);
+    }
   },
   { immediate: true }
 );

@@ -133,6 +133,18 @@ export interface CurrentUser {
   email: string;
   name: string;
   theme: ThemeMode;
+  sidebarCollapsed: boolean;
+  locale: Locale;
+  preferencesInitialized: boolean;
+}
+
+export type Locale = 'en' | 'lv';
+
+export interface UserPreferences {
+  theme: ThemeMode;
+  sidebarCollapsed: boolean;
+  locale: Locale;
+  initialized: boolean;
 }
 
 export interface PublicAppConfig {
@@ -315,6 +327,7 @@ export interface ModerationRule {
 export type PageStatus = 'draft' | 'published' | 'disabled';
 export type PageTheme = 'classic_cream' | 'forest_dark' | 'soft_lavender' | 'ocean_blue' | 'minimal_light';
 export type PageLayout = 'classic' | 'minimal' | 'soft' | 'bold';
+export type PageBackgroundPattern = 'none' | 'dots' | 'grid' | 'waves' | 'soft_glow' | 'contours' | 'crosses';
 export type PageBlockType =
   | 'heading'
   | 'text'
@@ -377,6 +390,8 @@ export interface PageInput {
   avatarUrl?: string;
   theme: PageTheme;
   layout: PageLayout;
+  backgroundPattern: PageBackgroundPattern;
+  patternIntensity: number;
   status: PageStatus;
   seoTitle?: string;
   seoDescription?: string;
@@ -398,6 +413,8 @@ export interface PageSummary {
   avatarUrl: string | null;
   theme: PageTheme;
   layout: PageLayout;
+  backgroundPattern: PageBackgroundPattern;
+  patternIntensity: number;
   status: PageStatus;
   seoTitle: string | null;
   seoDescription: string | null;
@@ -435,6 +452,8 @@ export interface PublicPage {
   avatarUrl: string | null;
   theme: PageTheme;
   layout: PageLayout;
+  backgroundPattern: PageBackgroundPattern;
+  patternIntensity: number;
   blocks: PageBlock[];
 }
 

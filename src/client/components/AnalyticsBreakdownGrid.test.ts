@@ -3,6 +3,7 @@ import { mount } from '@vue/test-utils';
 import { nextTick, ref } from 'vue';
 import { describe, expect, test, vi } from 'vitest';
 import AnalyticsBreakdownGrid from './AnalyticsBreakdownGrid.vue';
+import { chartPalette } from '../lib/chart-colors';
 
 const mediaState = vi.hoisted(() => ({ coarse: true, mobile: true }));
 
@@ -36,6 +37,8 @@ describe('AnalyticsBreakdownGrid', () => {
     const options = chart.props('options');
 
     expect(options.plotOptions.pie.expandOnClick).toBe(false);
+    expect(options.stroke.width).toBe(2);
+    expect(options.colors.slice(0, 2)).toEqual([chartPalette.teal, chartPalette.blue]);
     expect(options.tooltip.enabled).toBe(false);
     options.chart.events.dataPointSelection(null, null, { dataPointIndex: 0 });
     await nextTick();

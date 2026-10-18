@@ -1,4 +1,4 @@
-import type { CurrentUser } from '@/shared/types.js';
+import type { CurrentUser, UserPreferences } from '@/shared/types.js';
 import { getDb } from '../db.js';
 import { createId, nowIso } from '../utils.js';
 
@@ -7,6 +7,18 @@ export interface UserRow extends CurrentUser {
   sessionVersion: number;
   isBootstrapAdmin: number;
 }
+
+const userSelect = `SELECT id, email, name, theme,
+  sidebar_collapsed as sidebarCollapsed, locale,
+  preferences_initialized as preferencesInitialized,
+  password_hash as passwordHash, session_version as sessionVersion,
+  is_bootstrap_admin as isBootstrapAdmin FROM users`;
+
+const normalizeUser = (row: UserRow | undefined): UserRow | undefined => row ? {
+  ...row,
+  sidebarCollapsed: Boolean(row.sidebarCollapsed),
+  preferencesInitialized: Boolean(row.preferencesInitialized)
+} : undefined;
 
 export class UserRepository {
   private db = getDb();
@@ -105,25 +117,31 @@ export class UserRepository {
 
   findByEmail(email: string) {
     const row = this.db
-      .prepare(
-        `SELECT id, email, name, theme, password_hash as passwordHash, session_version as sessionVersion, is_bootstrap_admin as isBootstrapAdmin
-         FROM users WHERE email = ?`
-      )
+      .prepare(`${userSelect} WHERE email = ?`)
       .get(email) as UserRow | undefined;
-    return row;
+    return normalizeUser(row);
   }
 
   findById(id: string) {
-    return this.db
-      .prepare(
-        `SELECT id, email, name, theme, password_hash as passwordHash, session_version as sessionVersion, is_bootstrap_admin as isBootstrapAdmin
-         FROM users WHERE id = ?`
-      )
-      .get(id) as UserRow | undefined;
+    return normalizeUser(this.db.prepare(`${userSelect} WHERE id = ?`).get(id) as UserRow | undefined);
   }
 
   updateTheme(id: string, theme: CurrentUser['theme']) {
     this.db.prepare('UPDATE users SET theme = ?, updated_at = ? WHERE id = ?').run(theme, nowIso(), id);
+  }
+
+  updatePreferences(id: string, preferences: Partial<Omit<UserPreferences, 'initialized'>>) {
+    const current = this.findById(id);
+    if (!current) return undefined;
+    const next = {
+      theme: preferences.theme ?? current.theme,
+      sidebarCollapsed: preferences.sidebarCollapsed ?? current.sidebarCollapsed,
+      locale: preferences.locale ?? current.locale
+    };
+    this.db.prepare(
+      `UPDATE users SET theme = ?, sidebar_collapsed = ?, locale = ?, preferences_initialized = 1, updated_at = ? WHERE id = ?`
+    ).run(next.theme, next.sidebarCollapsed ? 1 : 0, next.locale, nowIso(), id);
+    return { ...next, initialized: true } satisfies UserPreferences;
   }
 
   updatePassword(id: string, passwordHash: string) {

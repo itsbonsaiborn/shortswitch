@@ -4,7 +4,7 @@ Pages is a lightweight Linktree-style module built into the existing ShortSwitch
 
 ## Model and lifecycle
 
-A Page has a title, optional description, emoji or HTTPS avatar, theme, layout, SEO fields and an ordered list of blocks. Status controls root URL visibility:
+A Page has a title, optional description, emoji or HTTPS avatar, theme, layout, background pattern, SEO fields and an ordered list of blocks. Status controls root URL visibility:
 
 - `draft` — saved in the dashboard, public root URL returns 404;
 - `published` — public root URL and public API are available;
@@ -45,6 +45,8 @@ Built-in themes:
 
 Built-in layouts: Classic, Minimal, Soft and Bold. They are implemented using scoped CSS variables and do not inject user CSS.
 
+The Design section also offers `none`, `dots`, `grid`, `waves`, `soft_glow`, `contours` and `crosses` background patterns. Patterns are lightweight CSS gradients and inline renderer-owned SVG data, never user-provided markup or raster assets. `patternIntensity` is an integer from 0 to 100 and controls pattern opacity. Pattern colors come from the selected Page theme, update immediately in both preview sizes and sit behind non-transparent content with pointer events disabled. Existing Pages migrate to `none` and intensity `35`, preserving their previous appearance.
+
 ## Dashboard and editor
 
 `/app/pages` provides aggregate cards, title/slug search, server-side sorting and 12-item pagination. Desktop displays two cards per row and mobile displays one. Each card shows its identity, status, block count, views and visitors; clicking the card opens analytics. Copy and QR use the shared Link controls, Edit is a direct card action, and Duplicate, Publish/Disable/Draft and Delete live in the animated overflow menu.
@@ -54,6 +56,8 @@ The editor is split into General, Content, Design and SEO sections. Desktop uses
 ## Public rendering and metadata
 
 `GET /:slug` returns the compressed Vue shell for a published Page. Fastify injects title, description, Open Graph, Twitter, canonical URL and a resource-type marker into the HTML before sending it. The marker lets the shared public route lazy-load Pages or Live without an extra resource-resolution request.
+
+Public system labels and loading/error states use the shared English/Latvian locale files. The visitor locale is resolved from `navigator.language`: `lv`/`lv-*` selects Latvian, while English, unsupported or unavailable values use English. The public locale is not persisted and never follows the owner's dashboard preference. Server-rendered disabled/not-found states apply the same primary-language rule to `Accept-Language`.
 
 The repository-wide `robots.txt` and default HTML metadata continue to request `noindex`. Pages therefore have link-preview metadata but are not intended for search-engine indexing until a separate product decision changes that global policy.
 
@@ -95,14 +99,14 @@ Public responses include only rendering fields and visible blocks. Draft and dis
 
 Pages uses four tables:
 
-- `pages` — owner, slug, identity, design, status and SEO metadata;
+- `pages` — owner, slug, identity, design (`theme`, `layout`, `background_pattern`, `pattern_intensity`), status and SEO metadata;
 - `page_blocks` — ordered typed blocks with validated JSON configuration;
 - `page_views` — view timestamp, visitor identity, device/browser/OS, normalized referrer, browser language and optional raw IP;
 - `page_block_clicks` — idempotent block-click events, labels and the request's device/browser/OS/referrer/language metadata used by Recent click details.
 
 Foreign keys cascade on Page deletion. Indexes cover owner/creation ordering, block ordering, view time/visitor queries and click time/block queries.
 
-Older databases can have a `public_slugs` CHECK constraint that only permits Links and Live, a `page_blocks` CHECK constraint created before Double existed, or Page view/click tables without analytics metadata columns. Startup performs data-preserving upgrades, then ensures the required indexes exist. Existing Page analytics rows receive neutral `unknown`/`Unknown`/`Direct`/`null` metadata defaults; historical browser, OS, referrer and language values cannot be reconstructed. As with all ShortSwitch startup schema upgrades, back up `/app/data/shortswitch.db` before deploying a new image and do not treat first startup as read-only.
+Older databases can have a `public_slugs` CHECK constraint that only permits Links and Live, a `page_blocks` CHECK constraint created before Double existed, Page rows without pattern fields, or Page view/click tables without analytics metadata columns. Startup performs data-preserving upgrades, then ensures the required indexes exist. Existing Pages receive `background_pattern = 'none'` and `pattern_intensity = 35`. Existing Page analytics rows receive neutral `unknown`/`Unknown`/`Direct`/`null` metadata defaults; historical browser, OS, referrer and language values cannot be reconstructed. As with all ShortSwitch startup schema upgrades, back up `/app/data/shortswitch.db` before deploying a new image and do not treat first startup as read-only.
 
 ## Verification
 

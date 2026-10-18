@@ -71,7 +71,10 @@ export class AuthService {
       id: user.id,
       email: user.email,
       name: user.name,
-      theme: user.theme
+      theme: user.theme,
+      sidebarCollapsed: user.sidebarCollapsed,
+      locale: user.locale,
+      preferencesInitialized: user.preferencesInitialized
     };
   }
 
