@@ -4,12 +4,11 @@ import { useRoute, useRouter } from 'vue-router';
 import { useAuth } from './composables/useAuth';
 import { usePreferences } from './composables/usePreferences';
 import { setDocumentLocale } from './i18n';
-import type { LinkRecord, LiveActivitySummary } from '@/shared/types';
+import type { LinkRecord } from '@/shared/types';
 import { resolvePublicLocale } from '@/shared/public-locale';
 
 const AppShell = defineAsyncComponent(() => import('./components/AppShell.vue'));
 const CreateLinkModal = defineAsyncComponent(() => import('./components/CreateLinkModal.vue'));
-const LiveActivityModal = defineAsyncComponent(() => import('./components/LiveActivityModal.vue'));
 const ToastViewport = defineAsyncComponent(() => import('./components/ToastViewport.vue'));
 
 const { initialized, loadUser, user } = useAuth();
@@ -17,17 +16,17 @@ const { locale: preferenceLocale } = usePreferences();
 const route = useRoute();
 const router = useRouter();
 const createOpen = ref(false);
-const liveCreateOpen = ref(false);
 
 const isLoginRoute = computed(() => route.path === '/login');
 const isPublicRoute = computed(() => route.meta.public === true);
+const isStandaloneRoute = computed(() => route.meta.standalone === true);
 const authNavigationPending = computed(() => !isPublicRoute.value && (
   !initialized.value
   || Boolean(user.value && isLoginRoute.value)
   || Boolean(!user.value && !isLoginRoute.value)
 ));
 const showAdminOverlays = computed(() => Boolean(
-  initialized.value && user.value && !isLoginRoute.value && !isPublicRoute.value
+  initialized.value && user.value && !isLoginRoute.value && !isPublicRoute.value && !isStandaloneRoute.value
 ));
 
 watch(
@@ -67,22 +66,16 @@ const onCreated = async (link: LinkRecord) => {
   }
 };
 
-const onLiveCreated = (activity: LiveActivitySummary) => {
-  if (route.path === '/app/live') {
-    window.dispatchEvent(new CustomEvent('live-created', { detail: activity }));
-  }
-};
 </script>
 
 <template>
   <div v-if="authNavigationPending" class="min-h-dvh bg-[var(--ui-page)]" aria-busy="true"></div>
-  <RouterView v-else-if="isLoginRoute || isPublicRoute || !user" />
-  <AppShell v-else @create-link="createOpen = true" @create-live="liveCreateOpen = true" @create-page="router.push('/app/pages/new')">
+  <RouterView v-else-if="isLoginRoute || isPublicRoute || isStandaloneRoute || !user" />
+  <AppShell v-else @create-link="createOpen = true" @create-live="router.push('/app/activities/new')" @create-page="router.push('/app/pages/new')">
     <RouterView />
   </AppShell>
   <template v-if="showAdminOverlays">
     <CreateLinkModal :open="createOpen" @close="createOpen = false" @created="onCreated" />
-    <LiveActivityModal :open="liveCreateOpen" @close="liveCreateOpen = false" @saved="onLiveCreated" />
     <ToastViewport />
   </template>
 </template>

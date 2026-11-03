@@ -16,6 +16,8 @@ export const redactedLogPaths = [
   'authorization',
   'csrfToken',
   'csrfSecret',
+  'attemptToken',
+  'participantKey',
   'password',
   'passwordHash',
   'sessionId'

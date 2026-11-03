@@ -7,10 +7,11 @@ import { useToast } from '../composables/useToast';
 import QrCodePopover from '../components/QrCodePopover.vue';
 import StatCard from '../components/StatCard.vue';
 import { useI18n } from 'vue-i18n';
+import { formatCardDate } from '../lib/date-format';
 
 const router = useRouter();
 const { pushToast } = useToast();
-const { t, locale } = useI18n();
+const { t } = useI18n();
 const result = ref<PageListResponse>({ items: [], total: 0, page: 1, pageSize: 12, stats: { totalPages: 0, totalViews: 0, uniqueVisitors: 0 } });
 const loading = ref(true);
 const search = ref('');
@@ -83,10 +84,7 @@ const statusClass = (status: PageStatus) => status === 'published'
     ? 'bg-[#FCE8DB] text-[#AF3029] dark:bg-[#321F1C] dark:text-[#F89A8A]'
     : 'bg-[var(--ui-pill-bg)] text-[var(--ui-text-muted)]';
 const displayUrl = (url: string) => url.replace(/^https?:\/\//i, '');
-const formatDate = (value: string) => {
-  const date = new Date(value);
-  return new Intl.DateTimeFormat(locale.value === 'lv' ? 'lv-LV' : 'en-US', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(date);
-};
+const formatDate = formatCardDate;
 const buildMenuStyle = (anchor: HTMLElement | null, menuHeight: number) => {
   if (!anchor || typeof window === 'undefined') return {};
   const rect = anchor.getBoundingClientRect();

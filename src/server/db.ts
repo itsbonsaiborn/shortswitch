@@ -2,13 +2,38 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { config } from './config.js';
+import { runMigrations } from './migrations.js';
+import { migrateLegacyLiveActivities } from './legacy-live-migration.js';
+import { logger } from './logger.js';
 
 let dbInstance: DatabaseSync | null = null;
+
+const backupBeforeLegacyMigration = (db: DatabaseSync) => {
+  if (config.nodeEnv !== 'production') return;
+  const hasLegacyData = db.prepare(`
+    SELECT 1 as present FROM sqlite_master WHERE type = 'table' AND name = 'live_activities'
+  `).get() as { present: number } | undefined;
+  if (!hasLegacyData) return;
+  const alreadyApplied = (() => {
+    const hasMigrations = db.prepare(`
+      SELECT 1 as present FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'
+    `).get() as { present: number } | undefined;
+    if (!hasMigrations) return false;
+    return Boolean(db.prepare('SELECT 1 as present FROM schema_migrations WHERE version = 9').get());
+  })();
+  if (alreadyApplied) return;
+  const backupPath = `${config.databasePath}.pre-legacy-live-v9.bak`;
+  if (fs.existsSync(backupPath)) return;
+  const escapedPath = backupPath.replaceAll("'", "''");
+  db.exec(`VACUUM INTO '${escapedPath}'`);
+  logger.info({ backupPath }, 'SQLite backup created before legacy Live migration');
+};
 
 export const getDb = () => {
   if (!dbInstance) {
     fs.mkdirSync(path.dirname(config.databasePath), { recursive: true });
     dbInstance = new DatabaseSync(config.databasePath);
+    backupBeforeLegacyMigration(dbInstance);
     dbInstance.exec(`
       PRAGMA journal_mode = WAL;
       PRAGMA foreign_keys = ON;
@@ -472,6 +497,13 @@ export const getDb = () => {
     }
     if (!liveViewColumns.some((column) => column.name === 'language')) {
       dbInstance.exec(`ALTER TABLE live_views ADD COLUMN language TEXT;`);
+    }
+
+    runMigrations(dbInstance);
+    const legacyMigration = migrateLegacyLiveActivities(dbInstance);
+    if (legacyMigration.failed) logger.warn({ legacyMigration }, 'legacy Live migration completed with errors');
+    else if (legacyMigration.migrated || legacyMigration.unsupported) {
+      logger.info({ legacyMigration }, 'legacy Live migration audit completed');
     }
   }
 

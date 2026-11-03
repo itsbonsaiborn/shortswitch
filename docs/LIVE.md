@@ -1,5 +1,7 @@
 # ShortSwitch Live
 
+> **Compatibility runtime:** slide-based Activities replace Live for new content. Existing Live tables, APIs, historical responses, analytics and unsupported activity types remain available during the transition. Compatible Word Cloud and Multiple Choice records are copied into immutable Activities versions without deleting their legacy history. See [`ACTIVITIES-MIGRATION.md`](ACTIVITIES-MIGRATION.md) for the exact mapping, backup and rollback procedure.
+
 ShortSwitch Live adds one-question interactive activities to the existing single-user ShortSwitch deployment. It reuses Fastify, Vue, SQLite, cookie administration, CSRF protection and the root short-URL namespace. No additional service or runtime dependency is required.
 
 ## Activity model

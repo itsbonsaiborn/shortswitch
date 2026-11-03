@@ -677,8 +677,8 @@ watch(moduleMetric, () => { selectedModuleIndex.value = null; });
   .analytics-detail-grid > :first-child { grid-column: 1 / -1; }
 }
 
-@container (min-width: 1600px) {
-  .analytics-detail-grid { grid-template-columns: minmax(0, 1.35fr) minmax(18rem, .825fr) minmax(18rem, .825fr); }
+@container (min-width: 1240px) {
+  .analytics-detail-grid { grid-template-columns: minmax(0, 1.35fr) minmax(16rem, .825fr) minmax(16rem, .825fr); }
   .analytics-detail-grid > :first-child { grid-column: auto; }
 }
 </style>

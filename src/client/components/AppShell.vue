@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useRoute, useRouter } from 'vue-router';
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useWindowSize } from '@vueuse/core';
 import { useAuth } from '../composables/useAuth';
 import { useAppConfig } from '../composables/useAppConfig';
@@ -21,7 +21,10 @@ const mobileOpen = ref(false);
 const sidebarRef = ref<HTMLElement | null>(null);
 const menuButtonRef = ref<HTMLElement | null>(null);
 const createMenuRef = ref<HTMLElement | null>(null);
+const createButtonRef = ref<HTMLElement | null>(null);
+const createMenuPanelRef = ref<HTMLElement | null>(null);
 const createMenuOpen = ref(false);
+const createMenuPosition = ref({ top: '0px', left: '0px' });
 const { width } = useWindowSize();
 
 const manualCollapsed = ref(savedSidebarCollapsed.value);
@@ -53,9 +56,10 @@ const tabs = [
   }
 ] as const;
 
-const activePath = computed(() =>
-  tabs.find((tab) => route.path.startsWith(tab.path))?.path ?? '/app/links'
-);
+const activePath = computed(() => {
+  if (route.path.startsWith('/app/activities')) return '/app/live';
+  return tabs.find((tab) => route.path.startsWith(tab.path))?.path ?? '/app/links';
+});
 const currentTitle = computed(() => {
   const tab = tabs.find((item) => item.path === activePath.value);
   return tab ? t(tab.name) : appName.value;
@@ -108,9 +112,42 @@ const runCreateAction = (action: 'link' | 'live' | 'page') => {
   else emit('createPage');
 };
 
+const positionCreateMenu = () => {
+  const button = createButtonRef.value;
+  if (!button || !createMenuOpen.value) return;
+  const rect = button.getBoundingClientRect();
+  const viewportPadding = 12;
+  const gap = 4;
+  const menuWidth = createMenuPanelRef.value?.offsetWidth ?? 192;
+  const menuHeight = createMenuPanelRef.value?.offsetHeight ?? 144;
+  const preferredLeft = rect.left + menuWidth <= window.innerWidth - viewportPadding
+    ? rect.left
+    : rect.right - menuWidth;
+  const left = Math.min(
+    Math.max(viewportPadding, preferredLeft),
+    Math.max(viewportPadding, window.innerWidth - menuWidth - viewportPadding)
+  );
+  const opensBelow = rect.bottom + gap + menuHeight <= window.innerHeight - viewportPadding;
+  const top = opensBelow
+    ? rect.bottom + gap
+    : Math.max(viewportPadding, rect.top - menuHeight - gap);
+  createMenuPosition.value = { top: `${Math.round(top)}px`, left: `${Math.round(left)}px` };
+};
+
+const toggleCreateMenu = async () => {
+  createMenuOpen.value = !createMenuOpen.value;
+  if (!createMenuOpen.value) return;
+  await nextTick();
+  positionCreateMenu();
+};
+
 const closeSidebarOnOutsideClick = (event: MouseEvent) => {
   const target = event.target as Node | null;
-  if (createMenuOpen.value && !createMenuRef.value?.contains(target)) createMenuOpen.value = false;
+  if (
+    createMenuOpen.value
+    && !createMenuRef.value?.contains(target)
+    && !createMenuPanelRef.value?.contains(target)
+  ) createMenuOpen.value = false;
   if (!showMenuButton.value || !mobileOpen.value) return;
   if (sidebarRef.value?.contains(target)) return;
   if (menuButtonRef.value?.contains(target)) return;
@@ -120,10 +157,14 @@ const closeSidebarOnOutsideClick = (event: MouseEvent) => {
 onMounted(() => {
   loadAppConfig();
   document.addEventListener('click', closeSidebarOnOutsideClick);
+  window.addEventListener('resize', positionCreateMenu);
+  window.addEventListener('scroll', positionCreateMenu, true);
 });
 
 onBeforeUnmount(() => {
   document.removeEventListener('click', closeSidebarOnOutsideClick);
+  window.removeEventListener('resize', positionCreateMenu);
+  window.removeEventListener('scroll', positionCreateMenu, true);
 });
 </script>
 
@@ -283,25 +324,34 @@ onBeforeUnmount(() => {
             >
               <div ref="createMenuRef" class="relative min-w-0">
                 <button
+                  ref="createButtonRef"
                   class="btn-primary h-11 w-full whitespace-nowrap px-5 text-sm sm:w-auto"
                   :aria-expanded="createMenuOpen"
                   aria-haspopup="menu"
-                  @click.stop="createMenuOpen = !createMenuOpen"
+                  @click.stop="toggleCreateMenu"
                 >{{ t('navigation.create') }}</button>
-                <Transition
-                  enter-active-class="transition duration-200 ease-out"
-                  enter-from-class="-translate-y-1 opacity-0"
-                  enter-to-class="translate-y-0 opacity-100"
-                  leave-active-class="transition duration-150 ease-in"
-                  leave-from-class="opacity-100"
-                  leave-to-class="opacity-0"
-                >
-                  <div v-if="createMenuOpen" class="absolute right-0 z-[70] mt-2 w-48 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-dropdown-bg)] p-2 shadow-xl" role="menu">
-                    <button class="w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-[var(--ui-panel-muted)]" role="menuitem" @click="runCreateAction('link')">{{ t('navigation.createLink') }}</button>
-                    <button class="w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-[var(--ui-panel-muted)]" role="menuitem" @click="runCreateAction('live')">{{ t('navigation.createLive') }}</button>
-                    <button class="w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-[var(--ui-panel-muted)]" role="menuitem" @click="runCreateAction('page')">{{ t('navigation.createPage') }}</button>
-                  </div>
-                </Transition>
+                <Teleport to="body">
+                  <Transition
+                    enter-active-class="transition duration-200 ease-out"
+                    enter-from-class="-translate-y-1 opacity-0"
+                    enter-to-class="translate-y-0 opacity-100"
+                    leave-active-class="transition duration-150 ease-in"
+                    leave-from-class="opacity-100"
+                    leave-to-class="opacity-0"
+                  >
+                    <div
+                      v-if="createMenuOpen"
+                      ref="createMenuPanelRef"
+                      class="pointer-events-auto fixed z-[200] w-48 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-dropdown-bg)] p-2 shadow-xl"
+                      :style="createMenuPosition"
+                      role="menu"
+                    >
+                      <button class="w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-[var(--ui-panel-muted)]" role="menuitem" @click="runCreateAction('link')">{{ t('navigation.createLink') }}</button>
+                      <button class="w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-[var(--ui-panel-muted)]" role="menuitem" @click="runCreateAction('live')">{{ t('navigation.createLive') }}</button>
+                      <button class="w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-[var(--ui-panel-muted)]" role="menuitem" @click="runCreateAction('page')">{{ t('navigation.createPage') }}</button>
+                    </div>
+                  </Transition>
+                </Teleport>
               </div>
               <div
                 class="grid h-11 shrink-0 grid-cols-3 divide-x divide-[var(--ui-border)] overflow-hidden rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-panel)]"

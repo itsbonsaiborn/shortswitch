@@ -120,6 +120,42 @@ body::-webkit-scrollbar-button,
   @apply min-h-screen;
 }
 
+.activity-surface {
+  position: relative;
+  isolation: isolate;
+  min-height: 100dvh;
+  color: var(--ui-text);
+  background:
+    radial-gradient(circle at top left, var(--ui-accent-soft), transparent 32%),
+    linear-gradient(180deg, var(--ui-bg), var(--ui-bg-alt));
+}
+.activity-surface::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  color: var(--ui-accent);
+  opacity: var(--activity-pattern-opacity, .35);
+}
+.activity-surface > * { position: relative; z-index: 1; }
+.activity-pattern-none::before { display:none; }
+.activity-pattern-dots::before { background-image:radial-gradient(currentColor 1.35px,transparent 1.35px); background-size:20px 20px; }
+.activity-pattern-grid::before { background-image:linear-gradient(currentColor 1px,transparent 1px),linear-gradient(90deg,currentColor 1px,transparent 1px); background-size:28px 28px; }
+.activity-pattern-soft_glow::before { background-image:radial-gradient(circle at 12% 18%,currentColor 0,transparent 35%),radial-gradient(circle at 88% 72%,currentColor 0,transparent 38%); filter:blur(18px); }
+.activity-pattern-crosses::before { background-image:linear-gradient(90deg,transparent 7px,currentColor 7px 13px,transparent 13px),linear-gradient(transparent 7px,currentColor 7px 13px,transparent 13px); background-size:24px 24px; background-position:0 10px,10px 0; }
+
+.activity-theme-classic_cream { --ui-bg:#f7f0df; --ui-bg-alt:#efe4cf; --ui-text:#28211b; --ui-text-muted:#75685c; --ui-accent:#c7662e; --ui-accent-hover:#a64f20; --ui-accent-soft:rgba(199,102,46,.14); --ui-accent-contrast:#fffaf0; --ui-panel:#fffaf0; --ui-panel-muted:#f0e5d1; --ui-border:#dfd1bd; --ui-pill-bg:#eadcc5; --ui-input-bg:#fffaf0; --ui-dropdown-bg:#fffaf0; }
+.activity-theme-forest_dark { color-scheme:dark; --ui-bg:#14211b; --ui-bg-alt:#101b16; --ui-text:#f0f4e8; --ui-text-muted:#a9b8a9; --ui-accent:#9db55f; --ui-accent-hover:#b2c879; --ui-accent-soft:rgba(157,181,95,.18); --ui-accent-contrast:#14211b; --ui-panel:#1d3027; --ui-panel-muted:#243a30; --ui-border:#365044; --ui-pill-bg:#294238; --ui-input-bg:#182820; --ui-dropdown-bg:#1d3027; }
+.activity-theme-soft_lavender { --ui-bg:#f1edfa; --ui-bg-alt:#e8e0f5; --ui-text:#302842; --ui-text-muted:#746987; --ui-accent:#8067b1; --ui-accent-hover:#6e55a0; --ui-accent-soft:rgba(128,103,177,.15); --ui-accent-contrast:#fff; --ui-panel:#faf8ff; --ui-panel-muted:#eee8f8; --ui-border:#d7cee8; --ui-pill-bg:#e2d9f0; --ui-input-bg:#faf8ff; --ui-dropdown-bg:#faf8ff; }
+.activity-theme-ocean_blue { --ui-bg:#eaf5f8; --ui-bg-alt:#deeff3; --ui-text:#18333c; --ui-text-muted:#5d7780; --ui-accent:#287d91; --ui-accent-hover:#216b7c; --ui-accent-soft:rgba(40,125,145,.14); --ui-accent-contrast:#fff; --ui-panel:#f7fdff; --ui-panel-muted:#e1f0f4; --ui-border:#c5dfe5; --ui-pill-bg:#d5e9ee; --ui-input-bg:#f7fdff; --ui-dropdown-bg:#f7fdff; }
+.activity-theme-minimal_light { --ui-bg:#f8f8f6; --ui-bg-alt:#f0f0ec; --ui-text:#1f1f1d; --ui-text-muted:#6f6f69; --ui-accent:#2f6f62; --ui-accent-hover:#255a50; --ui-accent-soft:rgba(47,111,98,.13); --ui-accent-contrast:#fff; --ui-panel:#fff; --ui-panel-muted:#f1f1ed; --ui-border:#deded8; --ui-pill-bg:#e8e8e2; --ui-input-bg:#fff; --ui-dropdown-bg:#fff; }
+.activity-layout-classic { --activity-radius:1.5rem; --activity-shadow:0 8px 24px rgba(0,0,0,.055); }
+.activity-layout-minimal { --activity-radius:.65rem; --activity-shadow:none; }
+.activity-layout-soft { --activity-radius:2rem; --activity-shadow:0 14px 34px rgba(58,42,75,.1); }
+.activity-layout-bold { --activity-radius:1rem; --activity-shadow:5px 5px 0 var(--ui-border); }
+.activity-themed-card { border-radius:var(--activity-radius,1.5rem); box-shadow:var(--activity-shadow,none); }
+
 .panel {
   @apply rounded-3xl border backdrop-blur-xl transition-colors duration-300;
   border-color: var(--ui-border);
@@ -131,6 +167,11 @@ body::-webkit-scrollbar-button,
   border-color: var(--ui-border);
   background: var(--ui-panel-muted);
 }
+
+.activity-surface.activity-layout-classic .panel { border-radius:1.5rem; box-shadow:0 8px 24px rgba(0,0,0,.055); }
+.activity-surface.activity-layout-minimal .panel { border-radius:.65rem; box-shadow:none; }
+.activity-surface.activity-layout-soft .panel { border-radius:2rem; box-shadow:0 14px 34px rgba(58,42,75,.1); }
+.activity-surface.activity-layout-bold .panel { border-radius:1rem; box-shadow:5px 5px 0 var(--ui-border); }
 
 .btn-primary {
   @apply inline-flex items-center justify-center rounded-2xl border px-4 py-2.5 font-medium transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-transparent;

@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 const envKeys = [
   'NODE_ENV',
   'DATABASE_PATH',
+  'APP_DATA_DIR',
   'ADMIN_EMAIL',
   'ADMIN_PASSWORD',
   'ADMIN_NAME',
@@ -75,6 +76,7 @@ const setBaseEnv = (dbPath: string, overrides: Record<string, string | undefined
   const nextEnv: Record<string, string> = {
     NODE_ENV: 'development',
     DATABASE_PATH: dbPath,
+    APP_DATA_DIR: `${dbPath}.data`,
     ADMIN_EMAIL: 'admin@example.com',
     ADMIN_PASSWORD: 'test-admin-password-42',
     ADMIN_NAME: 'Admin',
@@ -196,6 +198,7 @@ describe.sequential('server security hardening', () => {
     } catch {
       // keep per-test db if SQLite still holds a transient file handle
     }
+    fs.rmSync(`${testDbPath}.data`, { recursive: true, force: true });
     vi.useRealTimers();
   });
 
@@ -2266,6 +2269,1241 @@ describe.sequential('server security hardening', () => {
 
     expect((await app.inject({ method: 'GET', url: '/page-link', headers: { 'user-agent': 'Mozilla/5.0' } })).statusCode).toBe(302);
     expect((await app.inject({ method: 'GET', url: '/page-live' })).statusCode).toBe(200);
+    await app.close();
+  });
+
+  test('Activities drafts persist slide order and content blocks while rejecting invalid question layouts', async () => {
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+    const csrf = await getCsrfBundle(app);
+    const admin = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
+    const adminHeaders = { cookie: admin.cookies, 'x-csrf-token': csrf.csrfToken };
+    const settings = {
+      title: 'Network assessment', description: 'Foundation test', slug: 'network-assessment', status: 'closed',
+      identityMode: 'named', requiredAnswerBehavior: 'require_all', navigationPolicy: 'linear',
+      resultVisibility: 'after_submission', maximumAttempts: 2, attemptTimeLimitSeconds: 900,
+      submissionDeadlineAt: null, shuffleQuestionOptions: true
+    };
+    expect((await app.inject({ method: 'GET', url: '/api/activities' })).statusCode).toBe(401);
+    expect((await app.inject({ method: 'POST', url: '/api/activities', headers: { cookie: admin.cookies }, payload: { settings } })).statusCode).toBe(403);
+    const createdResponse = await app.inject({ method: 'POST', url: '/api/activities', headers: adminHeaders, payload: { settings } });
+    expect(createdResponse.statusCode).toBe(201);
+    const created = createdResponse.json();
+    expect(created.activity.settings).toMatchObject(settings);
+    expect(created.draft).toMatchObject({ revision: 0, slides: [] });
+    await seedUser('activities-user@example.com', 'activities-password-42');
+    const otherCsrf = await getCsrfBundle(app);
+    const other = await login(app, 'activities-user@example.com', 'activities-password-42', otherCsrf);
+    expect((await app.inject({
+      method: 'GET', url: `/api/activities/${created.activity.id}`, headers: { cookie: other.cookies }
+    })).statusCode).toBe(404);
+
+    const draftPayload = {
+      expectedRevision: 0,
+      slides: [
+        {
+          id: 'slide_intro', title: 'Introduction', description: 'Read this first.', blocks: [
+            { id: 'heading_intro', type: 'heading', config: { text: 'Computer networks', level: 1 } },
+            { id: 'text_intro', type: 'text', config: { text: 'Read the material before answering.' } },
+            { id: 'divider_intro', type: 'divider', config: { style: 'solid' } }
+          ]
+        },
+        {
+          id: 'slide_question', title: 'Question', blocks: [
+            { id: 'question_one', type: 'question', questionType: 'single_choice', graded: true, points: 3, required: true,
+              config: { prompt: 'Which protocol resolves names?', options: [{ id: 'dns', label: 'DNS' }, { id: 'arp', label: 'ARP' }] },
+              answerKey: { correctOptionId: 'dns' } }
+          ]
+        }
+      ]
+    };
+    const savedResponse = await app.inject({ method: 'PUT', url: `/api/activities/${created.activity.id}/draft`, headers: adminHeaders, payload: draftPayload });
+    expect(savedResponse.statusCode).toBe(200);
+    const saved = savedResponse.json();
+    expect(saved.revision).toBe(1);
+    expect(saved.slides.map((slide: any) => [slide.id, slide.position])).toEqual([['slide_intro', 0], ['slide_question', 1]]);
+    expect(saved.slides[0].description).toBe('Read this first.');
+    expect(saved.slides[0].blocks.map((block: any) => block.id)).toEqual(['heading_intro', 'text_intro', 'divider_intro']);
+
+    const addedResponse = await app.inject({
+      method: 'POST', url: `/api/activities/${created.activity.id}/slides`, headers: adminHeaders,
+      payload: { expectedRevision: 1, position: 1, slide: { id: 'slide_middle', title: 'Middle', blocks: [] } }
+    });
+    expect(addedResponse.statusCode).toBe(201);
+    expect(addedResponse.json().slides.map((slide: any) => slide.id)).toEqual(['slide_intro', 'slide_middle', 'slide_question']);
+
+    const movedResponse = await app.inject({
+      method: 'PATCH', url: `/api/activities/${created.activity.id}/slides/slide_middle`, headers: adminHeaders,
+      payload: { expectedRevision: 2, position: 0, slide: { title: 'First slide', blocks: [] } }
+    });
+    expect(movedResponse.statusCode).toBe(200);
+    expect(movedResponse.json().slides.map((slide: any) => [slide.id, slide.position, slide.title])).toEqual([
+      ['slide_middle', 0, 'First slide'], ['slide_intro', 1, 'Introduction'], ['slide_question', 2, 'Question']
+    ]);
+
+    const deletedSlideResponse = await app.inject({
+      method: 'DELETE', url: `/api/activities/${created.activity.id}/slides/slide_middle?expectedRevision=3`, headers: adminHeaders
+    });
+    expect(deletedSlideResponse.statusCode).toBe(200);
+    expect(deletedSlideResponse.json().slides.map((slide: any) => slide.id)).toEqual(['slide_intro', 'slide_question']);
+
+    const invalidQuestions = {
+      expectedRevision: 4,
+      slides: [{ id: 'bad_slide', title: '', blocks: [draftPayload.slides[1].blocks[0], {
+        ...draftPayload.slides[1].blocks[0], id: 'question_two', answerKey: { correctOptionId: 'arp' }
+      }] }]
+    };
+    expect((await app.inject({
+      method: 'PUT', url: `/api/activities/${created.activity.id}/draft`, headers: adminHeaders, payload: invalidQuestions
+    })).statusCode).toBe(400);
+
+    const invalidBlock = {
+      expectedRevision: 4,
+      slides: [{ id: 'bad_image_slide', title: '', blocks: [{
+        id: 'bad_image', type: 'image', config: { url: 'http://example.com/image.png', alt: 'Image', caption: '' }
+      }] }]
+    };
+    expect((await app.inject({
+      method: 'PUT', url: `/api/activities/${created.activity.id}/draft`, headers: adminHeaders, payload: invalidBlock
+    })).statusCode).toBe(400);
+
+    expect((await app.inject({
+      method: 'POST', url: `/api/activities/${created.activity.id}/publish`, headers: adminHeaders, payload: { expectedRevision: 4 }
+    })).statusCode).toBe(201);
+    const deletedActivity = await app.inject({ method: 'DELETE', url: `/api/activities/${created.activity.id}`, headers: adminHeaders });
+    expect(deletedActivity.statusCode).toBe(200);
+    expect((await app.inject({ method: 'GET', url: `/api/activities/${created.activity.id}`, headers: { cookie: admin.cookies } })).statusCode).toBe(404);
+    await app.close();
+  });
+
+  test('Activities publishing workflow validates access, duplicates safely and archives without deleting attempts', async () => {
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+    const csrf = await getCsrfBundle(app);
+    const admin = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
+    const adminHeaders = { cookie: admin.cookies, 'x-csrf-token': csrf.csrfToken };
+    const future = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    const deadline = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+    const settings = {
+      title: 'Publishing workflow', description: 'End-to-end Activity', slug: 'publishing-workflow', status: 'active',
+      identityMode: 'anonymous', requiredAnswerBehavior: 'require_all', navigationPolicy: 'linear',
+      resultVisibility: 'after_submission', feedbackPolicy: 'points_per_question', maximumAttempts: 2,
+      attemptTimeLimitSeconds: null, availabilityStartAt: future, submissionDeadlineAt: deadline,
+      submissionDeadlineTimezone: 'Europe/Riga', lowTimeWarningSeconds: 300, shuffleQuestionOptions: false
+    };
+    const created = (await app.inject({ method: 'POST', url: '/api/activities', headers: adminHeaders, payload: { settings } })).json();
+    expect(created.activity.lifecycleState).toBe('draft');
+    const draft = {
+      expectedRevision: 0,
+      slides: [{ id: 'workflow_slide', title: 'Question', description: '', blocks: [{
+        id: 'workflow_question', type: 'question', questionType: 'single_choice', graded: true, points: 2, required: true,
+        config: { prompt: 'Choose A', description: '', options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }], shuffleOptions: false },
+        answerKey: { correctOptionId: 'a', feedback: 'Correct.' }
+      }] }]
+    };
+    expect((await app.inject({ method: 'PUT', url: `/api/activities/${created.activity.id}/draft`, headers: adminHeaders, payload: draft })).statusCode).toBe(200);
+    const checklist = await app.inject({ method: 'GET', url: `/api/activities/${created.activity.id}/publish-validation`, headers: { cookie: admin.cookies } });
+    expect(checklist.statusCode).toBe(200);
+    expect(checklist.json()).toMatchObject({ valid: true, items: expect.arrayContaining([expect.objectContaining({ code: 'content', valid: true })]) });
+    expect((await app.inject({ method: 'POST', url: `/api/activities/${created.activity.id}/publish`, headers: adminHeaders, payload: { expectedRevision: 1 } })).statusCode).toBe(201);
+    const futureLanding = await app.inject({ method: 'GET', url: '/api/activities/public/publishing-workflow' });
+    expect(futureLanding.json().availabilityStartAt).toBe(future);
+    expect((await app.inject({
+      method: 'POST', url: '/api/activities/public/publishing-workflow/attempts',
+      payload: { participantKey: 'publishing_workflow_browser_0001' }
+    })).statusCode).toBe(409);
+
+    const updated = (await app.inject({
+      method: 'PATCH', url: `/api/activities/${created.activity.id}`, headers: adminHeaders,
+      payload: { expectedRevision: 1, settings: { availabilityStartAt: null } }
+    })).json();
+    const versionTwo = await app.inject({
+      method: 'POST', url: `/api/activities/${created.activity.id}/publish`, headers: adminHeaders,
+      payload: { expectedRevision: updated.draft.revision }
+    });
+    expect(versionTwo.json().versionNumber).toBe(2);
+    const started = await app.inject({
+      method: 'POST', url: '/api/activities/public/publishing-workflow/attempts',
+      payload: { participantKey: 'publishing_workflow_browser_0001' }
+    });
+    expect(started.statusCode).toBe(201);
+    const credential = started.json();
+    const authorization = { authorization: `Bearer ${credential.attemptToken}` };
+    const questionId = credential.attempt.slides[0].blocks[0].id;
+    expect((await app.inject({
+      method: 'PATCH', url: `/api/activities/public/publishing-workflow/attempts/${credential.attemptId}/responses/${questionId}`,
+      headers: authorization, payload: { answer: { questionType: 'single_choice', optionId: 'a' }, clientRevision: 1 }
+    })).statusCode).toBe(200);
+    const submitted = await app.inject({ method: 'POST', url: `/api/activities/public/publishing-workflow/attempts/${credential.attemptId}/submit`, headers: authorization, payload: {} });
+    expect(submitted.json()).toMatchObject({ status: 'submitted', publishedVersionNumber: 2, result: { score: 2, maximumScore: 2 } });
+    const results = await app.inject({ method: 'GET', url: `/api/activities/${created.activity.id}/results`, headers: { cookie: admin.cookies } });
+    expect(results.json().overview).toMatchObject({ totalAttempts: 1, submittedAttempts: 1 });
+    const listedWithRespondent = (await app.inject({ method: 'GET', url: '/api/activities', headers: { cookie: admin.cookies } })).json();
+    expect(listedWithRespondent.find((item: any) => item.id === created.activity.id).completedAttemptCount).toBe(1);
+
+    const duplicated = await app.inject({ method: 'POST', url: `/api/activities/${created.activity.id}/duplicate`, headers: adminHeaders, payload: {} });
+    expect(duplicated.statusCode).toBe(201);
+    expect(duplicated.json().activity).toMatchObject({ lifecycleState: 'draft', publishedVersionId: null });
+    expect(duplicated.json().activity.settings.slug).not.toBe(settings.slug);
+    expect(duplicated.json().draft.slides[0].id).not.toBe('workflow_slide');
+
+    const archived = await app.inject({ method: 'PATCH', url: `/api/activities/${created.activity.id}/archive`, headers: adminHeaders, payload: { archived: true } });
+    expect(archived.json().activity.lifecycleState).toBe('archived');
+    expect((await app.inject({ method: 'GET', url: '/api/activities/public/publishing-workflow' })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'GET', url: `/api/activities/public/publishing-workflow/attempts/${credential.attemptId}`, headers: authorization })).statusCode).toBe(200);
+    const restored = await app.inject({ method: 'PATCH', url: `/api/activities/${created.activity.id}/archive`, headers: adminHeaders, payload: { archived: false } });
+    expect(restored.json().activity.lifecycleState).toBe('disabled');
+    expect((await app.inject({ method: 'GET', url: '/api/activities/public/publishing-workflow' })).json().status).toBe('closed');
+    const cleared = await app.inject({ method: 'POST', url: `/api/activities/${created.activity.id}/analytics/clear`, headers: adminHeaders, payload: {} });
+    expect(cleared.statusCode).toBe(200);
+    expect(cleared.json()).toMatchObject({ clearedAttempts: 1, activity: { completedAttemptCount: 0 } });
+    expect((await app.inject({ method: 'GET', url: `/api/activities/${created.activity.id}/results`, headers: { cookie: admin.cookies } })).json().overview.totalAttempts).toBe(0);
+    await app.close();
+  });
+
+  test('Activities publish immutable key-safe versions and republish beside existing attempts without regressing Live or Pages', async () => {
+    const { buildApp } = await import('./app.js');
+    const { getDb } = await import('./db.js');
+    const { createId, nowIso, sha256 } = await import('./utils.js');
+    const app = await buildApp();
+    const csrf = await getCsrfBundle(app);
+    const admin = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
+    const adminHeaders = { cookie: admin.cookies, 'x-csrf-token': csrf.csrfToken };
+    const settings = {
+      title: 'Versioned assessment', description: '', slug: 'versioned-assessment', status: 'active',
+      identityMode: 'anonymous', requiredAnswerBehavior: 'allow_incomplete', navigationPolicy: 'free',
+      resultVisibility: 'after_close', maximumAttempts: 1, attemptTimeLimitSeconds: null,
+      submissionDeadlineAt: null, shuffleQuestionOptions: false
+    };
+    const created = (await app.inject({ method: 'POST', url: '/api/activities', headers: adminHeaders, payload: { settings } })).json();
+    const firstDraft = {
+      expectedRevision: 0,
+      slides: [{ id: 'stable_slide', title: 'Version one', blocks: [
+        { id: 'stable_heading', type: 'heading', config: { text: 'Original heading', level: 2 } },
+        { id: 'stable_question', type: 'question', questionType: 'single_choice', graded: true, points: 5, required: true,
+          config: { prompt: 'Choose A', options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] },
+          answerKey: { correctOptionId: 'a' } }
+      ] }]
+    };
+    expect((await app.inject({ method: 'PUT', url: `/api/activities/${created.activity.id}/draft`, headers: adminHeaders, payload: firstDraft })).statusCode).toBe(200);
+    const firstPublish = await app.inject({
+      method: 'POST', url: `/api/activities/${created.activity.id}/publish`, headers: adminHeaders, payload: { expectedRevision: 1 }
+    });
+    expect(firstPublish.statusCode).toBe(201);
+    const versionOne = firstPublish.json();
+    expect(versionOne.versionNumber).toBe(1);
+    expect(JSON.stringify(versionOne)).not.toContain('answerKey');
+    expect(JSON.stringify(versionOne)).not.toContain('correctOptionId');
+    expect(versionOne.slides[0].blocks[1].config).toMatchObject({ questionType: 'single_choice', prompt: 'Choose A' });
+
+    const db = getDb();
+    expect(db.prepare('SELECT version, name FROM schema_migrations WHERE version = 1').get()).toEqual({
+      version: 1,
+      name: 'activities_domain_foundation'
+    });
+    expect(db.prepare('SELECT version, name FROM schema_migrations WHERE version = 2').get()).toEqual({
+      version: 2,
+      name: 'activity_slide_descriptions'
+    });
+    expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+    const timestamp = nowIso();
+    db.prepare(
+      `INSERT INTO activity_attempts (
+        id, activity_id, published_version_id, attempt_number, access_token_hash, status,
+        started_at, revision, maximum_score, grading_revision, created_at, updated_at
+      ) VALUES (?, ?, ?, 1, ?, 'in_progress', ?, 0, 5, 0, ?, ?)`
+    ).run(createId(), created.activity.id, versionOne.id, sha256('attempt-token'), timestamp, timestamp, timestamp);
+
+    const secondDraft = structuredClone(firstDraft);
+    secondDraft.expectedRevision = 1;
+    secondDraft.slides[0].title = 'Version two';
+    (secondDraft.slides[0].blocks[0] as any).config.text = 'Updated heading';
+    (secondDraft.slides[0].blocks[1] as any).answerKey.correctOptionId = 'b';
+    expect((await app.inject({ method: 'PUT', url: `/api/activities/${created.activity.id}/draft`, headers: adminHeaders, payload: secondDraft })).statusCode).toBe(200);
+    const secondPublish = await app.inject({
+      method: 'POST', url: `/api/activities/${created.activity.id}/publish`, headers: adminHeaders, payload: { expectedRevision: 2 }
+    });
+    expect(secondPublish.statusCode).toBe(201);
+    const versionTwo = secondPublish.json();
+    expect(versionTwo.versionNumber).toBe(2);
+    expect(versionTwo.id).not.toBe(versionOne.id);
+
+    const reloadedVersionOne = (await app.inject({
+      method: 'GET', url: `/api/activities/${created.activity.id}/versions/${versionOne.id}`, headers: { cookie: admin.cookies }
+    })).json();
+    expect(reloadedVersionOne.slides[0].title).toBe('Version one');
+    expect(reloadedVersionOne.slides[0].blocks[0].config.text).toBe('Original heading');
+    expect(JSON.stringify(reloadedVersionOne)).not.toContain('answerKey');
+    expect(JSON.stringify(reloadedVersionOne)).not.toContain('correctOptionId');
+    expect(db.prepare('SELECT COUNT(*) as count FROM activity_attempts WHERE published_version_id = ?').get(versionOne.id)).toEqual({ count: 1 });
+    expect(db.prepare('SELECT COUNT(*) as count FROM activity_versions WHERE activity_id = ?').get(created.activity.id)).toEqual({ count: 2 });
+    expect(db.prepare('SELECT COUNT(*) as count FROM activity_version_question_keys').get()).toEqual({ count: 2 });
+
+    const legacyLive = await app.inject({
+      method: 'POST', url: '/api/live', headers: adminHeaders,
+      payload: {
+        title: 'Legacy poll', question: 'One word?', type: 'word_cloud', slug: 'legacy-after-activities', status: 'active',
+        identityMode: 'anonymous', allowMultipleResponses: false, maxResponsesPerParticipant: 1,
+        moderationMode: 'off', maxAnswerLength: 100, publicResults: true
+      }
+    });
+    expect(legacyLive.statusCode).toBe(200);
+    expect((await app.inject({ method: 'GET', url: '/api/live/public/legacy-after-activities' })).statusCode).toBe(200);
+
+    const page = await app.inject({
+      method: 'POST', url: '/api/pages', headers: adminHeaders,
+      payload: {
+        title: 'Page after Activities', slug: 'page-after-activities', description: '', emoji: '', avatarUrl: '',
+        theme: 'classic_cream', layout: 'classic', backgroundPattern: 'none', patternIntensity: 35,
+        status: 'published', seoTitle: '', seoDescription: '', blocks: []
+      }
+    });
+    expect(page.statusCode).toBe(200);
+    expect((await app.inject({ method: 'GET', url: '/api/pages/public/page-after-activities' })).statusCode).toBe(200);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await app.close();
+  });
+
+  test('legacy Live migration is idempotent, preserves history and only converts key-safe question types', async () => {
+    const { buildApp } = await import('./app.js');
+    const { getDb } = await import('./db.js');
+    const { migrateLegacyLiveActivities } = await import('./legacy-live-migration.js');
+    const { createId, nowIso } = await import('./utils.js');
+    const app = await buildApp();
+    const csrf = await getCsrfBundle(app);
+    const admin = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
+    const adminHeaders = { cookie: admin.cookies, 'x-csrf-token': csrf.csrfToken };
+    const createLegacy = async (payload: Record<string, unknown>) => {
+      const response = await app.inject({ method: 'POST', url: '/api/live', headers: adminHeaders, payload });
+      expect(response.statusCode).toBe(200);
+      return response.json();
+    };
+    const cloud = await createLegacy({
+      title: 'Legacy cloud', question: 'One phrase?', type: 'word_cloud', slug: 'legacy-cloud-migration', status: 'active',
+      identityMode: 'named', allowMultipleResponses: true, maxResponsesPerParticipant: 3,
+      moderationMode: 'filter_only', maxAnswerLength: 80, publicResults: true
+    });
+    const choice = await createLegacy({
+      title: 'Legacy choice', question: 'Choose any', type: 'multiple_choice', slug: 'legacy-choice-migration', status: 'active',
+      identityMode: 'anonymous', allowMultipleResponses: false, maxResponsesPerParticipant: 1,
+      moderationMode: 'off', maxAnswerLength: 80, publicResults: false,
+      allowMultipleChoices: true, options: ['A', 'B', 'C']
+    });
+    const open = await createLegacy({
+      title: 'Legacy open', question: 'Explain', type: 'open_answer', slug: 'legacy-open-migration', status: 'active',
+      identityMode: 'anonymous', allowMultipleResponses: false, maxResponsesPerParticipant: 1,
+      moderationMode: 'review_all', maxAnswerLength: 280, publicResults: false
+    });
+    expect((await app.inject({
+      method: 'POST', url: '/api/live/public/legacy-cloud-migration/responses',
+      payload: { participantToken: 'legacy_migration_participant_01', participantName: 'Anna', text: 'Rīga' }
+    })).statusCode).toBe(201);
+    const db = getDb();
+    db.prepare(`
+      INSERT INTO live_views (
+        id, activity_id, timestamp, visitor_hash, device_type, browser, os, referrer, language, raw_ip
+      ) VALUES (?, ?, ?, ?, 'desktop', 'Test Browser', 'Test OS', 'Direct', 'lv-LV', NULL)
+    `).run(createId(), cloud.id, nowIso(), 'legacy-migration-view-hash');
+    const before = {
+      responses: Number((db.prepare('SELECT COUNT(*) as count FROM live_responses WHERE activity_id = ?').get(cloud.id) as { count: number }).count),
+      participants: Number((db.prepare('SELECT COUNT(*) as count FROM live_participants WHERE activity_id = ?').get(cloud.id) as { count: number }).count),
+      views: Number((db.prepare('SELECT COUNT(*) as count FROM live_views WHERE activity_id = ?').get(cloud.id) as { count: number }).count)
+    };
+    const report = migrateLegacyLiveActivities(db);
+    expect(report).toMatchObject({ migrated: 2, unsupported: 1, failed: 0 });
+    expect(migrateLegacyLiveActivities(db)).toMatchObject({ migrated: 0, unsupported: 0, failed: 0 });
+    expect(db.prepare('SELECT status FROM legacy_activity_migrations WHERE activity_id = ?').get(cloud.id)).toEqual({ status: 'migrated' });
+    expect(db.prepare('SELECT status FROM legacy_activity_migrations WHERE activity_id = ?').get(choice.id)).toEqual({ status: 'migrated' });
+    expect(db.prepare('SELECT status FROM legacy_activity_migrations WHERE activity_id = ?').get(open.id)).toEqual({ status: 'unsupported' });
+    expect(db.prepare('SELECT COUNT(*) as count FROM activity_versions WHERE activity_id IN (?, ?)').get(cloud.id, choice.id)).toEqual({ count: 2 });
+    expect(db.prepare('SELECT COUNT(*) as count FROM activity_version_question_keys WHERE block_id IN (SELECT b.id FROM activity_version_blocks b INNER JOIN activity_version_slides s ON s.id = b.slide_id INNER JOIN activity_versions v ON v.id = s.version_id WHERE v.activity_id IN (?, ?))').get(cloud.id, choice.id)).toEqual({ count: 0 });
+    expect({
+      responses: Number((db.prepare('SELECT COUNT(*) as count FROM live_responses WHERE activity_id = ?').get(cloud.id) as { count: number }).count),
+      participants: Number((db.prepare('SELECT COUNT(*) as count FROM live_participants WHERE activity_id = ?').get(cloud.id) as { count: number }).count),
+      views: Number((db.prepare('SELECT COUNT(*) as count FROM live_views WHERE activity_id = ?').get(cloud.id) as { count: number }).count)
+    }).toEqual(before);
+    expect((await app.inject({ method: 'GET', url: '/api/activities/public/legacy-cloud-migration' })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'GET', url: '/api/activities/public/legacy-choice-migration' })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'GET', url: '/api/live/public/legacy-open-migration' })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'GET', url: `/api/live/${cloud.id}`, headers: { cookie: admin.cookies } })).statusCode).toBe(200);
+    expect(db.prepare('SELECT slug FROM public_slugs WHERE resource_id = ?').get(cloud.id)).toEqual({ slug: 'legacy-cloud-migration' });
+    expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+    await app.close();
+  });
+
+  test('self-paced Activity attempts autosave, resume, isolate tokens and remain bound to immutable versions', async () => {
+    const { buildApp } = await import('./app.js');
+    const { getDb } = await import('./db.js');
+    const app = await buildApp();
+    const csrf = await getCsrfBundle(app);
+    const admin = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
+    const adminHeaders = { cookie: admin.cookies, 'x-csrf-token': csrf.csrfToken };
+    const settings = {
+      title: 'Self-paced networks', description: 'Two short slides', slug: 'self-paced-networks', status: 'active',
+      identityMode: 'named', requiredAnswerBehavior: 'require_all', navigationPolicy: 'linear',
+      resultVisibility: 'after_submission', maximumAttempts: 1, attemptTimeLimitSeconds: null,
+      submissionDeadlineAt: null, shuffleQuestionOptions: false, shuffleSlides: false, allowBackNavigation: false,
+      backgroundPattern: 'dots', patternIntensity: 60
+    };
+    const created = (await app.inject({ method: 'POST', url: '/api/activities', headers: adminHeaders, payload: { settings } })).json();
+    const firstDraft = {
+      expectedRevision: 0,
+      slides: [
+        { id: 'attempt_slide_1', title: 'DNS', description: '', blocks: [{
+          id: 'attempt_question_1', type: 'question', questionType: 'single_choice', graded: true, points: 2, required: true,
+          config: { prompt: 'Which resolves names?', options: [{ id: 'dns', label: 'DNS' }, { id: 'arp', label: 'ARP' }] },
+          answerKey: { correctOptionId: 'dns' }
+        }] },
+        { id: 'attempt_slide_2', title: 'Reflection', description: '', blocks: [{
+          id: 'attempt_question_2', type: 'question', questionType: 'open_answer', graded: false, points: 0, required: false,
+          config: { prompt: 'What did you learn?', maximumLength: 200 }, answerKey: null
+        }] }
+      ]
+    };
+    expect((await app.inject({ method: 'PUT', url: `/api/activities/${created.activity.id}/draft`, headers: adminHeaders, payload: firstDraft })).statusCode).toBe(200);
+    const versionOne = (await app.inject({ method: 'POST', url: `/api/activities/${created.activity.id}/publish`, headers: adminHeaders, payload: { expectedRevision: 1 } })).json();
+
+    const landing = await app.inject({ method: 'GET', url: '/api/activities/public/self-paced-networks' });
+    expect(landing.statusCode).toBe(200);
+    expect(landing.json()).toMatchObject({ identityMode: 'named', publishedVersionNumber: 1, slideCount: 2, backgroundPattern: 'dots', patternIntensity: 60 });
+    expect(JSON.stringify(landing.json())).not.toContain('answerKey');
+    const missingName = await app.inject({
+      method: 'POST', url: '/api/activities/public/self-paced-networks/attempts',
+      payload: { participantKey: 'browser_participant_key_000001' }
+    });
+    expect(missingName.statusCode).toBe(400);
+    const started = await app.inject({
+      method: 'POST', url: '/api/activities/public/self-paced-networks/attempts',
+      payload: { participantKey: 'browser_participant_key_000001', participantName: 'Anna' }
+    });
+    expect(started.statusCode).toBe(201);
+    const credential = started.json();
+    const authorization = { authorization: `Bearer ${credential.attemptToken}` };
+    expect(credential.attempt).toMatchObject({ status: 'in_progress', participantName: 'Anna', publishedVersionId: versionOne.id });
+    expect(JSON.stringify(credential.attempt)).not.toContain('correctOptionId');
+    expect(getDb().prepare('SELECT access_token_hash as tokenHash FROM activity_attempts WHERE id = ?').get(credential.attemptId))
+      .not.toEqual({ tokenHash: credential.attemptToken });
+    expect((await app.inject({
+      method: 'GET', url: `/api/activities/public/not-this-activity/attempts/${credential.attemptId}`, headers: authorization
+    })).statusCode).toBe(404);
+
+    const blockedNavigation = await app.inject({
+      method: 'POST', url: `/api/activities/public/self-paced-networks/attempts/${credential.attemptId}/navigate`,
+      headers: authorization, payload: { targetSlideId: credential.attempt.slides[1].id }
+    });
+    expect(blockedNavigation.statusCode).toBe(409);
+    expect((await app.inject({
+      method: 'PATCH', url: `/api/activities/public/self-paced-networks/attempts/${credential.attemptId}/responses/${credential.attempt.slides[0].blocks[0].id}`,
+      headers: authorization, payload: { answer: { questionType: 'single_choice', optionId: 'not-an-option' }, clientRevision: 1 }
+    })).statusCode).toBe(400);
+    const saved = await app.inject({
+      method: 'PATCH', url: `/api/activities/public/self-paced-networks/attempts/${credential.attemptId}/responses/${credential.attempt.slides[0].blocks[0].id}`,
+      headers: authorization, payload: { answer: { questionType: 'single_choice', optionId: 'dns' }, clientRevision: 1 }
+    });
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json().serverRevision).toBe(1);
+    const replayed = await app.inject({
+      method: 'PATCH', url: `/api/activities/public/self-paced-networks/attempts/${credential.attemptId}/responses/${credential.attempt.slides[0].blocks[0].id}`,
+      headers: authorization, payload: { answer: { questionType: 'single_choice', optionId: 'dns' }, clientRevision: 1 }
+    });
+    expect(replayed.statusCode).toBe(200);
+    expect(replayed.json()).toEqual(saved.json());
+    expect((await app.inject({
+      method: 'PATCH', url: `/api/activities/public/self-paced-networks/attempts/${credential.attemptId}/responses/${credential.attempt.slides[0].blocks[0].id}`,
+      headers: authorization, payload: { answer: { questionType: 'single_choice', optionId: 'arp' }, clientRevision: 1 }
+    })).statusCode).toBe(409);
+
+    const navigated = await app.inject({
+      method: 'POST', url: `/api/activities/public/self-paced-networks/attempts/${credential.attemptId}/navigate`,
+      headers: authorization, payload: { targetSlideId: credential.attempt.slides[1].id }
+    });
+    expect(navigated.statusCode).toBe(200);
+    expect(navigated.json().currentSlideId).toBe(credential.attempt.slides[1].id);
+    expect(navigated.json().settings.allowBackNavigation).toBe(false);
+    expect((await app.inject({
+      method: 'POST', url: `/api/activities/public/self-paced-networks/attempts/${credential.attemptId}/navigate`,
+      headers: authorization, payload: { targetSlideId: credential.attempt.slides[0].id }
+    })).statusCode).toBe(409);
+    const resumed = await app.inject({ method: 'GET', url: `/api/activities/public/self-paced-networks/attempts/${credential.attemptId}`, headers: authorization });
+    expect(resumed.statusCode).toBe(200);
+    expect(resumed.json().responses).toHaveLength(1);
+    expect((await app.inject({
+      method: 'GET', url: `/api/activities/public/self-paced-networks/attempts/${credential.attemptId}`,
+      headers: { authorization: `Bearer ${'x'.repeat(43)}` }
+    })).statusCode).toBe(404);
+
+    const secondDraft = structuredClone(firstDraft);
+    secondDraft.expectedRevision = 1;
+    secondDraft.slides[0].title = 'DNS updated';
+    expect((await app.inject({ method: 'PUT', url: `/api/activities/${created.activity.id}/draft`, headers: adminHeaders, payload: secondDraft })).statusCode).toBe(200);
+    const versionTwo = (await app.inject({ method: 'POST', url: `/api/activities/${created.activity.id}/publish`, headers: adminHeaders, payload: { expectedRevision: 2 } })).json();
+    expect(versionTwo.id).not.toBe(versionOne.id);
+    expect((await app.inject({ method: 'GET', url: `/api/activities/public/self-paced-networks/attempts/${credential.attemptId}`, headers: authorization })).json())
+      .toMatchObject({ publishedVersionId: versionOne.id, publishedVersionNumber: 1 });
+
+    const submitted = await app.inject({
+      method: 'POST', url: `/api/activities/public/self-paced-networks/attempts/${credential.attemptId}/submit`, headers: authorization, payload: {}
+    });
+    expect(submitted.statusCode).toBe(200);
+    expect(submitted.json()).toMatchObject({ status: 'submitted', submissionReason: 'manual' });
+    expect(getDb().prepare('SELECT score FROM activity_attempts WHERE id = ?').get(credential.attemptId)).toEqual({ score: 2 });
+    const doubleSubmission = await app.inject({
+      method: 'POST', url: `/api/activities/public/self-paced-networks/attempts/${credential.attemptId}/submit`, headers: authorization, payload: {}
+    });
+    expect(doubleSubmission.statusCode).toBe(200);
+    expect(doubleSubmission.json().submittedAt).toBe(submitted.json().submittedAt);
+    expect((await app.inject({
+      method: 'PATCH', url: `/api/activities/public/self-paced-networks/attempts/${credential.attemptId}/responses/${credential.attempt.slides[0].blocks[0].id}`,
+      headers: authorization, payload: { answer: { questionType: 'single_choice', optionId: 'arp' }, clientRevision: 2 }
+    })).statusCode).toBe(409);
+    expect((await app.inject({
+      method: 'POST', url: '/api/activities/public/self-paced-networks/attempts',
+      payload: { participantKey: 'browser_participant_key_000001', participantName: 'Anna' }
+    })).statusCode).toBe(409);
+
+    const timed = await app.inject({
+      method: 'POST', url: '/api/activities/public/self-paced-networks/attempts',
+      payload: { participantKey: 'browser_participant_key_000002', participantName: 'Jānis' }
+    });
+    expect(timed.statusCode).toBe(201);
+    const timedCredential = timed.json();
+    getDb().prepare('UPDATE activity_attempts SET deadline_at = ? WHERE id = ?')
+      .run(new Date(Date.now() - 1_000).toISOString(), timedCredential.attemptId);
+    const expiredAttempt = await app.inject({
+      method: 'GET', url: `/api/activities/public/self-paced-networks/attempts/${timedCredential.attemptId}`,
+      headers: { authorization: `Bearer ${timedCredential.attemptToken}` }
+    });
+    expect(expiredAttempt.json()).toMatchObject({ status: 'auto_submitted', submissionReason: 'deadline' });
+    expect((await app.inject({
+      method: 'PATCH', url: `/api/activities/public/self-paced-networks/attempts/${timedCredential.attemptId}/responses/${timedCredential.attempt.slides[0].blocks[0].id}`,
+      headers: { authorization: `Bearer ${timedCredential.attemptToken}` },
+      payload: { answer: { questionType: 'single_choice', optionId: 'dns' }, clientRevision: 1 }
+    })).statusCode).toBe(409);
+
+    const shuffledSettings = await app.inject({
+      method: 'PATCH', url: `/api/activities/${created.activity.id}`, headers: adminHeaders,
+      payload: { expectedRevision: 2, settings: { shuffleSlides: true, allowBackNavigation: true } }
+    });
+    expect(shuffledSettings.statusCode).toBe(200);
+    expect(shuffledSettings.json().activity.settings).toMatchObject({ shuffleSlides: true, allowBackNavigation: true });
+    expect((await app.inject({ method: 'POST', url: `/api/activities/${created.activity.id}/publish`, headers: adminHeaders, payload: { expectedRevision: 3 } })).statusCode).toBe(201);
+    const shuffledStart = await app.inject({
+      method: 'POST', url: '/api/activities/public/self-paced-networks/attempts',
+      payload: { participantKey: 'browser_participant_key_000003', participantName: 'Marta' }
+    });
+    expect(shuffledStart.statusCode).toBe(201);
+    const shuffledCredential = shuffledStart.json();
+    expect(shuffledCredential.attempt.currentSlideId).toBe(shuffledCredential.attempt.slides[0].id);
+    const shuffledResume = await app.inject({
+      method: 'GET', url: `/api/activities/public/self-paced-networks/attempts/${shuffledCredential.attemptId}`,
+      headers: { authorization: `Bearer ${shuffledCredential.attemptToken}` }
+    });
+    expect(shuffledResume.json().slides.map((slide: any) => slide.id))
+      .toEqual(shuffledCredential.attempt.slides.map((slide: any) => slide.id));
+    await app.close();
+  });
+
+  test('Activity deadlines are server-authoritative, extendable, race-safe and finalized after restart', async () => {
+    let { buildApp } = await import('./app.js');
+    const { getDb, resetDb } = await import('./db.js');
+    let app = await buildApp();
+    const csrf = await getCsrfBundle(app);
+    const admin = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
+    const adminHeaders = { cookie: admin.cookies, 'x-csrf-token': csrf.csrfToken };
+    const createTimedActivity = async (slug: string, attemptTimeLimitSeconds: number | null, submissionDeadlineAt: string | null) => {
+      const settings = {
+        title: `Timer ${slug}`, description: '', slug, status: 'active', identityMode: 'anonymous',
+        requiredAnswerBehavior: 'allow_incomplete', navigationPolicy: 'linear', resultVisibility: 'after_submission',
+        maximumAttempts: 10, attemptTimeLimitSeconds, submissionDeadlineAt,
+        submissionDeadlineTimezone: 'Europe/Riga', lowTimeWarningSeconds: 60, shuffleQuestionOptions: false
+      };
+      const created = (await app.inject({ method: 'POST', url: '/api/activities', headers: adminHeaders, payload: { settings } })).json();
+      const draft = {
+        expectedRevision: 0,
+        slides: [{ id: `${slug}_slide`, title: 'Timed slide', description: '', blocks: [{
+          id: `${slug}_question`, type: 'question', questionType: 'open_answer', graded: false,
+          points: 0, required: false,
+          config: { prompt: 'Optional answer', instructions: '', responseMode: 'multiline', minimumLength: 0, maximumLength: 200, gradingMode: 'ungraded', ignoreCase: false, normalizeWhitespace: false },
+          answerKey: null
+        }] }]
+      };
+      expect((await app.inject({ method: 'PUT', url: `/api/activities/${created.activity.id}/draft`, headers: adminHeaders, payload: draft })).statusCode).toBe(200);
+      expect((await app.inject({ method: 'POST', url: `/api/activities/${created.activity.id}/publish`, headers: adminHeaders, payload: { expectedRevision: 1 } })).statusCode).toBe(201);
+      return created.activity.id as string;
+    };
+    const startAttempt = async (slug: string, participantKey: string) => {
+      const response = await app.inject({
+        method: 'POST', url: `/api/activities/public/${slug}/attempts`,
+        payload: { participantKey, clientNow: '2099-01-01T00:00:00.000Z', deadlineAt: '2099-01-01T00:00:00.000Z' }
+      });
+      expect(response.statusCode).toBe(201);
+      return response.json();
+    };
+
+    const individualId = await createTimedActivity('individual-timer', 120, null);
+    const individual = await startAttempt('individual-timer', 'timer_participant_key_000001');
+    expect(Date.parse(individual.attempt.individualDeadlineAt) - Date.parse(individual.attempt.startedAt)).toBe(120_000);
+    expect(individual.attempt.deadlineAt).toBe(individual.attempt.individualDeadlineAt);
+    expect(individual.attempt.globalDeadlineAt).toBeNull();
+    expect(Math.abs(Date.parse(individual.attempt.serverNow) - Date.now())).toBeLessThan(5_000);
+
+    const attempts = await app.inject({ method: 'GET', url: `/api/activities/${individualId}/attempts`, headers: { cookie: admin.cookies } });
+    expect(attempts.statusCode).toBe(200);
+    expect(attempts.json()[0]).toMatchObject({ id: individual.attemptId, status: 'in_progress', deadlineExtendedSeconds: 0 });
+    const originalIndividualDeadline = individual.attempt.individualDeadlineAt;
+    const extended = await app.inject({
+      method: 'POST', url: `/api/activities/${individualId}/attempts/${individual.attemptId}/extend`,
+      headers: adminHeaders, payload: { additionalMinutes: 5 }
+    });
+    expect(extended.statusCode).toBe(200);
+    expect(Date.parse(extended.json().individualDeadlineAt) - Date.parse(originalIndividualDeadline)).toBe(300_000);
+    expect(extended.json()).toMatchObject({ deadlineExtendedSeconds: 300, status: 'in_progress' });
+    expect((await app.inject({
+      method: 'POST', url: `/api/activities/${individualId}/attempts/${individual.attemptId}/extend`,
+      payload: { additionalMinutes: 5 }
+    })).statusCode).toBe(403);
+
+    const globalAt = new Date(Date.now() + 20 * 60_000).toISOString();
+    await createTimedActivity('global-timer', null, globalAt);
+    const globalAttempt = await startAttempt('global-timer', 'timer_participant_key_000002');
+    expect(globalAttempt.attempt.individualDeadlineAt).toBeNull();
+    expect(globalAttempt.attempt.deadlineAt).toBe(globalAttempt.attempt.globalDeadlineAt);
+    expect(Date.parse(globalAttempt.attempt.deadlineAt)).toBe(Date.parse(globalAt));
+
+    const combinedGlobalAt = new Date(Date.now() + 60_000).toISOString();
+    const combinedId = await createTimedActivity('combined-timer', 600, combinedGlobalAt);
+    const combined = await startAttempt('combined-timer', 'timer_participant_key_000003');
+    expect(combined.attempt.deadlineAt).toBe(combined.attempt.globalDeadlineAt);
+    expect(Date.parse(combined.attempt.individualDeadlineAt)).toBeGreaterThan(Date.parse(combined.attempt.globalDeadlineAt));
+    const cappedExtension = await app.inject({
+      method: 'POST', url: `/api/activities/${combinedId}/attempts/${combined.attemptId}/extend`,
+      headers: adminHeaders, payload: { additionalMinutes: 5 }
+    });
+    expect(cappedExtension.statusCode).toBe(200);
+    expect(cappedExtension.json().effectiveDeadlineAt).toBe(combined.attempt.globalDeadlineAt);
+
+    const authorization = { authorization: `Bearer ${individual.attemptToken}` };
+    const questionId = individual.attempt.slides[0].blocks[0].id;
+    expect((await app.inject({
+      method: 'PATCH', url: `/api/activities/public/individual-timer/attempts/${individual.attemptId}/responses/${questionId}`,
+      headers: authorization, payload: { answer: { questionType: 'open_answer', text: 'Persisted before expiry' }, clientRevision: 1 }
+    })).statusCode).toBe(200);
+    const past = new Date(Date.now() - 1_000).toISOString();
+    getDb().prepare('UPDATE activity_attempts SET deadline_at = ?, individual_deadline_at = ? WHERE id = ?')
+      .run(past, past, individual.attemptId);
+    const [racingSave, racingSubmit] = await Promise.all([
+      app.inject({
+        method: 'PATCH', url: `/api/activities/public/individual-timer/attempts/${individual.attemptId}/responses/${questionId}`,
+        headers: authorization, payload: { answer: { questionType: 'open_answer', text: 'Unsaved race value' }, clientRevision: 2 }
+      }),
+      app.inject({ method: 'POST', url: `/api/activities/public/individual-timer/attempts/${individual.attemptId}/submit`, headers: authorization, payload: {} })
+    ]);
+    expect(racingSave.statusCode).toBe(409);
+    expect(racingSubmit.statusCode).toBe(200);
+    expect(racingSubmit.json()).toMatchObject({ status: 'auto_submitted', submissionReason: 'deadline' });
+    const persisted = getDb().prepare('SELECT answer_json as answerJson FROM activity_attempt_responses WHERE attempt_id = ?').get(individual.attemptId) as { answerJson: string };
+    expect(JSON.parse(persisted.answerJson).text).toBe('Persisted before expiry');
+    expect(getDb().prepare('SELECT grading_revision as revision FROM activity_attempts WHERE id = ?').get(individual.attemptId)).toEqual({ revision: 1 });
+    expect((await app.inject({ method: 'POST', url: `/api/activities/public/individual-timer/attempts/${individual.attemptId}/submit`, headers: authorization, payload: {} })).json().submittedAt)
+      .toBe(racingSubmit.json().submittedAt);
+    expect(getDb().prepare('SELECT grading_revision as revision FROM activity_attempts WHERE id = ?').get(individual.attemptId)).toEqual({ revision: 1 });
+
+    const restartAttempt = await startAttempt('individual-timer', 'timer_participant_key_000004');
+    getDb().prepare('UPDATE activity_attempts SET deadline_at = ?, individual_deadline_at = ? WHERE id = ?')
+      .run(past, past, restartAttempt.attemptId);
+    await app.close();
+    resetDb();
+    vi.resetModules();
+    setBaseEnv(testDbPath);
+    ({ buildApp } = await import('./app.js'));
+    app = await buildApp();
+    const restartedDb = (await import('./db.js')).getDb();
+    expect(restartedDb.prepare('SELECT status, submission_reason as reason FROM activity_attempts WHERE id = ?').get(restartAttempt.attemptId))
+      .toEqual({ status: 'auto_submitted', reason: 'deadline' });
+    await app.close();
+  });
+
+  test('choice Activities shuffle deterministically, resume answers and grade partial credit server-side', async () => {
+    const { buildApp } = await import('./app.js');
+    const { getDb } = await import('./db.js');
+    const app = await buildApp();
+    const csrf = await getCsrfBundle(app);
+    const admin = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
+    const adminHeaders = { cookie: admin.cookies, 'x-csrf-token': csrf.csrfToken };
+    const settings = {
+      title: 'Choice assessment', description: '', slug: 'choice-assessment', status: 'active',
+      identityMode: 'anonymous', requiredAnswerBehavior: 'allow_incomplete', navigationPolicy: 'linear',
+      resultVisibility: 'after_submission', feedbackPolicy: 'correct_answers', maximumAttempts: 5, attemptTimeLimitSeconds: null,
+      submissionDeadlineAt: null, shuffleQuestionOptions: false
+    };
+    const created = (await app.inject({ method: 'POST', url: '/api/activities', headers: adminHeaders, payload: { settings } })).json();
+    const draft = {
+      expectedRevision: 0,
+      slides: [
+        { id: 'choice_slide_1', title: 'Multiple', description: '', blocks: [{
+          id: 'choice_multiple', type: 'question', questionType: 'multiple_choice', graded: true, points: 4, required: true,
+          config: {
+            prompt: 'Select protocols', description: 'Choose every correct option.', shuffleOptions: true,
+            gradingMode: 'partial', minimumSelections: 1, maximumSelections: 4,
+            options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }, { id: 'c', label: 'C' }, { id: 'd', label: 'D' }]
+          },
+          answerKey: { correctOptionIds: ['a', 'c'], feedback: 'Private protocol explanation' }
+        }] },
+        { id: 'choice_slide_2', title: 'Single', description: '', blocks: [{
+          id: 'choice_single', type: 'question', questionType: 'single_choice', graded: true, points: 2, required: false,
+          config: {
+            prompt: 'Optional choice', description: '', shuffleOptions: false,
+            options: [{ id: 'yes', label: 'Yes' }, { id: 'no', label: 'No' }]
+          },
+          answerKey: { correctOptionId: 'yes', feedback: 'Private single explanation' }
+        }] }
+      ]
+    };
+    expect((await app.inject({ method: 'PUT', url: `/api/activities/${created.activity.id}/draft`, headers: adminHeaders, payload: draft })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'POST', url: `/api/activities/${created.activity.id}/publish`, headers: adminHeaders, payload: { expectedRevision: 1 } })).statusCode).toBe(201);
+
+    const started = await app.inject({
+      method: 'POST', url: '/api/activities/public/choice-assessment/attempts',
+      payload: { participantKey: 'choice_participant_key_000001' }
+    });
+    expect(started.statusCode).toBe(201);
+    const credential = started.json();
+    const authorization = { authorization: `Bearer ${credential.attemptToken}` };
+    const publicPayload = JSON.stringify(credential.attempt);
+    expect(publicPayload).not.toContain('correctOptionIds');
+    expect(publicPayload).not.toContain('correctOptionId');
+    expect(publicPayload).not.toContain('Private protocol explanation');
+    expect(publicPayload).not.toContain('Private single explanation');
+    const multipleBlock = credential.attempt.slides[0].blocks[0];
+    const firstOrder = multipleBlock.config.options.map((option: { id: string }) => option.id);
+
+    expect((await app.inject({
+      method: 'PATCH', url: `/api/activities/public/choice-assessment/attempts/${credential.attemptId}/responses/${multipleBlock.id}`,
+      headers: authorization,
+      payload: { answer: { questionType: 'multiple_choice', optionIds: ['a', 'b', 'c', 'd'] }, clientRevision: 1 }
+    })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: 'PATCH', url: `/api/activities/public/choice-assessment/attempts/${credential.attemptId}/responses/${multipleBlock.id}`,
+      headers: authorization,
+      payload: { answer: { questionType: 'multiple_choice', optionIds: ['a'] }, clientRevision: 2 }
+    })).statusCode).toBe(200);
+    const singleBlock = credential.attempt.slides[1].blocks[0];
+    expect((await app.inject({
+      method: 'PATCH', url: `/api/activities/public/choice-assessment/attempts/${credential.attemptId}/responses/${singleBlock.id}`,
+      headers: authorization,
+      payload: { answer: { questionType: 'single_choice', optionId: 'yes' }, clientRevision: 1 }
+    })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: 'PATCH', url: `/api/activities/public/choice-assessment/attempts/${credential.attemptId}/responses/${singleBlock.id}`,
+      headers: authorization,
+      payload: { answer: { questionType: 'single_choice', optionId: null }, clientRevision: 2 }
+    })).statusCode).toBe(200);
+
+    const resumed = await app.inject({
+      method: 'GET', url: `/api/activities/public/choice-assessment/attempts/${credential.attemptId}`, headers: authorization
+    });
+    expect(resumed.statusCode).toBe(200);
+    expect(resumed.json().slides[0].blocks[0].config.options.map((option: { id: string }) => option.id)).toEqual(firstOrder);
+    expect(resumed.json().responses).toEqual(expect.arrayContaining([
+      expect.objectContaining({ questionBlockId: multipleBlock.id, answer: { questionType: 'multiple_choice', optionIds: ['a'] } })
+    ]));
+    expect(resumed.json().responses.some((response: { questionBlockId: string }) => response.questionBlockId === singleBlock.id)).toBe(false);
+
+    const submitted = await app.inject({
+      method: 'POST', url: `/api/activities/public/choice-assessment/attempts/${credential.attemptId}/submit`, headers: authorization, payload: {}
+    });
+    expect(submitted.statusCode).toBe(200);
+    expect(submitted.json().result).toMatchObject({ score: 2, maximumScore: 6 });
+    expect(JSON.stringify(submitted.json().result)).toContain('Private protocol explanation');
+    expect(submitted.json().result.questions.every((question: Record<string, unknown>) => 'correctAnswer' in question)).toBe(true);
+    expect(JSON.stringify(submitted.json().result)).not.toContain('correctOptionIds');
+    expect(JSON.stringify(submitted.json().result)).not.toContain('correctOptionId');
+    expect(getDb().prepare('SELECT score, maximum_score as maximumScore FROM activity_attempts WHERE id = ?').get(credential.attemptId))
+      .toEqual({ score: 2, maximumScore: 6 });
+    const grading = getDb().prepare('SELECT awarded_points as awardedPoints, grading_details_json as details FROM activity_attempt_responses WHERE attempt_id = ? AND question_block_id = ?')
+      .get(credential.attemptId, multipleBlock.id) as { awardedPoints: number; details: string };
+    expect(grading.awardedPoints).toBe(2);
+    expect(JSON.parse(grading.details)).toMatchObject({ correct: false, fraction: 0.5, gradingMode: 'partial' });
+    await app.close();
+  });
+
+  test('Open Answer and Word Cloud validate Unicode, grade safely, moderate, resume, and disclose only finalized approved results', async () => {
+    const { buildApp } = await import('./app.js');
+    const { getDb } = await import('./db.js');
+    const app = await buildApp();
+    const csrf = await getCsrfBundle(app);
+    const admin = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
+    const adminHeaders = { cookie: admin.cookies, 'x-csrf-token': csrf.csrfToken };
+    expect((await app.inject({ method: 'POST', url: '/api/moderation/rules', headers: adminHeaders, payload: { pattern: 'slikts vārds', matchMode: 'whole_word' } })).statusCode).toBe(200);
+    const settings = {
+      title: 'Latvian text assessment', description: '', slug: 'latvian-text-assessment', status: 'active',
+      identityMode: 'named', requiredAnswerBehavior: 'allow_incomplete', navigationPolicy: 'free',
+      resultVisibility: 'after_submission', feedbackPolicy: 'manual_release', maximumAttempts: 5, attemptTimeLimitSeconds: null,
+      submissionDeadlineAt: null, shuffleQuestionOptions: false
+    };
+    const created = (await app.inject({ method: 'POST', url: '/api/activities', headers: adminHeaders, payload: { settings } })).json();
+    const draft = {
+      expectedRevision: 0,
+      slides: [
+        { id: 'text_slide_auto', title: 'Automātiska', description: '', blocks: [{
+          id: 'open_normalized', type: 'question', questionType: 'open_answer', graded: true, points: 3, required: true,
+          config: { prompt: 'Kas ir tīkla adrese?', instructions: 'Atbildi īsi.', responseMode: 'single_line', minimumLength: 2, maximumLength: 40, gradingMode: 'normalized', ignoreCase: true, normalizeWhitespace: true },
+          answerKey: { acceptedAnswers: ['tīkla adrese', 'IP adrese'], feedback: 'Tiek pieņemti divi varianti.' }
+        }] },
+        { id: 'text_slide_manual', title: 'Pamatojums', description: '', blocks: [{
+          id: 'open_manual', type: 'question', questionType: 'open_answer', graded: true, points: 2, required: false,
+          config: { prompt: 'Pamato atbildi.', instructions: '', responseMode: 'multiline', minimumLength: 0, maximumLength: 200, gradingMode: 'manual', ignoreCase: false, normalizeWhitespace: false },
+          answerKey: { acceptedAnswers: [], feedback: '' }
+        }] },
+        { id: 'text_slide_cloud', title: 'Mākonis', description: '', blocks: [{
+          id: 'word_cloud', type: 'question', questionType: 'word_cloud', graded: true, points: 1, required: true,
+          config: { prompt: 'Nosauc jēdzienus.', instructions: '', maximumLength: 40, allowMultipleResponses: true, maximumResponses: 3, moderationMode: 'filter_only', showResults: true, showParticipantNames: false, gradingMode: 'participation' },
+          answerKey: null
+        }] }
+      ]
+    };
+    expect((await app.inject({ method: 'PUT', url: `/api/activities/${created.activity.id}/draft`, headers: adminHeaders, payload: draft })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'POST', url: `/api/activities/${created.activity.id}/publish`, headers: adminHeaders, payload: { expectedRevision: 1 } })).statusCode).toBe(201);
+
+    const started = await app.inject({ method: 'POST', url: '/api/activities/public/latvian-text-assessment/attempts', payload: { participantKey: 'latvian_participant_key_0001', participantName: 'Anna' } });
+    expect(started.statusCode).toBe(201);
+    const credential = started.json();
+    const authorization = { authorization: `Bearer ${credential.attemptToken}` };
+    expect(credential.attempt.result).toBeNull();
+    const [autoBlock, manualBlock, cloudBlock] = credential.attempt.slides.map((slide: { blocks: Array<{ id: string }> }) => slide.blocks[0]);
+
+    expect((await app.inject({ method: 'PATCH', url: `/api/activities/public/latvian-text-assessment/attempts/${credential.attemptId}/responses/${autoBlock.id}`, headers: authorization, payload: { answer: { questionType: 'open_answer', text: 'TĪKLA   ADRESE' }, clientRevision: 1 } })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'PATCH', url: `/api/activities/public/latvian-text-assessment/attempts/${credential.attemptId}/responses/${manualBlock.id}`, headers: authorization, payload: { answer: { questionType: 'open_answer', text: 'Pirmā rinda\nOtrā rinda ar ā, ē un ģ.' }, clientRevision: 1 } })).statusCode).toBe(200);
+    const tooLong = await app.inject({ method: 'PATCH', url: `/api/activities/public/latvian-text-assessment/attempts/${credential.attemptId}/responses/${cloudBlock.id}`, headers: authorization, payload: { answer: { questionType: 'word_cloud', responses: ['x'.repeat(41)] }, clientRevision: 1 } });
+    expect(tooLong.statusCode).toBe(400);
+    expect((await app.inject({ method: 'PATCH', url: `/api/activities/public/latvian-text-assessment/attempts/${credential.attemptId}/responses/${cloudBlock.id}`, headers: authorization, payload: { answer: { questionType: 'word_cloud', responses: ['Datortīkli', 'IP   adrese', 'DATORTĪKLI'] }, clientRevision: 1 } })).statusCode).toBe(200);
+    const resumed = (await app.inject({ method: 'GET', url: `/api/activities/public/latvian-text-assessment/attempts/${credential.attemptId}`, headers: authorization })).json();
+    expect(resumed.result).toBeNull();
+    expect(resumed.responses).toEqual(expect.arrayContaining([
+      expect.objectContaining({ questionBlockId: manualBlock.id, answer: { questionType: 'open_answer', text: 'Pirmā rinda\nOtrā rinda ar ā, ē un ģ.' } }),
+      expect.objectContaining({ questionBlockId: cloudBlock.id, answer: { questionType: 'word_cloud', responses: ['Datortīkli', 'IP adrese', 'DATORTĪKLI'] } })
+    ]));
+    const submitted = await app.inject({ method: 'POST', url: `/api/activities/public/latvian-text-assessment/attempts/${credential.attemptId}/submit`, headers: authorization, payload: {} });
+    expect(submitted.statusCode).toBe(200);
+    expect(submitted.json()).toMatchObject({ gradingState: 'awaiting_manual_grading', result: null });
+    expect(getDb().prepare('SELECT grading_status as gradingStatus FROM activity_attempt_responses WHERE attempt_id = ? AND question_block_id = ?').get(credential.attemptId, manualBlock.id)).toEqual({ gradingStatus: 'manual_review' });
+    expect(getDb().prepare('SELECT awarded_points as points FROM activity_attempt_responses WHERE attempt_id = ? AND question_block_id = ?').get(credential.attemptId, autoBlock.id)).toEqual({ points: 3 });
+
+    const detail = await app.inject({ method: 'GET', url: `/api/activities/${created.activity.id}/attempts/${credential.attemptId}`, headers: { cookie: admin.cookies } });
+    expect(detail.statusCode).toBe(200);
+    expect(detail.json()).toMatchObject({ gradingState: 'awaiting_manual_grading', pendingManualGrading: 1 });
+    expect(JSON.stringify(detail.json())).toContain('Pirmā rinda');
+    expect(detail.json().responses.find((response: any) => response.questionBlockId === cloudBlock.id).questionConfig)
+      .toMatchObject({ questionType: 'word_cloud', prompt: 'Nosauc jēdzienus.' });
+    const invalidGrade = await app.inject({
+      method: 'POST', url: `/api/activities/${created.activity.id}/attempts/${credential.attemptId}/responses/${manualBlock.id}/grade`, headers: adminHeaders,
+      payload: { awardedPoints: 2.001, teacherFeedback: 'Par daudz' }
+    });
+    expect(invalidGrade.statusCode).toBe(400);
+    const manualGrade = await app.inject({
+      method: 'POST', url: `/api/activities/${created.activity.id}/attempts/${credential.attemptId}/responses/${manualBlock.id}/grade`, headers: adminHeaders,
+      payload: { awardedPoints: 1.5, teacherFeedback: 'Labs pamatojums.' }
+    });
+    expect(manualGrade.statusCode).toBe(200);
+    expect(manualGrade.json()).toMatchObject({ gradingState: 'fully_graded', score: 5.5, pendingManualGrading: 0 });
+    expect(manualGrade.json().audit.some((entry: { action: string }) => entry.action === 'manual')).toBe(true);
+    expect((await app.inject({ method: 'GET', url: `/api/activities/public/latvian-text-assessment/attempts/${credential.attemptId}`, headers: authorization })).json().result).toBeNull();
+    const released = await app.inject({
+      method: 'POST', url: `/api/activities/${created.activity.id}/attempts/${credential.attemptId}/release-results`, headers: adminHeaders, payload: {}
+    });
+    expect(released.statusCode).toBe(200);
+    expect(released.json().resultsReleasedAt).toBeTruthy();
+    const disclosed = (await app.inject({ method: 'GET', url: `/api/activities/public/latvian-text-assessment/attempts/${credential.attemptId}`, headers: authorization })).json();
+    expect(disclosed.result).toMatchObject({ score: 5.5, maximumScore: 6, wordClouds: [{ totalResponses: 3, uniqueResponses: 2 }] });
+    expect(disclosed.result.wordClouds[0].items.every((item: Record<string, unknown>) => !('participantNames' in item))).toBe(true);
+    expect(JSON.stringify(disclosed.result)).toContain('Labs pamatojums.');
+    expect(JSON.stringify(disclosed.result)).not.toContain('acceptedAnswers');
+
+    const moderatedStart = (await app.inject({ method: 'POST', url: '/api/activities/public/latvian-text-assessment/attempts', payload: { participantKey: 'latvian_participant_key_0002', participantName: 'Jānis' } })).json();
+    const moderatedHeaders = { authorization: `Bearer ${moderatedStart.attemptToken}` };
+    const moderatedCloud = moderatedStart.attempt.slides[2].blocks[0];
+    const moderatedSave = await app.inject({ method: 'PATCH', url: `/api/activities/public/latvian-text-assessment/attempts/${moderatedStart.attemptId}/responses/${moderatedCloud.id}`, headers: moderatedHeaders, payload: { answer: { questionType: 'word_cloud', responses: ['slikts vārds'] }, clientRevision: 1 } });
+    expect(moderatedSave.statusCode).toBe(200);
+    expect(JSON.stringify(moderatedSave.json())).not.toContain('slikts vārds');
+    expect(getDb().prepare('SELECT moderation_status as status, moderation_reason as reason FROM activity_attempt_responses WHERE attempt_id = ? AND question_block_id = ?').get(moderatedStart.attemptId, moderatedCloud.id)).toEqual({ status: 'pending', reason: 'Response matched a moderation rule.' });
+    expect((await app.inject({ method: 'GET', url: `/api/activities/public/latvian-text-assessment/attempts/${moderatedStart.attemptId}`, headers: moderatedHeaders })).json().result).toBeNull();
+    const moderatedSubmission = await app.inject({ method: 'POST', url: `/api/activities/public/latvian-text-assessment/attempts/${moderatedStart.attemptId}/submit`, headers: moderatedHeaders, payload: {} });
+    expect(moderatedSubmission.statusCode).toBe(200);
+    expect(moderatedSubmission.json().gradingState).toBe('awaiting_manual_grading');
+    const moderatedDetail = await app.inject({ method: 'GET', url: `/api/activities/${created.activity.id}/attempts/${moderatedStart.attemptId}`, headers: { cookie: admin.cookies } });
+    expect(moderatedDetail.json().responses).toEqual(expect.arrayContaining([
+      expect.objectContaining({ questionBlockId: moderatedCloud.id, moderationStatus: 'pending', moderationReason: 'Response matched a moderation rule.' })
+    ]));
+    const pendingResults = (await app.inject({
+      method: 'GET', url: `/api/activities/${created.activity.id}/results`, headers: { cookie: admin.cookies }
+    })).json();
+    expect(pendingResults.wordClouds[0]).toMatchObject({ totalResponses: 3, uniqueResponses: 2 });
+    expect(pendingResults.wordClouds[0].items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ text: 'Datortīkli', count: 2 })
+    ]));
+    expect(JSON.stringify(pendingResults.wordClouds)).not.toContain('slikts vārds');
+    const approvedModeration = await app.inject({
+      method: 'POST',
+      url: `/api/activities/${created.activity.id}/attempts/${moderatedStart.attemptId}/responses/${moderatedCloud.id}/moderate`,
+      headers: adminHeaders,
+      payload: { status: 'approved' }
+    });
+    expect(approvedModeration.statusCode).toBe(200);
+    expect(approvedModeration.json()).toMatchObject({ gradingState: 'fully_graded', pendingManualGrading: 0, score: 1 });
+    expect(approvedModeration.json().audit.some((entry: { action: string }) => entry.action === 'moderation')).toBe(true);
+    const approvedResults = (await app.inject({
+      method: 'GET', url: `/api/activities/${created.activity.id}/results`, headers: { cookie: admin.cookies }
+    })).json();
+    expect(approvedResults.wordClouds[0]).toMatchObject({ totalResponses: 4, uniqueResponses: 3 });
+    expect(JSON.stringify(approvedResults.wordClouds)).toContain('slikts vārds');
+    await app.close();
+  });
+
+  test('Ordering and Matching autosave stable IDs, reject duplicate mappings, shuffle safely, and grade partial credit', async () => {
+    const { buildApp } = await import('./app.js');
+    const { getDb } = await import('./db.js');
+    const app = await buildApp();
+    const csrf = await getCsrfBundle(app);
+    const admin = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
+    const adminHeaders = { cookie: admin.cookies, 'x-csrf-token': csrf.csrfToken };
+    const settings = {
+      title: 'Ordering and matching', description: '', slug: 'ordering-matching', status: 'active',
+      identityMode: 'anonymous', requiredAnswerBehavior: 'allow_incomplete', navigationPolicy: 'free',
+      resultVisibility: 'after_submission', maximumAttempts: 5, attemptTimeLimitSeconds: null,
+      submissionDeadlineAt: null, shuffleQuestionOptions: false
+    };
+    const created = (await app.inject({ method: 'POST', url: '/api/activities', headers: adminHeaders, payload: { settings } })).json();
+    const draft = {
+      expectedRevision: 0,
+      slides: [
+        { id: 'ordering_slide', title: 'Order', description: '', blocks: [{
+          id: 'ordering_question', type: 'question', questionType: 'ordering', graded: true, points: 6, required: true,
+          config: { prompt: 'Order the layers', shuffleItems: true, gradingMode: 'partial', items: [{ id: 'o3', label: 'Layer 3' }, { id: 'o1', label: 'Layer 1' }, { id: 'o4', label: 'Layer 4' }, { id: 'o2', label: 'Layer 2' }] },
+          answerKey: { orderedItemIds: ['o1', 'o2', 'o3', 'o4'], feedback: 'Private canonical order' }
+        }] },
+        { id: 'matching_slide', title: 'Match', description: '', blocks: [{
+          id: 'matching_question', type: 'question', questionType: 'matching', graded: true, points: 4, required: true,
+          config: {
+            prompt: 'Match the terms', shuffleLeftItems: true, shuffleRightItems: true, gradingMode: 'partial',
+            leftItems: [{ id: 'l1', label: 'HTTP' }, { id: 'l2', label: 'DNS' }],
+            rightItems: [{ id: 'r2', label: 'Names' }, { id: 'r1', label: 'Web' }]
+          },
+          answerKey: { pairs: [{ leftId: 'l1', rightId: 'r1' }, { leftId: 'l2', rightId: 'r2' }], feedback: 'Private pair mapping' }
+        }] }
+      ]
+    };
+    expect((await app.inject({ method: 'PUT', url: `/api/activities/${created.activity.id}/draft`, headers: adminHeaders, payload: draft })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'POST', url: `/api/activities/${created.activity.id}/publish`, headers: adminHeaders, payload: { expectedRevision: 1 } })).statusCode).toBe(201);
+    const started = await app.inject({ method: 'POST', url: '/api/activities/public/ordering-matching/attempts', payload: { participantKey: 'ordering_matching_participant_001' } });
+    expect(started.statusCode).toBe(201);
+    const credential = started.json();
+    const initialPayload = JSON.stringify(credential.attempt);
+    expect(initialPayload).not.toContain('orderedItemIds');
+    expect(initialPayload).not.toContain('Private canonical order');
+    expect(initialPayload).not.toContain('Private pair mapping');
+    const authorization = { authorization: `Bearer ${credential.attemptToken}` };
+    const orderingBlock = credential.attempt.slides[0].blocks[0];
+    const matchingBlock = credential.attempt.slides[1].blocks[0];
+    const displayedOrdering = orderingBlock.config.items.map((item: { id: string }) => item.id);
+    const displayedLeft = matchingBlock.config.leftItems.map((item: { id: string }) => item.id);
+    const displayedRight = matchingBlock.config.rightItems.map((item: { id: string }) => item.id);
+
+    const duplicateMapping = await app.inject({
+      method: 'PATCH', url: `/api/activities/public/ordering-matching/attempts/${credential.attemptId}/responses/${matchingBlock.id}`,
+      headers: authorization,
+      payload: { answer: { questionType: 'matching', pairs: [{ leftId: 'l1', rightId: 'r1' }, { leftId: 'l2', rightId: 'r1' }] }, clientRevision: 1 }
+    });
+    expect(duplicateMapping.statusCode).toBe(400);
+    expect((await app.inject({
+      method: 'PATCH', url: `/api/activities/public/ordering-matching/attempts/${credential.attemptId}/responses/${orderingBlock.id}`,
+      headers: authorization,
+      payload: { answer: { questionType: 'ordering', orderedItemIds: ['o1', 'o3', 'o2', 'o4'] }, clientRevision: 1 }
+    })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: 'PATCH', url: `/api/activities/public/ordering-matching/attempts/${credential.attemptId}/responses/${matchingBlock.id}`,
+      headers: authorization,
+      payload: { answer: { questionType: 'matching', pairs: [{ leftId: 'l1', rightId: 'r1' }, { leftId: 'l2', rightId: 'r2' }] }, clientRevision: 1 }
+    })).statusCode).toBe(200);
+    const resumed = (await app.inject({ method: 'GET', url: `/api/activities/public/ordering-matching/attempts/${credential.attemptId}`, headers: authorization })).json();
+    expect(resumed.slides[0].blocks[0].config.items.map((item: { id: string }) => item.id)).toEqual(displayedOrdering);
+    expect(resumed.slides[1].blocks[0].config.leftItems.map((item: { id: string }) => item.id)).toEqual(displayedLeft);
+    expect(resumed.slides[1].blocks[0].config.rightItems.map((item: { id: string }) => item.id)).toEqual(displayedRight);
+    expect(resumed.responses).toEqual(expect.arrayContaining([
+      expect.objectContaining({ questionBlockId: orderingBlock.id, answer: { questionType: 'ordering', orderedItemIds: ['o1', 'o3', 'o2', 'o4'] } }),
+      expect.objectContaining({ questionBlockId: matchingBlock.id, answer: { questionType: 'matching', pairs: [{ leftId: 'l1', rightId: 'r1' }, { leftId: 'l2', rightId: 'r2' }] } })
+    ]));
+    const submitted = await app.inject({ method: 'POST', url: `/api/activities/public/ordering-matching/attempts/${credential.attemptId}/submit`, headers: authorization, payload: {} });
+    expect(submitted.statusCode).toBe(200);
+    expect(submitted.json().result).toMatchObject({ score: 7, maximumScore: 10 });
+    expect(JSON.stringify(submitted.json().result)).not.toContain('orderedItemIds');
+    expect(JSON.stringify(submitted.json().result)).not.toContain('rightId');
+    const orderingGrade = getDb().prepare('SELECT awarded_points as points FROM activity_attempt_responses WHERE attempt_id = ? AND question_block_id = ?').get(credential.attemptId, orderingBlock.id);
+    expect(orderingGrade).toEqual({ points: 3 });
+    await app.close();
+  });
+
+  test('republishing changed question points rescales finalized grades while preserving immutable versions and allows an admin override', async () => {
+    const { buildApp } = await import('./app.js');
+    const { getDb } = await import('./db.js');
+    const app = await buildApp();
+    const csrf = await getCsrfBundle(app);
+    const admin = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
+    const adminHeaders = { cookie: admin.cookies, 'x-csrf-token': csrf.csrfToken };
+    const settings = {
+      title: 'Point reconciliation', description: '', slug: 'point-reconciliation', status: 'active',
+      identityMode: 'anonymous', requiredAnswerBehavior: 'allow_incomplete', navigationPolicy: 'free',
+      resultVisibility: 'after_submission', feedbackPolicy: 'points_per_question', maximumAttempts: 5,
+      attemptTimeLimitSeconds: null, submissionDeadlineAt: null, shuffleQuestionOptions: false
+    };
+    const created = (await app.inject({ method: 'POST', url: '/api/activities', headers: adminHeaders, payload: { settings } })).json();
+    const question = {
+      id: 'reconciled_matching_question', type: 'question', questionType: 'matching', graded: true, points: 1, required: false,
+      config: {
+        prompt: 'Match one of three pairs', shuffleLeftItems: false, shuffleRightItems: false, gradingMode: 'partial',
+        leftItems: [{ id: 'l1', label: 'One' }, { id: 'l2', label: 'Two' }, { id: 'l3', label: 'Three' }],
+        rightItems: [{ id: 'r1', label: '1' }, { id: 'r2', label: '2' }, { id: 'r3', label: '3' }]
+      },
+      answerKey: {
+        pairs: [{ leftId: 'l1', rightId: 'r1' }, { leftId: 'l2', rightId: 'r2' }, { leftId: 'l3', rightId: 'r3' }],
+        feedback: ''
+      }
+    };
+    const draft = { expectedRevision: 0, slides: [{ id: 'reconciled_slide', title: 'Match', description: '', blocks: [question] }] };
+    expect((await app.inject({ method: 'PUT', url: `/api/activities/${created.activity.id}/draft`, headers: adminHeaders, payload: draft })).statusCode).toBe(200);
+    const firstVersion = (await app.inject({ method: 'POST', url: `/api/activities/${created.activity.id}/publish`, headers: adminHeaders, payload: { expectedRevision: 1 } })).json();
+    const started = (await app.inject({ method: 'POST', url: '/api/activities/public/point-reconciliation/attempts', payload: { participantKey: 'point_reconciliation_participant' } })).json();
+    const block = started.attempt.slides[0].blocks[0];
+    const authorization = { authorization: `Bearer ${started.attemptToken}` };
+    expect((await app.inject({
+      method: 'PATCH',
+      url: `/api/activities/public/point-reconciliation/attempts/${started.attemptId}/responses/${block.id}`,
+      headers: authorization,
+      payload: { answer: { questionType: 'matching', pairs: [{ leftId: 'l1', rightId: 'r1' }] }, clientRevision: 1 }
+    })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'POST', url: `/api/activities/public/point-reconciliation/attempts/${started.attemptId}/submit`, headers: authorization, payload: {} })).statusCode).toBe(200);
+    const before = (await app.inject({ method: 'GET', url: `/api/activities/${created.activity.id}/attempts/${started.attemptId}`, headers: { cookie: admin.cookies } })).json();
+    expect(before).toMatchObject({ maximumScore: 1 });
+    expect(before.responses[0]).toMatchObject({ awardedPoints: 0.333, maximumPoints: 1, gradingStatus: 'graded' });
+
+    const changedDraft = {
+      expectedRevision: 1,
+      slides: [{ id: 'reconciled_slide', title: 'Match', description: '', blocks: [{ ...question, points: 3 }] }]
+    };
+    expect((await app.inject({ method: 'PUT', url: `/api/activities/${created.activity.id}/draft`, headers: adminHeaders, payload: changedDraft })).statusCode).toBe(200);
+    const stillUnchanged = (await app.inject({ method: 'GET', url: `/api/activities/${created.activity.id}/attempts/${started.attemptId}`, headers: { cookie: admin.cookies } })).json();
+    expect(stillUnchanged.responses[0]).toMatchObject({ awardedPoints: 0.333, maximumPoints: 1 });
+
+    expect((await app.inject({ method: 'POST', url: `/api/activities/${created.activity.id}/publish`, headers: adminHeaders, payload: { expectedRevision: 2 } })).statusCode).toBe(201);
+    const reconciled = (await app.inject({ method: 'GET', url: `/api/activities/${created.activity.id}/attempts/${started.attemptId}`, headers: { cookie: admin.cookies } })).json();
+    expect(reconciled).toMatchObject({ score: 1, maximumScore: 3 });
+    expect(reconciled.responses[0]).toMatchObject({ awardedPoints: 1, maximumPoints: 3, gradingStatus: 'graded' });
+    expect(getDb().prepare(
+      `SELECT b.points FROM activity_version_blocks b
+       INNER JOIN activity_version_slides s ON s.id = b.slide_id
+       WHERE s.version_id = ? AND b.stable_id = ?`
+    ).get(firstVersion.id, question.id)).toEqual({ points: 1 });
+
+    const overridden = await app.inject({
+      method: 'POST',
+      url: `/api/activities/${created.activity.id}/attempts/${started.attemptId}/responses/${block.id}/grade`,
+      headers: adminHeaders,
+      payload: { awardedPoints: 2.4, teacherFeedback: 'Teacher override.' }
+    });
+    expect(overridden.statusCode).toBe(200);
+    expect(overridden.json()).toMatchObject({ score: 2.4, maximumScore: 3 });
+    expect(overridden.json().responses[0]).toMatchObject({ awardedPoints: 2.4, maximumPoints: 3, teacherFeedback: 'Teacher override.' });
+    await app.close();
+  });
+
+  test('Image Labeling uses external HTTPS images, autosaves stable mappings, and grades on the server', async () => {
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+    const csrf = await getCsrfBundle(app);
+    const admin = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
+    const adminHeaders = { cookie: admin.cookies, 'x-csrf-token': csrf.csrfToken };
+    expect((await app.inject({ method: 'POST', url: '/api/activities/media', headers: adminHeaders, payload: {} })).statusCode).toBe(404);
+
+    const settings = {
+      title: 'Image assessment', description: '', slug: 'image-assessment', status: 'active', identityMode: 'anonymous',
+      requiredAnswerBehavior: 'require_all', navigationPolicy: 'free', resultVisibility: 'after_submission',
+      maximumAttempts: 5, attemptTimeLimitSeconds: null, submissionDeadlineAt: null, shuffleQuestionOptions: false
+    };
+    const created = (await app.inject({ method: 'POST', url: '/api/activities', headers: adminHeaders, payload: { settings } })).json();
+    const markers = [{ id: 'marker_1', x: 0.1, y: 0.2 }, { id: 'marker_2', x: 0.5, y: 0.5 }, { id: 'marker_3', x: 0.9, y: 0.8 }];
+    const labels = [{ id: 'label_1', label: 'A' }, { id: 'label_2', label: 'B' }, { id: 'label_3', label: 'C' }];
+    const correctAssignments = [{ markerId: 'marker_1', labelId: 'label_1' }, { markerId: 'marker_2', labelId: 'label_2' }, { markerId: 'marker_3', labelId: 'label_3' }];
+    const draft = {
+      expectedRevision: 0,
+      slides: [{ id: 'image_slide', title: 'Diagram', description: '', blocks: [{
+        id: 'image_question', type: 'question', questionType: 'image_labeling', graded: true, points: 6, required: true,
+        config: { prompt: 'Label the diagram', imageUrl: 'https://example.com/class-diagram.png', imageAlt: 'Class diagram', markers, labels, oneToOne: true, gradingMode: 'partial' },
+        answerKey: { assignments: correctAssignments, feedback: 'Private image feedback' }
+      }] }]
+    };
+    expect((await app.inject({ method: 'PUT', url: `/api/activities/${created.activity.id}/draft`, headers: adminHeaders, payload: draft })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'POST', url: `/api/activities/${created.activity.id}/publish`, headers: adminHeaders, payload: { expectedRevision: 1 } })).statusCode).toBe(201);
+    const started = await app.inject({ method: 'POST', url: '/api/activities/public/image-assessment/attempts', payload: { participantKey: 'image_labeling_participant_001' } });
+    expect(started.statusCode).toBe(201);
+    const credential = started.json();
+    const serializedAttempt = JSON.stringify(credential.attempt);
+    expect(serializedAttempt).not.toContain('Private image feedback');
+    expect(serializedAttempt).not.toContain('correctAssignments');
+    const block = credential.attempt.slides[0].blocks[0];
+    const authorization = { authorization: `Bearer ${credential.attemptToken}` };
+    const partialSave = await app.inject({ method: 'PATCH', url: `/api/activities/public/image-assessment/attempts/${credential.attemptId}/responses/${block.id}`, headers: authorization, payload: { answer: { questionType: 'image_labeling', assignments: [{ markerId: 'marker_1', labelId: 'label_1' }] }, clientRevision: 1 } });
+    expect(partialSave.statusCode).toBe(200);
+    const partialResume = (await app.inject({ method: 'GET', url: `/api/activities/public/image-assessment/attempts/${credential.attemptId}`, headers: authorization })).json();
+    expect(partialResume.responses[0].answer.assignments).toEqual([{ markerId: 'marker_1', labelId: 'label_1' }]);
+    expect((await app.inject({ method: 'POST', url: `/api/activities/public/image-assessment/attempts/${credential.attemptId}/submit`, headers: authorization, payload: {} })).statusCode).toBe(409);
+    const duplicate = await app.inject({ method: 'PATCH', url: `/api/activities/public/image-assessment/attempts/${credential.attemptId}/responses/${block.id}`, headers: authorization, payload: { answer: { questionType: 'image_labeling', assignments: [{ markerId: 'marker_1', labelId: 'label_1' }, { markerId: 'marker_2', labelId: 'label_1' }] }, clientRevision: 2 } });
+    expect(duplicate.statusCode).toBe(400);
+    const submittedAssignments = [{ markerId: 'marker_1', labelId: 'label_1' }, { markerId: 'marker_2', labelId: 'label_3' }, { markerId: 'marker_3', labelId: 'label_2' }];
+    expect((await app.inject({ method: 'PATCH', url: `/api/activities/public/image-assessment/attempts/${credential.attemptId}/responses/${block.id}`, headers: authorization, payload: { answer: { questionType: 'image_labeling', assignments: submittedAssignments }, clientRevision: 2 } })).statusCode).toBe(200);
+    const resumed = (await app.inject({ method: 'GET', url: `/api/activities/public/image-assessment/attempts/${credential.attemptId}`, headers: authorization })).json();
+    expect(resumed.responses[0].answer).toEqual({ questionType: 'image_labeling', assignments: submittedAssignments });
+    const submitted = await app.inject({ method: 'POST', url: `/api/activities/public/image-assessment/attempts/${credential.attemptId}/submit`, headers: authorization, payload: {} });
+    expect(submitted.statusCode).toBe(200);
+    expect(submitted.json().result).toMatchObject({ score: 2, maximumScore: 6 });
+    expect(JSON.stringify(submitted.json().result)).not.toContain('marker_1');
+    expect(JSON.stringify(submitted.json().result)).not.toContain('label_1');
+    await app.close();
+  });
+
+  test('Activity results aggregate, filter, paginate and export large UTF-8 datasets safely', async () => {
+    const { buildApp } = await import('./app.js');
+    const { getDb } = await import('./db.js');
+    const app = await buildApp();
+    const csrf = await getCsrfBundle(app);
+    const admin = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
+    const adminHeaders = { cookie: admin.cookies, 'x-csrf-token': csrf.csrfToken };
+    const settings = {
+      title: 'Resultu pārbaude', description: '', slug: 'resultu-parbaude', status: 'active', identityMode: 'named',
+      requiredAnswerBehavior: 'allow_incomplete', navigationPolicy: 'free', resultVisibility: 'after_submission',
+      feedbackPolicy: 'points_per_question', maximumAttempts: 100, attemptTimeLimitSeconds: null,
+      submissionDeadlineAt: null, shuffleQuestionOptions: false
+    };
+    const created = (await app.inject({ method: 'POST', url: '/api/activities', headers: adminHeaders, payload: { settings } })).json();
+    const draft = { expectedRevision: 0, slides: [{ id: 'results_slide', title: 'Rezultāti', description: '', blocks: [{
+      id: 'results_question', type: 'question', questionType: 'single_choice', graded: true, points: 2, required: false,
+      config: { prompt: 'Izvēlies atbildi', description: '', options: [{ id: 'a', label: 'Ābols' }, { id: 'b', label: 'Bumbieris' }], shuffleOptions: false },
+      answerKey: { correctOptionId: 'a', feedback: '' }
+    }] }] };
+    expect((await app.inject({ method: 'PUT', url: `/api/activities/${created.activity.id}/draft`, headers: adminHeaders, payload: draft })).statusCode).toBe(200);
+    const published = (await app.inject({ method: 'POST', url: `/api/activities/${created.activity.id}/publish`, headers: adminHeaders, payload: { expectedRevision: 1 } })).json();
+    const db = getDb();
+    const block = db.prepare(
+      `SELECT b.id FROM activity_version_blocks b INNER JOIN activity_version_slides s ON s.id = b.slide_id
+       WHERE s.version_id = ? AND b.block_type = 'question'`
+    ).get(published.id) as { id: string };
+
+    expect((await app.inject({ method: 'GET', url: `/api/activities/${created.activity.id}/results` })).statusCode).toBe(401);
+    expect((await app.inject({ method: 'GET', url: `/api/activities/${created.activity.id}/exports/attempts.csv` })).statusCode).toBe(401);
+    expect((await app.inject({ method: 'GET', url: `/api/activities/${created.activity.id}/exports/responses.xlsx` })).statusCode).toBe(401);
+    await seedUser('results-reader@example.com', 'results-reader-password-42');
+    const otherCsrf = await getCsrfBundle(app);
+    const other = await login(app, 'results-reader@example.com', 'results-reader-password-42', otherCsrf);
+    expect((await app.inject({ method: 'GET', url: `/api/activities/${created.activity.id}/results`, headers: { cookie: other.cookies } })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'GET', url: `/api/activities/${created.activity.id}/exports/responses.csv`, headers: { cookie: other.cookies } })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'GET', url: `/api/activities/${created.activity.id}/exports/responses.xlsx`, headers: { cookie: other.cookies } })).statusCode).toBe(404);
+    const empty = (await app.inject({ method: 'GET', url: `/api/activities/${created.activity.id}/results`, headers: { cookie: admin.cookies } })).json();
+    expect(empty.overview).toMatchObject({ totalAttempts: 0, averageScore: null, medianScore: null, completionRate: 0 });
+    expect(empty.attempts).toEqual([]);
+
+    const insertAttempt = db.prepare(
+      `INSERT INTO activity_attempts (
+        id, activity_id, published_version_id, participant_name, attempt_number, access_token_hash,
+        status, started_at, submitted_at, submission_reason, revision, score, maximum_score,
+        grading_revision, created_at, updated_at, score_units, maximum_score_units, grading_state
+      ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, 1, ?, 2, 1, ?, ?, ?, 2000, ?)`
+    );
+    const insertResponse = db.prepare(
+      `INSERT INTO activity_attempt_responses (
+        attempt_id, question_block_id, answer_json, moderation_status, client_revision, server_revision,
+        saved_at, finalized_at, grading_status, awarded_points, grading_details_json, awarded_points_units, teacher_feedback
+      ) VALUES (?, ?, ?, 'approved', 1, 1, ?, ?, 'graded', ?, '{}', ?, '')`
+    );
+    const expectedScores: number[] = [];
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      for (let index = 0; index < 125; index += 1) {
+        const id = `analytics_attempt_${String(index).padStart(3, '0')}`;
+        const expired = index >= 120;
+        const timestamp = new Date(Date.UTC(2026, 0, 1, 10, index)).toISOString();
+        const score = index % 3;
+        expectedScores.push(score);
+        insertAttempt.run(
+          id, created.activity.id, published.id,
+          index === 7 ? '=SUM(1,1)' : index === 8 ? 'Jānis Bērziņš' : `Student ${index}`,
+          `token_hash_${index}`, expired ? 'auto_submitted' : 'submitted', timestamp,
+          new Date(Date.parse(timestamp) + 90_000).toISOString(), expired ? 'deadline' : 'manual',
+          score, timestamp, new Date(Date.parse(timestamp) + 90_000).toISOString(), score * 1000,
+          index === 3 ? 'awaiting_manual_grading' : expired ? 'expired' : 'fully_graded'
+        );
+        if (index % 2 === 0) insertResponse.run(
+          id, block.id, JSON.stringify({ questionType: 'single_choice', optionId: index % 4 === 0 ? 'a' : 'b' }),
+          timestamp, timestamp, index % 4 === 0 ? 2 : 0, index % 4 === 0 ? 2000 : 0
+        );
+      }
+      const inProgressAt = new Date(Date.UTC(2026, 0, 2, 12)).toISOString();
+      insertAttempt.run(
+        'in_progress_attempt', created.activity.id, published.id, 'Still working',
+        'in_progress_token_hash', 'in_progress', inProgressAt, null, null,
+        null, inProgressAt, inProgressAt, null, 'in_progress'
+      );
+      insertResponse.run(
+        'in_progress_attempt', block.id,
+        JSON.stringify({ questionType: 'single_choice', optionId: 'a' }),
+        inProgressAt, null, 0, 0
+      );
+      db.exec('COMMIT');
+    } catch (error) { db.exec('ROLLBACK'); throw error; }
+
+    const pageTwo = (await app.inject({
+      method: 'GET',
+      url: `/api/activities/${created.activity.id}/results?page=2&pageSize=25`,
+      headers: { cookie: admin.cookies }
+    })).json();
+    expect(pageTwo.pagination).toEqual({ page: 2, pageSize: 25, totalItems: 125, totalPages: 5 });
+    expect(pageTwo.attempts).toHaveLength(25);
+    expect(pageTwo.overview).toMatchObject({ totalAttempts: 125, submittedAttempts: 120, expiredAttempts: 5, awaitingManualGrading: 1, completionRate: 96 });
+    const sortedScores = expectedScores.toSorted((left, right) => left - right);
+    expect(pageTwo.overview.averageScore).toBeCloseTo(expectedScores.reduce((sum, value) => sum + value, 0) / expectedScores.length, 6);
+    expect(pageTwo.overview.medianScore).toBe(sortedScores[Math.floor(sortedScores.length / 2)]);
+    expect(pageTwo.questions[0]).toMatchObject({ attempts: 125, answered: 63, unanswered: 62, fullyCorrect: 32 });
+    expect(pageTwo.questions[0].correctnessRate).toBeCloseTo(32 / 63 * 100, 6);
+    expect(pageTwo.attempts.some((attempt: any) => attempt.id === 'in_progress_attempt')).toBe(false);
+    expect((await app.inject({
+      method: 'GET', url: `/api/activities/${created.activity.id}/results?status=in_progress`, headers: { cookie: admin.cookies }
+    })).statusCode).toBe(400);
+
+    const searched = (await app.inject({
+      method: 'GET', url: `/api/activities/${created.activity.id}/results?search=J%C4%81nis&pageSize=20`, headers: { cookie: admin.cookies }
+    })).json();
+    expect(searched.pagination.totalItems).toBe(1);
+    expect(searched.attempts[0].participantName).toBe('Jānis Bērziņš');
+    expect(searched.attempts[0].durationSeconds).toBe(90);
+    const expired = (await app.inject({
+      method: 'GET', url: `/api/activities/${created.activity.id}/results?status=expired`, headers: { cookie: admin.cookies }
+    })).json();
+    expect(expired.pagination.totalItems).toBe(5);
+
+    const attemptsCsv = await app.inject({ method: 'GET', url: `/api/activities/${created.activity.id}/exports/attempts.csv`, headers: { cookie: admin.cookies } });
+    expect(attemptsCsv.statusCode).toBe(200);
+    expect(attemptsCsv.headers['content-type']).toContain('text/csv');
+    expect(attemptsCsv.body.charCodeAt(0)).toBe(0xfeff);
+    expect(attemptsCsv.body).toContain("\"'=SUM(1,1)\"");
+    expect(attemptsCsv.body).toContain('Jānis Bērziņš');
+    expect(attemptsCsv.body).not.toContain('in_progress_attempt');
+    const responsesCsv = await app.inject({ method: 'GET', url: `/api/activities/${created.activity.id}/exports/responses.csv`, headers: { cookie: admin.cookies } });
+    expect(responsesCsv.statusCode).toBe(200);
+    expect(responsesCsv.body).toContain('Izvēlies atbildi');
+    expect(responsesCsv.body).not.toContain('in_progress_attempt');
+    expect(responsesCsv.body.split('\r\n')).toHaveLength(127);
+    const responsesXlsx = await app.inject({ method: 'GET', url: `/api/activities/${created.activity.id}/exports/responses.xlsx`, headers: { cookie: admin.cookies } });
+    expect(responsesXlsx.statusCode).toBe(200);
+    expect(responsesXlsx.headers['content-type']).toContain('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    expect(responsesXlsx.headers['content-disposition']).toContain('activity-responses.xlsx');
+    expect(responsesXlsx.rawPayload.subarray(0, 2).toString()).toBe('PK');
     await app.close();
   });
 });

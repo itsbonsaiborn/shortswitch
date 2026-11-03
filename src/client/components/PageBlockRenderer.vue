@@ -75,7 +75,7 @@ watch([() => props.block.config.url, () => props.block.href], () => { faviconFai
     :data-page-block-id="editorInteractive ? block.id : undefined"
     @click="activate"
   >
-    <span class="flex min-w-0 items-center gap-3"><span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[var(--page-border)] bg-white/85"><svg xmlns="http://www.w3.org/2000/svg" data-page-email-icon class="h-5 w-5" viewBox="0 0 32 32"><path d="M0 0h32v32H0z" fill="none"/><path fill="currentColor" d="M28 6H4a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h24a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2m-2.2 2L16 14.78L6.2 8ZM4 24V8.91l11.43 7.91a1 1 0 0 0 1.14 0L28 8.91V24Z"/></svg></span><span class="truncate">{{ block.config.label || block.config.email }}</span></span>
+    <span class="flex min-w-0 items-center gap-3"><span class="page-email-icon-shell flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[var(--page-border)] bg-white/85"><svg xmlns="http://www.w3.org/2000/svg" data-page-email-icon class="h-5 w-5" viewBox="0 0 32 32"><path d="M0 0h32v32H0z" fill="none"/><path fill="currentColor" d="M28 6H4a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h24a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2m-2.2 2L16 14.78L6.2 8ZM4 24V8.91l11.43 7.91a1 1 0 0 0 1.14 0L28 8.91V24Z"/></svg></span><span class="truncate">{{ block.config.label || block.config.email }}</span></span>
     <svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true" class="h-5 w-5 shrink-0 opacity-55 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" viewBox="0 0 24 24"><path d="M0 0h24v24H0z" fill="none"/><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 6L6 18M8 6h10v10"/></svg>
   </a>
 
@@ -95,6 +95,7 @@ watch([() => props.block.config.url, () => props.block.href], () => { faviconFai
 .page-action { border:1px solid var(--page-border); border-radius:var(--page-radius); background:var(--page-card); color:var(--page-text); box-shadow:var(--page-shadow); transition:transform .18s ease,border-color .18s ease,box-shadow .18s ease; }
 .page-action:hover { transform:translateY(-1px); border-color:var(--page-accent); }
 .page-action:focus-visible { outline:3px solid color-mix(in srgb,var(--page-accent) 42%,transparent); outline-offset:2px; }
+.page-email-icon-shell { color:#28211b; }
 .page-layout-bold .page-action { border-width:2px; font-size:1.05rem; }
 .page-preview-editor-block { cursor:pointer; outline:2px solid transparent; outline-offset:-2px; transition:outline-color .15s ease,transform .18s ease,border-color .18s ease,box-shadow .18s ease; }
 .page-preview-editor-block-active { outline-color:color-mix(in srgb,var(--page-accent) 78%,transparent); }

@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { LinkRecord } from '@/shared/types';
 import QrCodePopover from './QrCodePopover.vue';
+import { formatCardDate } from '../lib/date-format';
 
 const props = defineProps<{ link: LinkRecord }>();
 const emit = defineEmits<{
@@ -13,7 +14,7 @@ const emit = defineEmits<{
   removePassword: [link: LinkRecord];
   toggleEnabled: [link: LinkRecord, enabled: boolean, clearExpirationOnEnable: boolean];
 }>();
-const { t, locale } = useI18n();
+const { t } = useI18n();
 
 const actionsOpen = ref(false);
 const rootRef = ref<HTMLElement | null>(null);
@@ -227,7 +228,7 @@ onBeforeUnmount(() => {
   window.removeEventListener(menuOpenEventName, closeMenusFromOtherCards as EventListener);
 });
 
-const formatDate = (value: string) => new Intl.DateTimeFormat(locale.value, { dateStyle: 'short' }).format(new Date(value));
+const formatDate = formatCardDate;
 </script>
 
 <template>

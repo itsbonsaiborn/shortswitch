@@ -27,7 +27,7 @@ const getCsrfToken = async () => {
 export const api = async <T>(url: string, init?: RequestInit): Promise<T> => {
   const headers = new Headers(init?.headers ?? {});
   if (init?.method && init.method !== 'GET') {
-    headers.set('content-type', 'application/json');
+    if (!headers.has('content-type')) headers.set('content-type', 'application/json');
     headers.set('x-csrf-token', await getCsrfToken());
   }
 

@@ -425,6 +425,7 @@ const handleAnalyticsFaviconError = () => {
       <AnalyticsVisitTable
         :rows="data.recentClicks"
         :limit="limit"
+        timestamp-format="day-month-year-24h"
         :title="t('analytics.recentDetails')"
         :description="t('linkAnalytics.recentDescription')"
         @update:limit="setLimit"

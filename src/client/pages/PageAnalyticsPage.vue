@@ -203,6 +203,7 @@ onMounted(() => void load(true));
     <AnalyticsVisitTable
       :rows="analytics.recentClicks"
       :limit="limit"
+      timestamp-format="day-month-year-24h"
       :title="t('analytics.recentDetails')"
       :description="t('pageAnalytics.recentDescription')"
       :context-label="t('pageAnalytics.block')"

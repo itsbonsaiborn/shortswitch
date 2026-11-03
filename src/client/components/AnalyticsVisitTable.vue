@@ -4,12 +4,13 @@ import { useI18n } from 'vue-i18n';
 
 const { t, locale } = useI18n();
 
-defineProps<{
+const props = defineProps<{
   rows: AnalyticsVisitDetail[];
   limit: 10 | 20 | 50;
   title: string;
   description: string;
   contextLabel?: string;
+  timestampFormat?: 'localized' | 'day-month-year-24h';
 }>();
 const emit = defineEmits<{ 'update:limit': [value: 10 | 20 | 50] }>();
 
@@ -17,6 +18,14 @@ const buttonClass = (active: boolean) => active
   ? 'border-transparent bg-[var(--ui-accent-soft)] text-[var(--ui-accent)]'
   : 'border-[var(--ui-border)] bg-[var(--ui-panel)] text-[var(--ui-text-muted)]';
 const formatTimestamp = (value: string) => {
+  if (props.timestampFormat === 'day-month-year-24h') {
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      day: '2-digit', month: '2-digit', year: 'numeric',
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23'
+    }).formatToParts(new Date(value));
+    const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value ?? '';
+    return `${part('day')}-${part('month')}-${part('year')} ${part('hour')}:${part('minute')}:${part('second')}`;
+  }
   return new Intl.DateTimeFormat(locale.value, { dateStyle: 'short', timeStyle: 'medium' }).format(new Date(value));
 };
 const trafficBadgeClass = (value?: 'human' | 'bot' | 'unknown') => {

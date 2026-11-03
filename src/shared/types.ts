@@ -128,6 +128,8 @@ export interface SecuritySettings {
   slugAllowedChars: string;
 }
 
+export * from './activity-types.js';
+
 export interface CurrentUser {
   id: string;
   email: string;

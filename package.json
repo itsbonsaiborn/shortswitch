@@ -1,6 +1,6 @@
 {
   "name": "url-shortener",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -23,6 +23,9 @@
     "load:live:word-cloud": "npm run build && node scripts/live-load-test.mjs 200 50 word_cloud",
     "load:live:open": "npm run build && node scripts/live-load-test.mjs 200 50 open_answer",
     "load:live:history": "npm run build && node scripts/live-history-test.mjs 2000 50",
+    "load:activities:50": "npm run build && node scripts/activities-load-test.mjs 50 25",
+    "load:activities:200": "npm run build && node scripts/activities-load-test.mjs 200 50",
+    "load:activities:500": "npm run build && node scripts/activities-load-test.mjs 500 50",
     "load:pages:50": "npm run build && node scripts/pages-load-test.mjs 50 50",
     "load:pages:200": "npm run build && node scripts/pages-load-test.mjs 200 50",
     "load:pages:500": "npm run build && node scripts/pages-load-test.mjs 500 50",
@@ -30,6 +33,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.server.json"
   },
   "dependencies": {
+    "@excel.js/exceljs": "^0.15.0",
     "@fastify/cookie": "^11.0.2",
     "@fastify/cors": "^11.2.0",
     "@fastify/csrf-protection": "^7.1.0",
@@ -49,7 +53,8 @@
     "vue": "^3.5.43",
     "vue-i18n": "^11.4.15",
     "vue-router": "^5.0.7",
-    "vue3-apexcharts": "^1.11.1"
+    "vue3-apexcharts": "^1.11.1",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@tailwindcss/forms": "^0.5.10",

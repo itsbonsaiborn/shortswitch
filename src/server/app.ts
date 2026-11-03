@@ -23,6 +23,10 @@ import { LiveRealtimeService } from './services/live-realtime-service.js';
 import { registerLiveRoutes } from './live-routes.js';
 import { registerPageRoutes } from './page-routes.js';
 import { PageService } from './services/page-service.js';
+import { ActivityService } from './services/activity-service.js';
+import { registerActivityRoutes } from './activity-routes.js';
+import { ActivityAttemptService } from './services/activity-attempt-service.js';
+import { registerActivityPublicRoutes } from './activity-public-routes.js';
 import { renderLinkDisabledPage, renderLinkExpiredPage, renderLinkNotFoundPage, renderProtectedLinkPage, renderPublicServiceUnavailablePage, renderShortLinkPreviewPage } from './views/error-pages.js';
 import { isSafeRouteSlug, isTrustedCorsOrigin } from './utils.js';
 import { resolvePublicLocale } from '../shared/public-locale.js';
@@ -44,11 +48,14 @@ export const buildApp = async () => {
   const live = new LiveService();
   const liveRealtime = new LiveRealtimeService();
   const pages = new PageService();
+  const activities = new ActivityService();
+  const activityAttempts = new ActivityAttemptService();
   const clientRoot = path.resolve('dist/client');
   const clientIndexPath = path.resolve(clientRoot, 'index.html');
   const publicIconRoot = path.join(clientRoot, 'icons');
   const publicOgRoot = path.join(clientRoot, 'og');
   const analyticsCleanupIntervalMs = 12 * 60 * 60 * 1000;
+  const activityExpirationIntervalMs = 10 * 1000;
   const getRequestIpForLogs = (ip: string | undefined) => (config.storeRawIp ? ip : undefined);
   const applyNoStore = (reply: any) => {
     reply.header('Cache-Control', 'no-store, no-cache, must-revalidate, private');
@@ -120,7 +127,7 @@ export const buildApp = async () => {
     return reply.type(getContentType(filePath)).send(fs.readFileSync(filePath));
   };
   const renderClientIndexHtml = (metadata?: {
-    resourceType?: 'live' | 'page';
+    resourceType?: 'live' | 'page' | 'activity';
     title?: string;
     description?: string;
     canonicalUrl?: string;
@@ -160,6 +167,7 @@ export const buildApp = async () => {
   };
   let clientIndexPayloads: ClientIndexPayloads | undefined;
   let liveIndexPayloads: ClientIndexPayloads | undefined;
+  const activityIndexPayloadCache = new Map<string, ClientIndexPayloads>();
   const pageIndexPayloadCache = new Map<string, ClientIndexPayloads>();
   const getClientIndexPayloads = () => {
     if (clientIndexPayloads) return clientIndexPayloads;
@@ -185,6 +193,22 @@ export const buildApp = async () => {
       if (oldestKey) pageIndexPayloadCache.delete(oldestKey);
     }
     pageIndexPayloadCache.set(key, payloads);
+    return payloads;
+  };
+  const getActivityIndexPayloads = (activity: { versionId: string; title: string; description: string; slug: string }) => {
+    const cached = activityIndexPayloadCache.get(activity.versionId);
+    if (cached) return cached;
+    const payloads = compressClientHtml(renderClientIndexHtml({
+      resourceType: 'activity',
+      title: activity.title,
+      description: activity.description || config.appDescription,
+      canonicalUrl: `${config.baseUrl.replace(/\/$/, '')}/${activity.slug}`
+    }));
+    if (activityIndexPayloadCache.size >= 100) {
+      const oldestKey = activityIndexPayloadCache.keys().next().value as string | undefined;
+      if (oldestKey) activityIndexPayloadCache.delete(oldestKey);
+    }
+    activityIndexPayloadCache.set(activity.versionId, payloads);
     return payloads;
   };
   const acceptedEncodingQuality = (header: string | undefined, encoding: 'br' | 'gzip') => {
@@ -224,6 +248,7 @@ export const buildApp = async () => {
   links.cleanupAnalytics();
   pages.cleanupAnalytics();
   live.cleanupAnalytics();
+  activityAttempts.expireDueAttempts();
 
   for (const warning of config.startupWarnings) {
     logger.warn({ category: 'security' }, warning);
@@ -242,8 +267,18 @@ export const buildApp = async () => {
     }
   }, analyticsCleanupIntervalMs);
 
+  const activityExpirationTimer = setInterval(() => {
+    try {
+      const finalizedAttempts = activityAttempts.expireDueAttempts();
+      if (finalizedAttempts > 0) logger.info({ finalizedAttempts }, 'expired Activity attempts auto-submitted');
+    } catch (error) {
+      logger.error({ err: error }, 'Activity attempt expiration failed');
+    }
+  }, activityExpirationIntervalMs);
+
   app.addHook('onClose', async () => {
     clearInterval(analyticsCleanupTimer);
+    clearInterval(activityExpirationTimer);
     liveRealtime.close();
     await links.flushAnalytics();
   });
@@ -288,7 +323,6 @@ export const buildApp = async () => {
       path: '/'
     }
   });
-
   app.addHook('onRequest', async (request, reply) => {
     const rawPathname = request.raw.url?.split('?')[0] ?? '';
     if (/(^|\/)(\.\.|%2e%2e|%2f|%5c|%00)/i.test(rawPathname)) {
@@ -298,10 +332,11 @@ export const buildApp = async () => {
 
   app.addHook('onRequest', async (request, reply) => {
     const pathname = request.url.split('?')[0];
-    if (pathname.startsWith('/api/live/public/') || pathname.startsWith('/api/pages/public/')) {
+    if (pathname.startsWith('/api/live/public/') || pathname.startsWith('/api/pages/public/') || pathname.startsWith('/api/activities/public/')) {
       reply.header('Cache-Control', 'no-store');
     } else if (
       pathname === '/api/live' || pathname.startsWith('/api/live/') || pathname.startsWith('/api/moderation/') ||
+      pathname === '/api/activities' || pathname.startsWith('/api/activities/') ||
       pathname.startsWith('/api/settings/') ||
       pathname === '/api/pages' || pathname.startsWith('/api/pages/')
     ) {
@@ -336,6 +371,8 @@ export const buildApp = async () => {
     rateLimiter
   });
   await registerPageRoutes(app, { pages, sessions });
+  await registerActivityRoutes(app, { activities, attempts: activityAttempts, sessions });
+  await registerActivityPublicRoutes(app, { attempts: activityAttempts, rateLimiter });
 
   app.get('/api/health', async () => ({ ok: true }));
 
@@ -786,6 +823,13 @@ export const buildApp = async () => {
     if (config.reservedSlugs.has(slug.toLowerCase())) return applyNoStore(reply).redirect('/app/links');
     if (isInvalidSlugRequest(slug)) {
       return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage(locale));
+    }
+    const slideActivity = activityAttempts.getLanding(slug);
+    if (slideActivity) {
+      if (!fs.existsSync(clientIndexPath)) {
+        return applyNoStore(reply).code(503).type('text/html').send(renderPublicServiceUnavailablePage(locale));
+      }
+      return sendClientIndex(request, reply, getActivityIndexPayloads(slideActivity));
     }
     const liveActivity = live.findBySlug(slug);
     if (liveActivity) {

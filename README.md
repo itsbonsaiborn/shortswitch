@@ -1,6 +1,6 @@
 # ShortSwitch
 
-Privacy-aware self-hosted URL shortener with a modern Vue 3 dashboard, interactive Live activities, lightweight public Pages, secure server-side sessions, and analytics.
+Privacy-aware self-hosted URL shortener with a modern Vue 3 dashboard, self-paced Activities, lightweight public Pages, secure server-side sessions, and analytics.
 
 ## Screenshots
 
@@ -23,8 +23,9 @@ Privacy-aware self-hosted URL shortener with a modern Vue 3 dashboard, interacti
 - Light, system-following, and dark themes with per-user synchronization
 - English and Latvian localization for the dashboard and all public Links, Pages and Live states; public language follows the visitor's primary browser language with English fallback
 - Password-protected and expiring links
-- Live open-answer, word-cloud, multiple-choice and scale activities
-- Anonymous or named participation with live SSE result boards
+- Self-paced, slide-based Activities with immutable versions, autosave, timers and server-side grading
+- Single/Multiple Choice, Open Answer, Word Cloud, Ordering, Matching and Image Labeling questions
+- Compatibility access for historical Live responses and analytics during migration
 - Global ban filter and manual moderation queue
 - Linktree-style public Pages with reusable blocks, themes, CSS/SVG background patterns, preview and independent analytics
 - Per-link analytics and global analytics
@@ -41,7 +42,7 @@ Privacy-aware self-hosted URL shortener with a modern Vue 3 dashboard, interacti
 
 ## Features
 
-- Clean dashboard with `Links`, `Live`, `Pages`, `Analytics`, and `Settings`
+- Clean dashboard with `Links`, `Activities`, `Pages`, `Analytics`, and `Settings`
 - Link creation with custom slug, password, and expiration
 - QR code generation and download
 - Per-link stats:
@@ -124,6 +125,9 @@ npm run load:live:500
 npm run load:live:word-cloud
 npm run load:live:open
 npm run load:live:history
+npm run load:activities:50
+npm run load:activities:200
+npm run load:activities:500
 npm run load:links:50
 npm run load:links:200
 npm run load:links:500
@@ -252,6 +256,7 @@ Before deploying to a real VPS, update the Docker config:
 - Keep `ENABLE_CSP=true`
 - Keep `RESET_ADMIN=false` for normal operation
 - Back up the SQLite volume at `/app/data`
+- Read [`docs/ACTIVITIES-MIGRATION.md`](docs/ACTIVITIES-MIGRATION.md) before migration and verify free space for its automatic snapshot
 
 ## Known Deployment Notes
 
@@ -266,6 +271,9 @@ Before deploying to a real VPS, update the Docker config:
 - `src/server/` - Fastify server, services, repositories, views
 - `src/shared/` - shared TypeScript types
 - `docs/LIVE.md` - Live architecture, API, storage, moderation, realtime and load-test guide
+- `docs/activities-architecture.md` - Activities versioning, attempts, grading and security architecture
+- `docs/ACTIVITIES-MIGRATION.md` - legacy Live mapping, backup, compatibility and rollback
+- `docs/ACTIVITIES-RELEASE-AUDIT.md` - release verification, load measurements and known limitations
 - `docs/PAGES.md` - Pages architecture, blocks, API, storage, security and verification guide
 - `public/` - branding and OG assets
 

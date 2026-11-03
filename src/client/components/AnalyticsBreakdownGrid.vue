@@ -114,7 +114,7 @@ const percentage = (value: number, items: Array<{ label: string; value: number }
 <template>
   <section class="breakdown-container">
     <div class="breakdown-grid grid min-w-0 items-stretch gap-4 md:grid-cols-2">
-      <div v-for="card in cards" :key="card.key" class="panel flex min-w-0 flex-col p-5 sm:p-6">
+      <div v-for="card in cards" :key="card.key" class="breakdown-card panel flex min-w-0 flex-col p-5 sm:p-6">
         <h2 class="text-xl font-semibold">{{ card.title }}</h2>
         <div class="breakdown-content mt-5 grid flex-1 items-center gap-5 sm:grid-cols-[minmax(130px,0.85fr)_minmax(150px,1.15fr)]">
           <div
@@ -155,6 +155,8 @@ const percentage = (value: number, items: Array<{ label: string; value: number }
 
 <style scoped>
 .breakdown-container { container-type: inline-size; }
+.breakdown-card:has(.apexcharts-tooltip.apexcharts-active) { position: relative; z-index: 70; }
+.breakdown-card :deep(.apexcharts-tooltip) { z-index: 80 !important; }
 @container (min-width: 1600px) {
   .breakdown-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .breakdown-content { grid-template-columns: minmax(78px, .72fr) minmax(112px, 1.28fr); gap: .5rem; }
