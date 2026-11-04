@@ -27,7 +27,11 @@ const getCsrfToken = async () => {
 export const api = async <T>(url: string, init?: RequestInit): Promise<T> => {
   const headers = new Headers(init?.headers ?? {});
   if (init?.method && init.method !== 'GET') {
-    if (!headers.has('content-type')) headers.set('content-type', 'application/json');
+    // Fastify rejects an empty request that advertises a JSON body. Only set
+    // the JSON content type when the caller actually supplied a body.
+    if (init.body !== undefined && init.body !== null && !headers.has('content-type')) {
+      headers.set('content-type', 'application/json');
+    }
     headers.set('x-csrf-token', await getCsrfToken());
   }
 
