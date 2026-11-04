@@ -201,19 +201,19 @@ onBeforeUnmount(() => finishDrag(false));
 </script>
 
 <template>
-  <div ref="list" class="space-y-2" role="list" :aria-label="t('activityOrdering.studentLabel')">
+  <div ref="list" class="w-full min-w-0 max-w-full space-y-2" role="list" :aria-label="t('activityOrdering.studentLabel')">
     <article
       v-for="(item, index) in orderedItems"
       :key="item.id"
       :data-order-id="item.id"
       role="listitem"
-      class="ordering-card flex items-center gap-3 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-panel)] p-3"
+      class="ordering-card flex min-w-0 max-w-full items-start gap-2 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-panel)] p-3 sm:items-center sm:gap-3"
       :class="draggingId === item.id ? 'ordering-placeholder' : ''"
     >
-      <button type="button" class="ordering-handle cursor-grab touch-none rounded-lg px-2 py-1 text-[var(--ui-text-muted)] active:cursor-grabbing" :data-order-handle="item.id" :aria-label="t('activityOrdering.moveHandle', { item: item.label })" @pointerdown="startDrag($event, item.id)">⠿</button>
+      <button type="button" class="ordering-handle shrink-0 cursor-grab touch-none rounded-lg px-2 py-1 text-[var(--ui-text-muted)] active:cursor-grabbing" :data-order-handle="item.id" :aria-label="t('activityOrdering.moveHandle', { item: item.label })" @pointerdown="startDrag($event, item.id)">⠿</button>
       <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--ui-accent-soft)] text-sm font-semibold text-[var(--ui-accent)]">{{ index + 1 }}</span>
-      <span class="min-w-0 flex-1">{{ item.label }}</span>
-      <div class="flex"><button type="button" class="flex h-8 w-8 items-center justify-center rounded-lg disabled:opacity-30" :disabled="index === 0" :aria-label="t('activityOrdering.moveUp', { item: item.label })" @click="move(item.id, index - 1)"><ActivityMoveArrow direction="up" /></button><button type="button" class="flex h-8 w-8 items-center justify-center rounded-lg disabled:opacity-30" :disabled="index === orderedItems.length - 1" :aria-label="t('activityOrdering.moveDown', { item: item.label })" @click="move(item.id, index + 1)"><ActivityMoveArrow direction="down" /></button></div>
+      <span class="min-w-0 flex-1 break-words text-sm leading-5 [overflow-wrap:anywhere] sm:text-base">{{ item.label }}</span>
+      <div class="flex shrink-0"><button type="button" class="flex h-8 w-8 items-center justify-center rounded-lg disabled:opacity-30" :disabled="index === 0" :aria-label="t('activityOrdering.moveUp', { item: item.label })" @click="move(item.id, index - 1)"><ActivityMoveArrow direction="up" /></button><button type="button" class="flex h-8 w-8 items-center justify-center rounded-lg disabled:opacity-30" :disabled="index === orderedItems.length - 1" :aria-label="t('activityOrdering.moveDown', { item: item.label })" @click="move(item.id, index + 1)"><ActivityMoveArrow direction="down" /></button></div>
     </article>
     <button v-if="!modelValue.length" type="button" class="btn-secondary mt-2 w-full" @click="emit('update:modelValue', orderedItems.map((item) => item.id))">{{ t('activityOrdering.confirm') }}</button>
   </div>

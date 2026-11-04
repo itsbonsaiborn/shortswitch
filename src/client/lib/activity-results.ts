@@ -5,6 +5,13 @@ import type {
 } from '@/shared/activity-types';
 
 export type ActivityAnswerRow = { label: string; value: string };
+export type ActivityChoiceReviewOption = {
+  id: string;
+  label: string;
+  selected: boolean;
+  correct: boolean;
+  incorrectSelection: boolean;
+};
 
 export const formatActivityNumber = (value: number | null | undefined) =>
   value === null || value === undefined || !Number.isFinite(value)
@@ -20,6 +27,26 @@ export const formatActivityScorePercent = (score: number | null | undefined, max
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/** Build the read-only editor-style option list used by the admin attempt review. */
+export const activityChoiceReviewOptions = (response: ActivityAdminAttemptResponse): ActivityChoiceReviewOption[] => {
+  const config = response.questionConfig;
+  if (config.questionType !== 'single_choice' && config.questionType !== 'multiple_choice') return [];
+  const answer = response.answer;
+  const selectedIds = new Set(
+    answer?.questionType === 'single_choice'
+      ? answer.optionId ? [answer.optionId] : []
+      : answer?.questionType === 'multiple_choice' ? answer.optionIds : []
+  );
+  const correctValues = Array.isArray(response.correctAnswer) ? response.correctAnswer : [response.correctAnswer];
+  const correctIds = new Set(correctValues.flatMap((value) => isRecord(value) && typeof value.id === 'string' ? [value.id] : []));
+  return config.options.map((option) => ({
+    ...option,
+    selected: selectedIds.has(option.id),
+    correct: correctIds.has(option.id),
+    incorrectSelection: selectedIds.has(option.id) && !correctIds.has(option.id)
+  }));
+};
 
 /** Convert a disclosed answer key into readable rows without rendering IDs. */
 export const activityCorrectAnswerRows = (

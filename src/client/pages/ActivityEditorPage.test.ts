@@ -71,6 +71,37 @@ describe('ActivityEditorPage interactions', () => {
     addOption!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     await wrapper.vm.$nextTick();
     expect(document.body.querySelectorAll('input[type="radio"]')).toHaveLength(3);
+    const optionHandles = document.body.querySelectorAll<HTMLElement>('[data-reorder-handle]');
+    expect(optionHandles).toHaveLength(3);
+    expect(document.body.querySelector('button[aria-label="Move option down"] svg')).toBeTruthy();
+    document.body.querySelectorAll<HTMLElement>('[data-reorder-item]').forEach((row, index) => {
+      vi.spyOn(row, 'getBoundingClientRect').mockReturnValue({
+        x: 0, y: index * 50, top: index * 50, bottom: index * 50 + 40,
+        left: 0, right: 480, width: 480, height: 40, toJSON: () => ({})
+      } as DOMRect);
+    });
+
+    const pointerDown = new Event('pointerdown', { bubbles: true, cancelable: true });
+    Object.defineProperties(pointerDown, {
+      pointerId: { value: 11 }, pointerType: { value: 'mouse' }, button: { value: 0 },
+      isPrimary: { value: true }, clientX: { value: 24 }, clientY: { value: 24 }
+    });
+    optionHandles[0].dispatchEvent(pointerDown);
+    await wrapper.vm.$nextTick();
+    expect(document.body.querySelector('.activity-question-item-ghost')).toBeTruthy();
+    expect(document.body.querySelector('.activity-question-item-placeholder')).toBeTruthy();
+
+    const pointerMove = new Event('pointermove', { bubbles: true, cancelable: true });
+    Object.defineProperties(pointerMove, { pointerId: { value: 11 }, clientX: { value: 24 }, clientY: { value: 140 } });
+    document.dispatchEvent(pointerMove);
+    await wrapper.vm.$nextTick();
+    expect([...document.body.querySelectorAll<HTMLInputElement>('[data-reorder-item]:not(.activity-question-item-ghost) input.input')].map((input) => input.value)).toEqual(['Option 2', 'New option', 'Option 1']);
+
+    const pointerUp = new Event('pointerup', { bubbles: true });
+    Object.defineProperties(pointerUp, { pointerId: { value: 11 }, clientX: { value: 24 }, clientY: { value: 24 } });
+    document.dispatchEvent(pointerUp);
+    await wrapper.vm.$nextTick();
+    expect(document.body.querySelector('.activity-question-item-ghost')).toBeNull();
     wrapper.unmount();
   });
 });

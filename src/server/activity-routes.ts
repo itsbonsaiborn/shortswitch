@@ -319,6 +319,17 @@ export const registerActivityRoutes = async (app: FastifyInstance<any, any, any,
     }
   });
 
+  app.delete('/api/activities/:id/attempts/:attemptId', { onRequest: app.csrfProtection }, async (request, reply) => {
+    const authenticated = await requireAdmin(request, reply);
+    if (!authenticated) return;
+    try {
+      const params = request.params as { id: string; attemptId: string };
+      return attempts.deleteAdminAttempt(authenticated.currentUser.id, params.id, params.attemptId);
+    } catch (error) {
+      return handle(reply, error);
+    }
+  });
+
   app.post('/api/activities/:id/attempts/:attemptId/responses/:questionBlockId/grade', { onRequest: app.csrfProtection }, async (request, reply) => {
     const authenticated = await requireAdmin(request, reply);
     if (!authenticated) return;

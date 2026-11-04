@@ -5,11 +5,13 @@ import { useI18n } from 'vue-i18n';
 import type { Activity, ActivityAdminAttempt, ActivityAdminAttemptDetail, ActivityAdminResults, ActivityBackgroundPattern, ActivityLayout, ActivityPublishValidation, ActivityQuestionType, ActivitySettings, ActivityTheme, PublishedActivityVersion } from '@/shared/activity-types';
 import { isValidActivityTimeZone, utcActivityDateTimeToLocalInput, zonedActivityDateTimeToUtc } from '@/shared/activity-deadline';
 import { api } from '../lib/api';
-import { activityAnswerRows as answerRows, formatActivityNumber, formatActivityPercent, formatActivityScorePercent } from '../lib/activity-results';
+import { activityAnswerRows as answerRows, activityChoiceReviewOptions as choiceReviewOptions, activityCorrectAnswerRows as correctAnswerRows, formatActivityNumber, formatActivityPercent, formatActivityScorePercent } from '../lib/activity-results';
 import { useToast } from '../composables/useToast';
+import { usePointerReorder } from '../composables/usePointerReorder';
 import ActivityImageLabelingEditor from '../components/ActivityImageLabelingEditor.vue';
 import ActivityBlockIcon from '../components/ActivityBlockIcon.vue';
 import ActivityMoveArrow from '../components/ActivityMoveArrow.vue';
+import ActivityDeleteIcon from '../components/ActivityDeleteIcon.vue';
 import QrCodePopover from '../components/QrCodePopover.vue';
 import {
   createContentBlock,
@@ -60,12 +62,16 @@ const selectedAttemptDetail = ref<ActivityAdminAttemptDetail | null>(null);
 const gradingAttempt = ref(false);
 const manualGrades = reactive<Record<string, { points: string; feedback: string }>>({});
 const extendingAttemptId = ref('');
+const deletingAttemptId = ref('');
 const activeTab = ref<'general' | 'content' | 'design' | 'settings' | 'results'>('content');
 const selectedSlideId = ref('');
 const selectedBlockId = ref('');
 const questionToAdd = ref<ActivityQuestionType>('single_choice');
 const draggedSlideId = ref('');
 const draggedBlockId = ref('');
+const choiceEditorList = ref<HTMLElement | null>(null);
+const orderingEditorList = ref<HTMLElement | null>(null);
+const matchingEditorList = ref<HTMLElement | null>(null);
 const slideList = ref<HTMLElement | null>(null);
 const blockList = ref<HTMLElement | null>(null);
 const slideDragOrderIds = ref<string[] | null>(null);
@@ -73,7 +79,7 @@ const dragOrderIds = ref<string[] | null>(null);
 const blockPicker = ref<{ index: number; top: number; left: number; maxHeight: number } | null>(null);
 const blockPickerSearch = ref('');
 const blockMenu = ref<{ id: string; top: number; left: number } | null>(null);
-const dialog = ref<{ kind: 'delete-slide' | 'replace-question' | 'delete-block'; id: string; questionType?: ActivityQuestionType } | null>(null);
+const dialog = ref<{ kind: 'delete-slide' | 'replace-question' | 'delete-block' | 'delete-attempt'; id: string; questionType?: ActivityQuestionType } | null>(null);
 
 const settings = reactive<ActivitySettings>({
   title: '', description: '', slug: '', status: 'closed', identityMode: 'anonymous',
@@ -195,6 +201,17 @@ const changeAttemptPage = async (delta: number) => {
 };
 const formatPercent = formatActivityPercent;
 const formatAttemptScorePercent = formatActivityScorePercent;
+const attemptStatusLabel = (status: ActivityAdminAttempt['status']) => {
+  if (status === 'submitted') return t('activityResults.submitted');
+  if (status === 'expired' || status === 'auto_submitted') return t('activityResults.expired');
+  return t('activityResults.inProgress');
+};
+const showAttemptGradingState = (attempt: ActivityAdminAttempt) =>
+  !((attempt.status === 'expired' || attempt.status === 'auto_submitted') && attempt.gradingState === 'expired');
+const isChoiceResponse = (response: ActivityAdminAttemptDetail['responses'][number]) =>
+  response.questionType === 'single_choice' || response.questionType === 'multiple_choice';
+const readableCorrectAnswerRows = (response: ActivityAdminAttemptDetail['responses'][number]) =>
+  correctAnswerRows(response.questionType, response.correctAnswer, response.questionConfig);
 const formatDuration = (seconds: number) => {
   const minutes = Math.floor(seconds / 60);
   const remainder = seconds % 60;
@@ -264,6 +281,20 @@ const extendAttempt = async (attempt: ActivityAdminAttempt) => {
     pushToast({ tone: 'success', title: t('activitiesEditor.deadlineExtended') });
   } catch (error) { pushToast({ tone: 'error', title: t('activitiesEditor.extensionFailed'), description: (error as Error).message }); }
   finally { extendingAttemptId.value = ''; }
+};
+const deleteAttempt = async (attemptId: string) => {
+  if (!activityId.value) return;
+  deletingAttemptId.value = attemptId;
+  try {
+    await api(`/api/activities/${activityId.value}/attempts/${attemptId}`, { method: 'DELETE' });
+    if (selectedAttemptDetail.value?.id === attemptId) selectedAttemptDetail.value = null;
+    await loadAttempts();
+    pushToast({ tone: 'success', title: t('activityResults.attemptDeleted') });
+  } catch (error) {
+    pushToast({ tone: 'error', title: t('activityResults.attemptDeleteFailed'), description: (error as Error).message });
+  } finally {
+    deletingAttemptId.value = '';
+  }
 };
 const validationErrors = computed(() => validateEditorDraft(slides.value));
 const slideQuestion = (slide: AdminSlide) => slide.blocks.find((block) => block.type === 'question') as AdminQuestionBlock | undefined;
@@ -682,8 +713,14 @@ const openBlockEditor = (blockId: string) => {
   if (performance.now() < suppressBlockClickUntil) return;
   selectedBlockId.value = blockId;
 };
-const confirmDialog = () => {
+const confirmDialog = async () => {
   if (!dialog.value) return;
+  if (dialog.value.kind === 'delete-attempt') {
+    const attemptId = dialog.value.id;
+    dialog.value = null;
+    await deleteAttempt(attemptId);
+    return;
+  }
   if (dialog.value.kind === 'delete-slide') {
     slides.value = normalizePositions(slides.value.filter((slide) => slide.id !== dialog.value?.id));
     if (!slides.value.length) slides.value = [createSlide(0)];
@@ -779,6 +816,40 @@ const removeMatchingPair = (leftId: string) => {
   questionConfig.value.rightItems = questionConfig.value.rightItems.filter((item: { id: string }) => item.id !== rightId);
   questionBlock.value!.answerKey.pairs = questionBlock.value!.answerKey.pairs.filter((pair: { leftId: string; rightId: string }) => pair.leftId !== leftId && pair.rightId !== rightId);
 };
+const applyChoiceOrder = (ids: string[]) => {
+  if (questionBlock.value?.questionType !== 'single_choice' && questionBlock.value?.questionType !== 'multiple_choice') return;
+  const byId = new Map(questionConfig.value.options.map((item: { id: string; label: string }) => [item.id, item]));
+  questionConfig.value.options.splice(0, questionConfig.value.options.length, ...ids.map((id) => byId.get(id)).filter(Boolean));
+};
+const applyOrderingEditorOrder = (ids: string[]) => {
+  if (questionBlock.value?.questionType !== 'ordering') return;
+  questionBlock.value.answerKey.orderedItemIds.splice(0, questionBlock.value.answerKey.orderedItemIds.length, ...ids);
+};
+const applyMatchingEditorOrder = (ids: string[]) => {
+  if (questionBlock.value?.questionType !== 'matching') return;
+  const pairs = questionBlock.value.answerKey.pairs as Array<{ leftId: string; rightId: string }>;
+  const byId = new Map(pairs.map((pair) => [pair.leftId, pair]));
+  pairs.splice(0, pairs.length, ...ids.map((id) => byId.get(id)).filter(Boolean));
+};
+const { draggingId: draggedChoiceId, startDrag: startChoiceDrag } = usePointerReorder({
+  container: choiceEditorList,
+  getIds: () => questionBlock.value?.questionType === 'single_choice' || questionBlock.value?.questionType === 'multiple_choice'
+    ? questionConfig.value.options.map((item: { id: string }) => item.id)
+    : [],
+  setIds: applyChoiceOrder
+});
+const { draggingId: draggedOrderingItemId, startDrag: startOrderingEditorDrag } = usePointerReorder({
+  container: orderingEditorList,
+  getIds: () => questionBlock.value?.questionType === 'ordering' ? [...questionBlock.value.answerKey.orderedItemIds] : [],
+  setIds: applyOrderingEditorOrder
+});
+const { draggingId: draggedMatchingPairId, startDrag: startMatchingEditorDrag } = usePointerReorder({
+  container: matchingEditorList,
+  getIds: () => questionBlock.value?.questionType === 'matching'
+    ? questionBlock.value.answerKey.pairs.map((pair: { leftId: string }) => pair.leftId)
+    : [],
+  setIds: applyMatchingEditorOrder
+});
 const acceptedAnswers = computed({
   get: () => answerKey.value?.acceptedAnswers?.join('\n') ?? '',
   set: (value: string) => {
@@ -1005,13 +1076,14 @@ onBeforeUnmount(() => { if (slideDragSession) finishSlideDrag(false); if (blockD
                 <div class="grid gap-3 sm:grid-cols-3"><label class="sm:col-span-2"><span class="label">{{ questionBlock.questionType === 'single_choice' || questionBlock.questionType === 'multiple_choice' ? t('activityChoices.title') : t('activitiesEditor.prompt') }}</span><textarea v-model="questionConfig.prompt" class="input mt-2 min-h-24" maxlength="1000"></textarea></label><div class="space-y-3 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-panel)] p-3"><p class="text-xs font-semibold uppercase tracking-wide text-[var(--ui-text-muted)]">{{ t('activityEditorEnhancements.scoring') }}</p><label><span class="label">{{ t('activitiesEditor.points') }}</span><input v-model.number="questionBlock.points" type="number" min="0" max="1000" class="input mt-2" :disabled="!settings.gradingEnabled || !questionBlock.graded || questionBlock.questionType === 'open_answer' && questionConfig.gradingMode === 'ungraded' || questionBlock.questionType === 'word_cloud' && questionConfig.gradingMode === 'ungraded'" /></label><label v-if="questionBlock.questionType !== 'open_answer' && questionBlock.questionType !== 'word_cloud'" class="flex items-center gap-2 text-sm"><input v-model="questionBlock.graded" type="checkbox" :disabled="!settings.gradingEnabled" />{{ t('activitiesEditor.graded') }}</label><p v-if="!settings.gradingEnabled" class="text-xs text-[var(--ui-text-muted)]">{{ t('activityEditorEnhancements.gradingDisabledHint') }}</p><label class="flex items-center gap-2 text-sm"><input v-model="questionBlock.required" type="checkbox" />{{ t('activitiesEditor.required') }}</label></div></div>
                 <template v-if="questionBlock.questionType === 'single_choice' || questionBlock.questionType === 'multiple_choice'">
                   <label class="mt-4 block"><span class="label">{{ t('activityChoices.description') }}</span><textarea v-model="questionConfig.description" class="input mt-2 min-h-20" maxlength="2000"></textarea></label>
-                  <div class="mt-4 space-y-2">
-                    <div v-for="(option, optionIndex) in questionConfig.options" :key="option.id" class="flex items-center gap-2 rounded-2xl border p-2 transition-colors" :class="(questionBlock.questionType === 'single_choice' ? answerKey.correctOptionId === option.id : answerKey.correctOptionIds.includes(option.id)) ? 'border-[var(--ui-accent)] bg-[var(--ui-accent-soft)]' : 'border-[var(--ui-border)] bg-[var(--ui-panel)]'">
+                  <div ref="choiceEditorList" class="mt-4 space-y-2">
+                    <div v-for="(option, optionIndex) in questionConfig.options" :key="option.id" :data-reorder-item="option.id" class="activity-question-item-card flex items-center gap-2 rounded-2xl border p-2 transition-colors" :class="[draggedChoiceId === option.id ? 'activity-question-item-placeholder' : '', (questionBlock.questionType === 'single_choice' ? answerKey.correctOptionId === option.id : answerKey.correctOptionIds.includes(option.id)) ? 'border-[var(--ui-accent)] bg-[var(--ui-accent-soft)]' : 'border-[var(--ui-border)] bg-[var(--ui-panel)]']">
+                      <button type="button" class="activity-drag-handle flex h-9 w-7 shrink-0 touch-none items-center justify-center rounded-lg text-[var(--ui-text-muted)]" :data-reorder-handle="option.id" :aria-label="t('activityEditorEnhancements.moveItem')" @pointerdown="startChoiceDrag($event, option.id)" @keydown.up.prevent="moveChoice(questionConfig.options, option.id, -1)" @keydown.down.prevent="moveChoice(questionConfig.options, option.id, 1)"><span aria-hidden="true">⠿</span></button>
                       <label class="flex shrink-0 cursor-pointer items-center gap-2 rounded-xl px-2 py-1 text-xs font-medium" :title="t('activitiesEditor.correctAnswer')"><input v-if="questionBlock.questionType === 'single_choice'" v-model="answerKey.correctOptionId" type="radio" :value="option.id" :name="`${questionBlock.id}-correct`" :disabled="!settings.gradingEnabled || !questionBlock.graded" /><input v-else type="checkbox" :checked="answerKey.correctOptionIds.includes(option.id)" :disabled="!settings.gradingEnabled || !questionBlock.graded" @change="answerKey.correctOptionIds = ($event.target as HTMLInputElement).checked ? [...answerKey.correctOptionIds, option.id] : answerKey.correctOptionIds.filter((id: string) => id !== option.id)" /><span class="hidden sm:inline">{{ t('activitiesEditor.correctAnswer') }}</span></label>
                       <input v-model="option.label" class="input min-w-0 flex-1" maxlength="160" :aria-label="`${t('activityChoices.option')} ${optionIndex + 1}`" />
-                      <button type="button" class="rounded-lg px-2 py-1 disabled:opacity-30" :disabled="optionIndex === 0" :aria-label="t('activityChoices.moveOptionUp')" @click="moveChoice(questionConfig.options, option.id, -1)">↑</button>
-                      <button type="button" class="rounded-lg px-2 py-1 disabled:opacity-30" :disabled="optionIndex === questionConfig.options.length - 1" :aria-label="t('activityChoices.moveOptionDown')" @click="moveChoice(questionConfig.options, option.id, 1)">↓</button>
-                      <button type="button" class="rounded-lg px-2 py-1 text-red-500 disabled:opacity-30" :disabled="questionConfig.options.length <= 2" :aria-label="t('activityChoices.deleteOption')" @click="removeChoice(questionConfig.options, option.id)">×</button>
+                      <button type="button" class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg disabled:opacity-30" :disabled="optionIndex === 0" :aria-label="t('activityChoices.moveOptionUp')" @click="moveChoice(questionConfig.options, option.id, -1)"><ActivityMoveArrow direction="up" /></button>
+                      <button type="button" class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg disabled:opacity-30" :disabled="optionIndex === questionConfig.options.length - 1" :aria-label="t('activityChoices.moveOptionDown')" @click="moveChoice(questionConfig.options, option.id, 1)"><ActivityMoveArrow direction="down" /></button>
+                      <button type="button" class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-red-500 hover:bg-red-500/10 disabled:opacity-30" :disabled="questionConfig.options.length <= 2" :aria-label="t('activityChoices.deleteOption')" @click="removeChoice(questionConfig.options, option.id)"><ActivityDeleteIcon class="h-4.5 w-4.5" /></button>
                     </div>
                     <div class="flex items-center justify-between gap-3"><button type="button" class="btn-secondary px-3 py-2 text-sm" :disabled="questionConfig.options.length >= 50" @click="addChoice(questionConfig.options)">+ {{ t('activityChoices.addOption') }}</button><span class="text-xs text-[var(--ui-text-muted)]">{{ t('activityChoices.optionLimit') }}</span></div>
                   </div>
@@ -1035,13 +1107,13 @@ onBeforeUnmount(() => { if (slideDragSession) finishSlideDrag(false); if (blockD
                 <template v-else-if="questionBlock.questionType === 'ordering'">
                   <div class="mt-4 flex flex-wrap items-center gap-4"><label class="flex items-center gap-2 text-sm"><input v-model="questionConfig.shuffleItems" type="checkbox" />{{ t('activityOrdering.shuffle') }}</label><label><span class="label">{{ t('activityOrdering.gradingMode') }}</span><select v-model="questionConfig.gradingMode" class="input mt-2"><option value="all_or_nothing">{{ t('activityChoices.allOrNothing') }}</option><option value="partial">{{ t('activityChoices.partialCredit') }}</option></select></label></div>
                   <p class="mt-3 text-xs text-[var(--ui-text-muted)]">{{ t('activityOrdering.canonicalHint') }}</p>
-                  <div class="mt-3 space-y-2"><div v-for="(item, itemIndex) in orderingEditorItems" :key="item.id" class="flex items-center gap-2 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-panel)] p-2"><span class="w-6 text-center text-sm font-semibold text-[var(--ui-accent)]">{{ itemIndex + 1 }}</span><input v-model="item.label" class="input min-w-0 flex-1" maxlength="160" /><button type="button" class="flex h-8 w-8 items-center justify-center rounded-lg disabled:opacity-30" :disabled="itemIndex === 0" :aria-label="t('activityOrdering.moveUp', { item: item.label })" @click="moveOrderingItem(item.id, -1)"><ActivityMoveArrow direction="up" /></button><button type="button" class="flex h-8 w-8 items-center justify-center rounded-lg disabled:opacity-30" :disabled="itemIndex === orderingEditorItems.length - 1" :aria-label="t('activityOrdering.moveDown', { item: item.label })" @click="moveOrderingItem(item.id, 1)"><ActivityMoveArrow direction="down" /></button><button type="button" class="rounded-lg px-2 py-1 text-red-500 disabled:opacity-30" :disabled="orderingEditorItems.length <= 2" @click="removeOrderingItem(item.id)">×</button></div><button type="button" class="btn-secondary px-3 py-2 text-sm" :disabled="orderingEditorItems.length >= 50" @click="addOrderingItem">+ {{ t('activityOrdering.addItem') }}</button></div>
+                  <div ref="orderingEditorList" class="mt-3 space-y-2"><div v-for="(item, itemIndex) in orderingEditorItems" :key="item.id" :data-reorder-item="item.id" class="activity-question-item-card flex items-center gap-2 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-panel)] p-2" :class="draggedOrderingItemId === item.id ? 'activity-question-item-placeholder' : ''"><button type="button" class="activity-drag-handle flex h-9 w-7 shrink-0 touch-none items-center justify-center rounded-lg text-[var(--ui-text-muted)]" :data-reorder-handle="item.id" :aria-label="t('activityEditorEnhancements.moveItem')" @pointerdown="startOrderingEditorDrag($event, item.id)" @keydown.up.prevent="moveOrderingItem(item.id, -1)" @keydown.down.prevent="moveOrderingItem(item.id, 1)"><span aria-hidden="true">⠿</span></button><span class="w-6 text-center text-sm font-semibold text-[var(--ui-accent)]">{{ itemIndex + 1 }}</span><input v-model="item.label" class="input min-w-0 flex-1" maxlength="160" /><button type="button" class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg disabled:opacity-30" :disabled="itemIndex === 0" :aria-label="t('activityOrdering.moveUp', { item: item.label })" @click="moveOrderingItem(item.id, -1)"><ActivityMoveArrow direction="up" /></button><button type="button" class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg disabled:opacity-30" :disabled="itemIndex === orderingEditorItems.length - 1" :aria-label="t('activityOrdering.moveDown', { item: item.label })" @click="moveOrderingItem(item.id, 1)"><ActivityMoveArrow direction="down" /></button><button type="button" class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-red-500 hover:bg-red-500/10 disabled:opacity-30" :disabled="orderingEditorItems.length <= 2" :aria-label="t('common.delete')" @click="removeOrderingItem(item.id)"><ActivityDeleteIcon class="h-4.5 w-4.5" /></button></div><button type="button" class="btn-secondary px-3 py-2 text-sm" :disabled="orderingEditorItems.length >= 50" @click="addOrderingItem">+ {{ t('activityOrdering.addItem') }}</button></div>
                   <label class="mt-4 block"><span class="label">{{ t('activityChoices.feedback') }}</span><textarea v-model="questionBlock.answerKey.feedback" class="input mt-2 min-h-20" maxlength="2000"></textarea></label>
                 </template>
                 <template v-else-if="questionBlock.questionType === 'matching'">
                   <div class="mt-4 flex flex-wrap gap-4"><label class="flex items-center gap-2 text-sm"><input v-model="questionConfig.shuffleLeftItems" type="checkbox" />{{ t('activityMatching.shuffleLeft') }}</label><label class="flex items-center gap-2 text-sm"><input v-model="questionConfig.shuffleRightItems" type="checkbox" />{{ t('activityMatching.shuffleRight') }}</label><label><span class="label">{{ t('activityMatching.gradingMode') }}</span><select v-model="questionConfig.gradingMode" class="input mt-2"><option value="all_or_nothing">{{ t('activityChoices.allOrNothing') }}</option><option value="partial">{{ t('activityChoices.partialCredit') }}</option></select></label></div>
                   <p class="mt-3 text-xs text-[var(--ui-text-muted)]">{{ t('activityMatching.pairsHint') }}</p>
-                  <div class="mt-3 space-y-2"><div v-for="(entry, pairIndex) in matchingEditorPairs" :key="entry.left.id" class="grid items-center gap-2 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-panel)] p-2 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)_auto]"><input v-model="entry.left.label" class="input min-w-0" maxlength="160" :aria-label="t('activityMatching.leftLabel')" /><span class="text-center text-[var(--ui-accent)]">↔</span><input v-model="entry.right.label" class="input min-w-0" maxlength="160" :aria-label="t('activityMatching.rightLabel')" /><div class="flex"><button type="button" class="rounded-lg px-2 py-1 disabled:opacity-30" :disabled="pairIndex === 0" @click="moveMatchingPair(entry.left.id, -1)">↑</button><button type="button" class="rounded-lg px-2 py-1 disabled:opacity-30" :disabled="pairIndex === matchingEditorPairs.length - 1" @click="moveMatchingPair(entry.left.id, 1)">↓</button><button type="button" class="rounded-lg px-2 py-1 text-red-500 disabled:opacity-30" :disabled="matchingEditorPairs.length <= 1" @click="removeMatchingPair(entry.left.id)">×</button></div></div><button type="button" class="btn-secondary px-3 py-2 text-sm" :disabled="matchingEditorPairs.length >= 50" @click="addMatchingPair">+ {{ t('activityMatching.addPair') }}</button></div>
+                  <div ref="matchingEditorList" class="mt-3 space-y-2"><div v-for="(entry, pairIndex) in matchingEditorPairs" :key="entry.left.id" :data-reorder-item="entry.left.id" class="activity-question-item-card flex items-start gap-2 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-panel)] p-2 sm:items-center" :class="draggedMatchingPairId === entry.left.id ? 'activity-question-item-placeholder' : ''"><button type="button" class="activity-drag-handle flex h-9 w-7 shrink-0 touch-none items-center justify-center rounded-lg text-[var(--ui-text-muted)]" :data-reorder-handle="entry.left.id" :aria-label="t('activityEditorEnhancements.moveItem')" @pointerdown="startMatchingEditorDrag($event, entry.left.id)" @keydown.up.prevent="moveMatchingPair(entry.left.id, -1)" @keydown.down.prevent="moveMatchingPair(entry.left.id, 1)"><span aria-hidden="true">⠿</span></button><div class="grid min-w-0 flex-1 items-center gap-2 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)_auto]"><input v-model="entry.left.label" class="input min-w-0" maxlength="160" :aria-label="t('activityMatching.leftLabel')" /><span class="text-center text-[var(--ui-accent)]">↔</span><input v-model="entry.right.label" class="input min-w-0" maxlength="160" :aria-label="t('activityMatching.rightLabel')" /><div class="flex justify-end"><button type="button" class="flex h-8 w-8 items-center justify-center rounded-lg disabled:opacity-30" :disabled="pairIndex === 0" :aria-label="t('activityOrdering.moveUp', { item: entry.left.label })" @click="moveMatchingPair(entry.left.id, -1)"><ActivityMoveArrow direction="up" /></button><button type="button" class="flex h-8 w-8 items-center justify-center rounded-lg disabled:opacity-30" :disabled="pairIndex === matchingEditorPairs.length - 1" :aria-label="t('activityOrdering.moveDown', { item: entry.left.label })" @click="moveMatchingPair(entry.left.id, 1)"><ActivityMoveArrow direction="down" /></button><button type="button" class="flex h-8 w-8 items-center justify-center rounded-lg text-red-500 hover:bg-red-500/10 disabled:opacity-30" :disabled="matchingEditorPairs.length <= 1" :aria-label="t('common.delete')" @click="removeMatchingPair(entry.left.id)"><ActivityDeleteIcon class="h-4.5 w-4.5" /></button></div></div></div><button type="button" class="btn-secondary px-3 py-2 text-sm" :disabled="matchingEditorPairs.length >= 50" @click="addMatchingPair">+ {{ t('activityMatching.addPair') }}</button></div>
                   <label class="mt-4 block"><span class="label">{{ t('activityChoices.feedback') }}</span><textarea v-model="questionBlock.answerKey.feedback" class="input mt-2 min-h-20" maxlength="2000"></textarea></label>
                 </template>
                 <ActivityImageLabelingEditor v-else-if="questionBlock.questionType === 'image_labeling'" :config="questionConfig" :answer-key="answerKey" />
@@ -1091,13 +1163,41 @@ onBeforeUnmount(() => { if (slideDragSession) finishSlideDrag(false); if (blockD
               [t('activityResults.averagePercent'), activityResults.overview.averagePercentage === null ? '—' : formatPercent(activityResults.overview.averagePercentage)],
               [t('activityResults.completion'), formatPercent(activityResults.overview.completionRate)]
             ]" :key="String(metric[0])" class="rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-panel-muted)] p-4"><p class="text-xs text-[var(--ui-text-muted)]">{{ metric[0] }}</p><p class="mt-2 text-xl font-semibold">{{ metric[1] }}</p></article></div>
-            <div v-if="activityResults.questions.length" class="space-y-2 sm:hidden"><article v-for="question in activityResults.questions" :key="question.questionId" class="rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-panel-muted)] p-4"><strong class="break-words text-sm">{{ question.prompt }}</strong><p class="mt-1 text-xs text-[var(--ui-text-muted)]">{{ t(`activityQuestionTypes.${question.questionType}`) }}</p><dl class="mt-3 grid grid-cols-2 gap-3 text-sm"><div><dt class="text-xs text-[var(--ui-text-muted)]">{{ t('activityResults.answered') }}</dt><dd class="mt-1 font-semibold">{{ question.answered }}</dd></div><div><dt class="text-xs text-[var(--ui-text-muted)]">{{ t('activityResults.unanswered') }}</dt><dd class="mt-1 font-semibold">{{ question.unanswered }}</dd></div><div><dt class="text-xs text-[var(--ui-text-muted)]">{{ t('activityResults.correctness') }}</dt><dd class="mt-1 font-semibold">{{ formatPercent(question.correctnessRate) }}</dd></div><div><dt class="text-xs text-[var(--ui-text-muted)]">{{ t('activityResults.averageAward') }}</dt><dd class="mt-1 font-semibold">{{ formatActivityNumber(question.averageAwardedPoints) }} / {{ formatActivityNumber(question.maximumPoints) }}</dd></div></dl></article></div>
-            <div v-if="activityResults.questions.length" class="hidden overflow-x-auto rounded-2xl border border-[var(--ui-border)] sm:block"><table class="w-full min-w-[760px] text-left text-sm"><thead class="bg-[var(--ui-panel-muted)] text-xs text-[var(--ui-text-muted)]"><tr><th class="p-3">{{ t('activityResults.question') }}</th><th class="p-3">{{ t('activityResults.answered') }}</th><th class="p-3">{{ t('activityResults.unanswered') }}</th><th class="p-3">{{ t('activityResults.correct') }}</th><th class="p-3">{{ t('activityResults.correctness') }}</th><th class="p-3">{{ t('activityResults.averageAward') }}</th></tr></thead><tbody><tr v-for="question in activityResults.questions" :key="question.questionId" class="border-t border-[var(--ui-border)]"><td class="p-3"><strong>{{ question.prompt }}</strong><p class="text-xs text-[var(--ui-text-muted)]">{{ t(`activityQuestionTypes.${question.questionType}`) }}</p></td><td class="p-3">{{ question.answered }}</td><td class="p-3">{{ question.unanswered }}</td><td class="p-3">{{ question.fullyCorrect }}</td><td class="p-3">{{ formatPercent(question.correctnessRate) }}</td><td class="p-3">{{ formatActivityNumber(question.averageAwardedPoints) }} / {{ formatActivityNumber(question.maximumPoints) }}</td></tr></tbody></table></div>
+            <div v-if="activityResults.questions.length" class="space-y-2 sm:hidden"><article v-for="question in activityResults.questions" :key="question.questionId" class="rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-panel-muted)] p-4"><p class="mb-1 text-xs font-semibold text-[var(--ui-accent)]">{{ t('activityResultPosition.slide', { slide: question.slideNumber }) }}</p><strong class="break-words text-sm">{{ question.prompt }}</strong><p class="mt-1 text-xs text-[var(--ui-text-muted)]">{{ t(`activityQuestionTypes.${question.questionType}`) }}</p><dl class="mt-3 grid grid-cols-2 gap-3 text-sm"><div><dt class="text-xs text-[var(--ui-text-muted)]">{{ t('activityResults.answered') }}</dt><dd class="mt-1 font-semibold">{{ question.answered }}</dd></div><div><dt class="text-xs text-[var(--ui-text-muted)]">{{ t('activityResults.unanswered') }}</dt><dd class="mt-1 font-semibold">{{ question.unanswered }}</dd></div><div><dt class="text-xs text-[var(--ui-text-muted)]">{{ t('activityResults.correctness') }}</dt><dd class="mt-1 font-semibold">{{ formatPercent(question.correctnessRate) }}</dd></div><div><dt class="text-xs text-[var(--ui-text-muted)]">{{ t('activityResults.averageAward') }}</dt><dd class="mt-1 font-semibold">{{ formatActivityNumber(question.averageAwardedPoints) }} / {{ formatActivityNumber(question.maximumPoints) }}</dd></div></dl></article></div>
+            <div v-if="activityResults.questions.length" class="hidden overflow-x-auto rounded-2xl border border-[var(--ui-border)] sm:block"><table class="w-full min-w-[760px] text-left text-sm"><thead class="bg-[var(--ui-panel-muted)] text-xs text-[var(--ui-text-muted)]"><tr><th class="p-3">{{ t('activityResults.question') }}</th><th class="p-3">{{ t('activityResults.answered') }}</th><th class="p-3">{{ t('activityResults.unanswered') }}</th><th class="p-3">{{ t('activityResults.correct') }}</th><th class="p-3">{{ t('activityResults.correctness') }}</th><th class="p-3">{{ t('activityResults.averageAward') }}</th></tr></thead><tbody><tr v-for="question in activityResults.questions" :key="question.questionId" class="border-t border-[var(--ui-border)]"><td class="p-3"><p class="text-xs font-semibold text-[var(--ui-accent)]">{{ t('activityResultPosition.slide', { slide: question.slideNumber }) }}</p><strong>{{ question.prompt }}</strong><p class="text-xs text-[var(--ui-text-muted)]">{{ t(`activityQuestionTypes.${question.questionType}`) }}</p></td><td class="p-3">{{ question.answered }}</td><td class="p-3">{{ question.unanswered }}</td><td class="p-3">{{ question.fullyCorrect }}</td><td class="p-3">{{ formatPercent(question.correctnessRate) }}</td><td class="p-3">{{ formatActivityNumber(question.averageAwardedPoints) }} / {{ formatActivityNumber(question.maximumPoints) }}</td></tr></tbody></table></div>
             <div v-if="activityResults.wordClouds.length" class="grid gap-3 xl:grid-cols-2"><article v-for="cloud in activityResults.wordClouds" :key="cloud.questionId" class="rounded-2xl border border-[var(--ui-border)] p-4"><div class="flex items-start justify-between gap-3"><div><h4 class="font-semibold">{{ cloud.prompt }}</h4><p class="text-xs text-[var(--ui-text-muted)]">{{ t('activityResults.wordCloudSummary', { total: cloud.totalResponses, unique: cloud.uniqueResponses }) }}</p></div></div><div class="mt-3 flex flex-wrap gap-2"><span v-for="item in cloud.items" :key="item.text" class="rounded-full bg-[var(--ui-accent-soft)] px-3 py-1 text-sm text-[var(--ui-accent)]">{{ item.text }} · {{ item.count }}</span></div></article></div>
             <div class="grid gap-2 rounded-2xl border border-[var(--ui-border)] p-3 md:grid-cols-[minmax(0,1fr)_180px_220px_auto]"><input v-model="attemptSearch" class="input" :placeholder="t('activityResults.search')" @keyup.enter="applyAttemptFilters" /><select v-model="attemptStatus" class="input" @change="applyAttemptFilters"><option value="all">{{ t('activityResults.allStatuses') }}</option><option value="submitted">{{ t('activityResults.submitted') }}</option><option value="expired">{{ t('activityResults.expired') }}</option></select><select v-model="attemptGradingState" class="input" @change="applyAttemptFilters"><option value="all">{{ t('activityResults.allGradingStates') }}</option><option value="awaiting_manual_grading">{{ t('activityResults.awaiting') }}</option><option value="fully_graded">{{ t('activityResults.fullyGraded') }}</option><option value="expired">{{ t('activityResults.expired') }}</option></select><button type="button" class="btn-secondary" @click="applyAttemptFilters">{{ t('common.search') }}</button></div>
             <div class="flex flex-col gap-3 text-sm sm:flex-row sm:items-center sm:justify-between"><span class="text-[var(--ui-text-muted)]">{{ t('activityResults.filteredCount', { count: activityResults.pagination.totalItems }) }}</span><div class="flex flex-wrap items-center justify-between gap-2 sm:justify-end"><button class="btn-secondary px-3 py-2 disabled:cursor-not-allowed disabled:opacity-40" :disabled="attemptPage <= 1" @click="changeAttemptPage(-1)">{{ t('common.previous') }}</button><span>{{ t('common.page', { current: activityResults.pagination.page, total: activityResults.pagination.totalPages || 1 }) }}</span><button class="btn-secondary px-3 py-2 disabled:cursor-not-allowed disabled:opacity-40" :disabled="attemptPage >= activityResults.pagination.totalPages" @click="changeAttemptPage(1)">{{ t('common.next') }}</button></div></div>
           </section>
-          <section v-if="activeTab === 'results' && activityId" class="min-w-0 sm:col-span-2"><div class="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><h3 class="font-semibold">{{ t('activitiesEditor.attempts') }}</h3><p class="text-xs text-[var(--ui-text-muted)]">{{ t('activitiesEditor.attemptDeadlineDetails') }}</p></div><button type="button" class="btn-secondary w-full px-3 py-2 text-sm sm:w-auto" @click="loadAttempts">{{ t('common.refresh') }}</button></div><div v-if="!adminAttempts.length" class="rounded-2xl border border-dashed border-[var(--ui-border)] p-5 text-sm text-[var(--ui-text-muted)]">{{ t('activitiesEditor.noAttempts') }}</div><div v-else class="space-y-2"><article v-for="item in adminAttempts" :key="item.id" class="grid min-w-0 gap-3 rounded-2xl border border-[var(--ui-border)] p-4 text-sm sm:grid-cols-[minmax(0,1fr)_auto]"><div class="min-w-0"><div class="flex flex-wrap items-center gap-2"><strong class="min-w-0 break-words">{{ item.participantName || t('activitiesEditor.anonymousParticipant') }}</strong><span class="rounded-full bg-[var(--ui-pill-bg)] px-2 py-0.5 text-xs">{{ item.status }}</span><span class="rounded-full bg-[var(--ui-accent-soft)] px-2 py-0.5 text-xs text-[var(--ui-accent)]">{{ t(`activityGradingStates.${item.gradingState}`) }}</span></div><p class="mt-2 break-words text-xs font-medium">{{ formatActivityNumber(item.score) }} / {{ formatActivityNumber(item.maximumScore) }} · {{ formatAttemptScorePercent(item.score, item.maximumScore) }} · {{ t('activitiesEditor.pendingManual', { count: item.pendingManualGrading }) }}</p><dl class="mt-2 grid min-w-0 gap-x-4 gap-y-1 text-xs text-[var(--ui-text-muted)] sm:grid-cols-2"><div class="min-w-0 break-words"><dt class="inline font-medium">{{ t('activitiesEditor.started') }}:</dt> <dd class="inline">{{ formatAttemptDate(item.startedAt) }}</dd></div><div class="min-w-0 break-words"><dt class="inline font-medium">{{ t('activitiesEditor.effectiveDeadline') }}:</dt> <dd class="inline">{{ formatAttemptDate(item.effectiveDeadlineAt) }}</dd></div><div class="min-w-0 break-words"><dt class="inline font-medium">{{ t('activitiesEditor.individualDeadline') }}:</dt> <dd class="inline">{{ formatAttemptDate(item.individualDeadlineAt) }}</dd></div><div class="min-w-0 break-words"><dt class="inline font-medium">{{ t('activitiesEditor.globalDeadline') }}:</dt> <dd class="inline">{{ formatAttemptDate(item.globalDeadlineAt) }}</dd></div></dl></div><div class="grid gap-2 sm:flex sm:flex-wrap sm:items-center"><button type="button" class="btn-secondary w-full px-3 py-2 sm:w-auto" @click="loadAttemptDetail(item.id)">{{ t('activitiesEditor.reviewAttempt') }}</button><button v-if="item.status === 'in_progress' && item.individualDeadlineAt" type="button" class="btn-secondary w-full px-3 py-2 sm:w-auto" :disabled="extendingAttemptId === item.id" @click="extendAttempt(item)">{{ t('activitiesEditor.extend') }}</button></div></article></div>
+          <section v-if="activeTab === 'results' && activityId" class="min-w-0 sm:col-span-2">
+            <div class="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div><h3 class="font-semibold">{{ t('activitiesEditor.attempts') }}</h3><p class="text-xs text-[var(--ui-text-muted)]">{{ t('activitiesEditor.attemptDeadlineDetails') }}</p></div>
+              <button type="button" class="btn-secondary w-full px-3 py-2 text-sm sm:w-auto" @click="loadAttempts">{{ t('common.refresh') }}</button>
+            </div>
+            <div v-if="!adminAttempts.length" class="rounded-2xl border border-dashed border-[var(--ui-border)] p-5 text-sm text-[var(--ui-text-muted)]">{{ t('activitiesEditor.noAttempts') }}</div>
+            <div v-else class="space-y-2">
+              <article v-for="item in adminAttempts" :key="item.id" class="grid min-w-0 gap-3 rounded-2xl border border-[var(--ui-border)] p-4 text-sm sm:grid-cols-[minmax(0,1fr)_auto]">
+                <div class="min-w-0">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <strong class="min-w-0 break-words">{{ item.participantName || t('activitiesEditor.anonymousParticipant') }}</strong>
+                    <span class="rounded-full bg-[var(--ui-pill-bg)] px-2 py-0.5 text-xs">{{ attemptStatusLabel(item.status) }}</span>
+                    <span v-if="showAttemptGradingState(item)" class="rounded-full bg-[var(--ui-accent-soft)] px-2 py-0.5 text-xs text-[var(--ui-accent)]">{{ t(`activityGradingStates.${item.gradingState}`) }}</span>
+                  </div>
+                  <p class="mt-2 break-words text-xs font-medium">{{ formatActivityNumber(item.score) }} / {{ formatActivityNumber(item.maximumScore) }} · {{ formatAttemptScorePercent(item.score, item.maximumScore) }}</p>
+                  <dl class="mt-2 grid min-w-0 gap-x-4 gap-y-1 text-xs text-[var(--ui-text-muted)] sm:grid-cols-2">
+                    <div class="min-w-0 break-words"><dt class="inline font-medium">{{ t('activitiesEditor.started') }}:</dt> <dd class="inline">{{ formatAttemptDate(item.startedAt) }}</dd></div>
+                    <div class="min-w-0 break-words"><dt class="inline font-medium">{{ t('activityResults.finishedAt') }}:</dt> <dd class="inline">{{ formatAttemptDate(item.submittedAt) }}</dd></div>
+                    <div class="min-w-0 break-words"><dt class="inline font-medium">{{ t('activitiesEditor.effectiveDeadline') }}:</dt> <dd class="inline">{{ formatAttemptDate(item.effectiveDeadlineAt) }}</dd></div>
+                    <div class="min-w-0 break-words"><dt class="inline font-medium">{{ t('activitiesEditor.globalDeadline') }}:</dt> <dd class="inline">{{ formatAttemptDate(item.globalDeadlineAt) }}</dd></div>
+                  </dl>
+                </div>
+                <div class="grid gap-2 sm:flex sm:flex-wrap sm:items-center">
+                  <button type="button" class="btn-secondary w-full px-3 py-2 sm:w-auto" @click="loadAttemptDetail(item.id)">{{ t('activitiesEditor.reviewAttempt') }}</button>
+                  <button v-if="item.status === 'in_progress' && item.individualDeadlineAt" type="button" class="btn-secondary w-full px-3 py-2 sm:w-auto" :disabled="extendingAttemptId === item.id" @click="extendAttempt(item)">{{ t('activitiesEditor.extend') }}</button>
+                  <button type="button" class="flex w-full items-center justify-center rounded-xl border border-red-600 bg-red-600 px-3 py-2 text-white transition-colors hover:border-red-700 hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto" :disabled="deletingAttemptId === item.id" :aria-label="t('activityResults.deleteAttempt')" @click="dialog = { kind: 'delete-attempt', id: item.id }"><ActivityDeleteIcon class="h-4 w-4" /></button>
+                </div>
+              </article>
+            </div>
           </section>
         </div>
       </section>
@@ -1116,7 +1216,7 @@ onBeforeUnmount(() => { if (slideDragSession) finishSlideDrag(false); if (blockD
           <header class="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-[var(--ui-border)] px-5 py-4 sm:px-6">
             <div>
               <h3 id="activity-attempt-result-title" class="text-lg font-semibold">{{ selectedAttemptDetail.participantName || t('activitiesEditor.anonymousParticipant') }}</h3>
-              <p class="mt-1 text-xs text-[var(--ui-text-muted)]">{{ t(`activityGradingStates.${selectedAttemptDetail.gradingState}`) }} · {{ formatActivityNumber(selectedAttemptDetail.score) }} / {{ formatActivityNumber(selectedAttemptDetail.maximumScore) }} · {{ formatAttemptScorePercent(selectedAttemptDetail.score, selectedAttemptDetail.maximumScore) }}</p>
+              <div class="mt-1 flex flex-wrap items-center gap-2 text-xs"><span class="rounded-full bg-[var(--ui-pill-bg)] px-2 py-0.5">{{ attemptStatusLabel(selectedAttemptDetail.status) }}</span><span v-if="showAttemptGradingState(selectedAttemptDetail)" class="rounded-full bg-[var(--ui-accent-soft)] px-2 py-0.5 text-[var(--ui-accent)]">{{ t(`activityGradingStates.${selectedAttemptDetail.gradingState}`) }}</span><span class="text-[var(--ui-text-muted)]">{{ formatActivityNumber(selectedAttemptDetail.score) }} / {{ formatActivityNumber(selectedAttemptDetail.maximumScore) }} · {{ formatAttemptScorePercent(selectedAttemptDetail.score, selectedAttemptDetail.maximumScore) }}</span></div>
             </div>
             <div class="flex gap-2">
               <button v-if="settings.feedbackPolicy === 'manual_release' && !selectedAttemptDetail.resultsReleasedAt && !['in_progress','submitted','awaiting_manual_grading'].includes(selectedAttemptDetail.gradingState)" type="button" class="btn-primary px-3 py-2 text-sm" :disabled="gradingAttempt" @click="releaseAttemptResults">{{ t('activitiesEditor.releaseResults') }}</button>
@@ -1125,31 +1225,47 @@ onBeforeUnmount(() => { if (slideDragSession) finishSlideDrag(false); if (blockD
           </header>
           <div class="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
             <div class="space-y-3">
-              <article v-for="response in selectedAttemptDetail.responses" :key="response.questionBlockId" class="rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-panel-muted)] p-4">
+              <article v-for="(response, responseIndex) in selectedAttemptDetail.responses" :key="response.questionBlockId" class="rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-panel-muted)] p-4">
                 <div class="flex flex-wrap items-start justify-between gap-2">
-                  <div><p class="font-medium">{{ response.prompt }}</p><p class="mt-1 text-xs text-[var(--ui-text-muted)]">{{ t(`activityQuestionTypes.${response.questionType}`) }} · {{ formatActivityNumber(response.awardedPoints) }} / {{ formatActivityNumber(response.maximumPoints) }}</p></div>
+                  <div><p class="text-xs font-semibold text-[var(--ui-accent)]">{{ t('activityResultPosition.question', { question: responseIndex + 1, slide: response.slideNumber }) }}</p><p class="font-medium">{{ response.prompt }}</p><p class="mt-1 text-xs text-[var(--ui-text-muted)]">{{ t(`activityQuestionTypes.${response.questionType}`) }} · {{ formatActivityNumber(response.awardedPoints) }} / {{ formatActivityNumber(response.maximumPoints) }}</p></div>
                   <span class="rounded-full bg-[var(--ui-pill-bg)] px-2.5 py-1 text-xs text-[var(--ui-text-muted)]">{{ response.gradingStatus }}</span>
                 </div>
-                <div class="mt-3 rounded-xl bg-[var(--ui-panel)] p-3">
-                  <p class="mb-2 text-xs font-medium uppercase tracking-wide text-[var(--ui-text-muted)]">{{ t('liveAdmin.answer') }}</p>
-                  <p v-if="!answerRows(response).length" class="text-sm text-[var(--ui-text-muted)]">—</p>
-                  <p v-else-if="response.questionType === 'open_answer'" class="whitespace-pre-wrap break-words text-sm leading-6">{{ answerRows(response)[0].value }}</p>
-                  <div v-else-if="['single_choice','multiple_choice','word_cloud'].includes(response.questionType)" class="flex flex-wrap gap-2"><span v-for="(row, index) in answerRows(response)" :key="`${response.questionBlockId}-${index}`" class="rounded-full bg-[var(--ui-accent-soft)] px-3 py-1.5 text-sm text-[var(--ui-accent)]">{{ row.value }}</span></div>
-                  <div v-else class="space-y-2"><div v-for="(row, index) in answerRows(response)" :key="`${response.questionBlockId}-${index}`" class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3 rounded-lg border border-[var(--ui-border)] px-3 py-2 text-sm"><strong class="text-[var(--ui-text-muted)]">{{ row.label }}</strong><span class="break-words">{{ row.value }}</span></div></div>
+                <div v-if="isChoiceResponse(response)" class="mt-3 rounded-xl border border-[var(--ui-border)] bg-[var(--ui-panel)] p-3">
+                  <p class="mb-2 text-xs font-medium uppercase tracking-wide text-[var(--ui-text-muted)]">{{ t('activityResultPosition.options') }}</p>
+                  <div class="grid gap-2 sm:grid-cols-2">
+                    <div v-for="option in choiceReviewOptions(response)" :key="option.id" class="flex min-w-0 items-center gap-3 rounded-xl border px-3 py-2.5 text-sm transition-colors" :class="option.correct ? 'border-emerald-500/55 bg-emerald-500/12 text-emerald-800 dark:text-emerald-200' : option.incorrectSelection ? 'border-red-500/55 bg-red-500/12 text-red-800 dark:text-red-200' : 'border-[var(--ui-border)] bg-[var(--ui-panel-muted)] text-[var(--ui-text)]'">
+                      <span class="flex h-5 w-5 shrink-0 items-center justify-center border" :class="[response.questionType === 'single_choice' ? 'rounded-full' : 'rounded-md', option.correct ? 'border-emerald-500 bg-emerald-500 text-white' : option.incorrectSelection ? 'border-red-500 bg-red-500 text-white' : 'border-[var(--ui-border)] bg-[var(--ui-panel)]']" aria-hidden="true">{{ option.correct ? '✓' : option.incorrectSelection ? '×' : '' }}</span>
+                      <span class="min-w-0 break-words font-medium">{{ option.label }}</span>
+                    </div>
+                  </div>
+                </div>
+                <template v-else>
+                  <div class="mt-3 rounded-xl border p-3" :class="response.correct === false ? 'border-red-500/45 bg-red-500/10' : 'border-transparent bg-[var(--ui-panel)]'">
+                    <p class="mb-2 text-xs font-medium uppercase tracking-wide" :class="response.correct === false ? 'text-red-600 dark:text-red-400' : 'text-[var(--ui-text-muted)]'">{{ t('activityResults.studentAnswer') }}</p>
+                    <p v-if="!answerRows(response).length" class="text-sm text-[var(--ui-text-muted)]">—</p>
+                    <p v-else-if="response.questionType === 'open_answer'" class="whitespace-pre-wrap break-words text-sm leading-6">{{ answerRows(response)[0].value }}</p>
+                    <div v-else-if="response.questionType === 'word_cloud'" class="flex flex-wrap gap-2"><span v-for="(row, index) in answerRows(response)" :key="`${response.questionBlockId}-${index}`" class="rounded-full bg-[var(--ui-accent-soft)] px-3 py-1.5 text-sm text-[var(--ui-accent)]">{{ row.value }}</span></div>
+                    <div v-else class="space-y-2"><div v-for="(row, index) in answerRows(response)" :key="`${response.questionBlockId}-${index}`" class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3 rounded-lg border border-[var(--ui-border)] px-3 py-2 text-sm"><strong class="text-[var(--ui-text-muted)]">{{ row.label }}</strong><span class="break-words">{{ row.value }}</span></div></div>
+                  </div>
+                </template>
+                <div v-if="!isChoiceResponse(response) && readableCorrectAnswerRows(response).length" class="mt-3 rounded-xl border border-[var(--ui-accent)]/35 bg-[var(--ui-accent-soft)] p-3">
+                  <p class="mb-2 text-xs font-medium uppercase tracking-wide text-[var(--ui-accent)]">{{ t('activityResults.correctAnswer') }}</p>
+                  <div v-if="['single_choice','multiple_choice','open_answer'].includes(response.questionType)" class="flex flex-wrap gap-2"><span v-for="(row, index) in readableCorrectAnswerRows(response)" :key="`correct-${response.questionBlockId}-${index}`" class="rounded-full bg-[var(--ui-panel)] px-3 py-1.5 text-sm text-[var(--ui-text)]">{{ row.value }}</span></div>
+                  <div v-else class="space-y-2"><div v-for="(row, index) in readableCorrectAnswerRows(response)" :key="`correct-${response.questionBlockId}-${index}`" class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3 rounded-lg border border-[var(--ui-border)] bg-[var(--ui-panel)] px-3 py-2 text-sm"><strong class="text-[var(--ui-accent)]">{{ row.label }}</strong><span class="break-words">{{ row.value }}</span></div></div>
                 </div>
                 <div v-if="response.answer && response.maximumPoints > 0 && (response.gradingStatus === 'manual_review' || response.gradingStatus === 'graded')" class="mt-3 grid gap-3 sm:grid-cols-[8rem_minmax(0,1fr)_auto]"><label><span class="label">{{ t('activitiesEditor.awardedPoints') }}</span><input v-model="manualGrades[response.questionBlockId].points" class="input mt-1" type="number" min="0" :max="response.maximumPoints" step="0.1" /></label><label><span class="label">{{ t('activitiesEditor.teacherFeedback') }}</span><input v-model="manualGrades[response.questionBlockId].feedback" class="input mt-1" maxlength="4000" /></label><button type="button" class="btn-primary self-end px-3 py-2" :disabled="gradingAttempt" @click="gradeManualResponse(response.questionBlockId)">{{ t('activitiesEditor.saveGrade') }}</button></div>
                 <div v-if="response.questionType === 'word_cloud' && response.moderationStatus === 'pending'" class="mt-3"><p v-if="response.moderationReason" class="mb-2 text-xs text-[var(--ui-text-muted)]">{{ response.moderationReason }}</p><div class="flex flex-wrap gap-2"><button type="button" class="btn-primary px-3 py-2 text-sm" :disabled="gradingAttempt" @click="moderateAttemptResponse(response.questionBlockId, 'approved')">{{ t('activityModeration.approveResponse') }}</button><button type="button" class="btn-secondary px-3 py-2 text-sm" :disabled="gradingAttempt" @click="moderateAttemptResponse(response.questionBlockId, 'rejected')">{{ t('activityModeration.rejectResponse') }}</button></div></div>
                 <p v-else-if="response.teacherFeedback" class="mt-3 text-sm text-[var(--ui-text-muted)]">{{ response.teacherFeedback }}</p>
               </article>
             </div>
-            <dl class="mt-4 grid gap-3 rounded-2xl border border-[var(--ui-border)] p-4 text-sm sm:grid-cols-2 xl:grid-cols-4"><div><dt class="text-xs text-[var(--ui-text-muted)]">{{ t('activityResults.startedAt') }}</dt><dd class="mt-1 font-medium">{{ formatAttemptDate(selectedAttemptDetail.startedAt) }}</dd></div><div><dt class="text-xs text-[var(--ui-text-muted)]">{{ t('activityResults.submittedAt') }}</dt><dd class="mt-1 font-medium">{{ formatAttemptDate(selectedAttemptDetail.submittedAt) }}</dd></div><div><dt class="text-xs text-[var(--ui-text-muted)]">{{ t('activityResults.submissionReason') }}</dt><dd class="mt-1 font-medium">{{ selectedAttemptDetail.submissionReason || '—' }}</dd></div><div><dt class="text-xs text-[var(--ui-text-muted)]">{{ t('activityResults.duration') }}</dt><dd class="mt-1 font-medium">{{ formatDuration(selectedAttemptDetail.durationSeconds) }}</dd></div></dl>
+            <dl class="mt-4 grid gap-3 rounded-2xl border border-[var(--ui-border)] p-4 text-sm sm:grid-cols-2 xl:grid-cols-4"><div><dt class="text-xs text-[var(--ui-text-muted)]">{{ t('activityResults.startedAt') }}</dt><dd class="mt-1 font-medium">{{ formatAttemptDate(selectedAttemptDetail.startedAt) }}</dd></div><div><dt class="text-xs text-[var(--ui-text-muted)]">{{ t('activityResults.finishedAt') }}</dt><dd class="mt-1 font-medium">{{ formatAttemptDate(selectedAttemptDetail.submittedAt) }}</dd></div><div><dt class="text-xs text-[var(--ui-text-muted)]">{{ t('activityResults.submissionReason') }}</dt><dd class="mt-1 font-medium">{{ selectedAttemptDetail.submissionReason || '—' }}</dd></div><div><dt class="text-xs text-[var(--ui-text-muted)]">{{ t('activityResults.duration') }}</dt><dd class="mt-1 font-medium">{{ formatDuration(selectedAttemptDetail.durationSeconds) }}</dd></div></dl>
           </div>
         </section>
       </div>
     </Teleport>
 
     <div v-if="dialog" class="fixed inset-0 z-[120] flex items-center justify-center bg-black/55 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" :aria-labelledby="'activity-dialog-title'">
-      <div class="panel w-full max-w-md p-6"><h3 id="activity-dialog-title" class="text-lg font-semibold">{{ dialog.kind === 'replace-question' ? t('activitiesEditor.replaceQuestion') : t('activitiesEditor.confirmDelete') }}</h3><p class="mt-2 text-sm text-[var(--ui-text-muted)]">{{ dialog.kind === 'replace-question' ? t('activitiesEditor.replaceQuestionDescription') : t('activitiesEditor.deleteDescription') }}</p><div class="mt-6 flex justify-end gap-2"><button class="btn-secondary" @click="dialog = null">{{ t('common.cancel') }}</button><button class="btn-primary" @click="confirmDialog">{{ dialog.kind === 'replace-question' ? t('activitiesEditor.replace') : t('common.delete') }}</button></div></div>
+      <div class="panel w-full max-w-md p-6"><h3 id="activity-dialog-title" class="text-lg font-semibold">{{ dialog.kind === 'replace-question' ? t('activitiesEditor.replaceQuestion') : dialog.kind === 'delete-attempt' ? t('activityResults.deleteAttemptTitle') : t('activitiesEditor.confirmDelete') }}</h3><p class="mt-2 text-sm text-[var(--ui-text-muted)]">{{ dialog.kind === 'replace-question' ? t('activitiesEditor.replaceQuestionDescription') : dialog.kind === 'delete-attempt' ? t('activityResults.deleteAttemptDescription') : t('activitiesEditor.deleteDescription') }}</p><div class="mt-6 flex justify-end gap-2"><button class="btn-secondary" :disabled="Boolean(deletingAttemptId)" @click="dialog = null">{{ t('common.cancel') }}</button><button :class="dialog.kind === 'delete-attempt' ? 'rounded-xl border border-red-600 bg-red-600 px-4 py-2 text-white transition-colors hover:border-red-700 hover:bg-red-700' : 'btn-primary'" :disabled="Boolean(deletingAttemptId)" @click="confirmDialog">{{ dialog.kind === 'replace-question' ? t('activitiesEditor.replace') : t('common.delete') }}</button></div></div>
     </div>
     <div v-if="publishConfirmation" class="fixed inset-0 z-[125] flex items-center justify-center bg-black/55 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="publish-confirm-title">
       <div class="panel w-full max-w-lg p-6"><h3 id="publish-confirm-title" class="text-lg font-semibold">{{ publishedVersion ? t('activitiesPublishing.confirmRepublishTitle') : t('activitiesPublishing.confirmPublishTitle') }}</h3><p class="mt-2 text-sm leading-6 text-[var(--ui-text-muted)]">{{ t('activitiesPublishing.confirmPublishDescription', { version: (publishedVersion ?? 0) + 1 }) }}</p><ul class="mt-4 space-y-2" :aria-label="t('activitiesPublishing.confirmPublishTitle')"><li v-for="item in publishValidation?.items" :key="item.code" class="flex items-start gap-2 rounded-xl bg-[var(--ui-panel-muted)] px-3 py-2 text-sm"><span :class="item.valid ? 'text-[var(--ui-accent)]' : 'text-red-500'">{{ item.valid ? '✓' : '!' }}</span><span>{{ t(`activitiesPublishing.checklist.${item.code}`) }}</span></li></ul><div class="mt-6 flex justify-end gap-2"><button class="btn-secondary" :disabled="publishing" @click="publishConfirmation = false">{{ t('common.cancel') }}</button><button class="btn-primary" :disabled="publishing" @click="publish">{{ publishing ? t('activitiesEditor.publishing') : t('activitiesPublishing.confirmPublish') }}</button></div></div>
@@ -1169,6 +1285,9 @@ onBeforeUnmount(() => { if (slideDragSession) finishSlideDrag(false); if (blockD
 .activity-block-card:hover {
   border-color: color-mix(in srgb, var(--activity-block-accent) 65%, var(--ui-border));
   background: color-mix(in srgb, var(--activity-block-accent) 10%, var(--ui-panel));
+}
+.activity-question-item-card {
+  transition: border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
 }
 .activity-block-icon { color:var(--activity-block-accent); background:color-mix(in srgb,var(--activity-block-accent) 14%,transparent); }
 .activity-block-picker-item {
@@ -1194,7 +1313,8 @@ onBeforeUnmount(() => { if (slideDragSession) finishSlideDrag(false); if (blockD
   cursor: grabbing;
 }
 .activity-block-placeholder,
-.activity-slide-placeholder {
+.activity-slide-placeholder,
+.activity-question-item-placeholder {
   border-style: dashed;
   border-color: var(--ui-accent);
   background: var(--ui-accent-soft);
@@ -1202,11 +1322,13 @@ onBeforeUnmount(() => { if (slideDragSession) finishSlideDrag(false); if (blockD
   box-shadow: none;
 }
 .activity-block-placeholder *,
-.activity-slide-placeholder * {
+.activity-slide-placeholder *,
+.activity-question-item-placeholder * {
   visibility: hidden;
 }
 :global(.activity-block-ghost),
-:global(.activity-slide-ghost) {
+:global(.activity-slide-ghost),
+:global(.activity-question-item-ghost) {
   position: fixed !important;
   z-index: 200 !important;
   margin: 0 !important;
@@ -1220,8 +1342,10 @@ onBeforeUnmount(() => { if (slideDragSession) finishSlideDrag(false); if (blockD
 }
 @media (prefers-reduced-motion: reduce) {
   .activity-block-card,
-  .activity-slide-card { transition: none; }
+  .activity-slide-card,
+  .activity-question-item-card { transition: none; }
   :global(.activity-block-ghost),
-  :global(.activity-slide-ghost) { transform: none; }
+  :global(.activity-slide-ghost),
+  :global(.activity-question-item-ghost) { transform: none; }
 }
 </style>

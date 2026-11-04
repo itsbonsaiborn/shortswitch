@@ -3156,6 +3156,36 @@ describe.sequential('server security hardening', () => {
     })).json();
     expect(approvedResults.wordClouds[0]).toMatchObject({ totalResponses: 4, uniqueResponses: 3 });
     expect(JSON.stringify(approvedResults.wordClouds)).toContain('slikts vārds');
+
+    const expiredManual = (await app.inject({
+      method: 'POST',
+      url: '/api/activities/public/latvian-text-assessment/attempts',
+      payload: { participantKey: 'latvian_participant_key_0003', participantName: 'Līga' }
+    })).json();
+    const expiredManualHeaders = { authorization: `Bearer ${expiredManual.attemptToken}` };
+    const expiredManualBlock = expiredManual.attempt.slides[1].blocks[0];
+    expect((await app.inject({
+      method: 'PATCH',
+      url: `/api/activities/public/latvian-text-assessment/attempts/${expiredManual.attemptId}/responses/${expiredManualBlock.id}`,
+      headers: expiredManualHeaders,
+      payload: { answer: { questionType: 'open_answer', text: 'Atbilde manuālai pārbaudei.' }, clientRevision: 1 }
+    })).statusCode).toBe(200);
+    getDb().prepare('UPDATE activity_attempts SET deadline_at = ? WHERE id = ?')
+      .run(new Date(Date.now() - 1_000).toISOString(), expiredManual.attemptId);
+    const expiredManualSnapshot = (await app.inject({
+      method: 'GET',
+      url: `/api/activities/public/latvian-text-assessment/attempts/${expiredManual.attemptId}`,
+      headers: expiredManualHeaders
+    })).json();
+    expect(expiredManualSnapshot).toMatchObject({ status: 'auto_submitted', gradingState: 'awaiting_manual_grading' });
+    const expiredManualDetail = (await app.inject({
+      method: 'GET',
+      url: `/api/activities/${created.activity.id}/attempts/${expiredManual.attemptId}`,
+      headers: { cookie: admin.cookies }
+    })).json();
+    expect(expiredManualDetail).toMatchObject({
+      status: 'auto_submitted', gradingState: 'awaiting_manual_grading', pendingManualGrading: 1
+    });
     await app.close();
   });
 
@@ -3458,6 +3488,29 @@ describe.sequential('server security hardening', () => {
       db.exec('COMMIT');
     } catch (error) { db.exec('ROLLBACK'); throw error; }
 
+    const newestCompletion = new Date(Date.UTC(2026, 0, 3, 12)).toISOString();
+    db.prepare('UPDATE activity_attempts SET submitted_at = ?, updated_at = ? WHERE id = ?')
+      .run(newestCompletion, newestCompletion, 'analytics_attempt_000');
+
+    const newestPage = (await app.inject({
+      method: 'GET',
+      url: `/api/activities/${created.activity.id}/results?page=1&pageSize=25`,
+      headers: { cookie: admin.cookies }
+    })).json();
+    expect(newestPage.attempts[0]).toMatchObject({ id: 'analytics_attempt_000', submittedAt: newestCompletion });
+    expect(newestPage.questions[0]).toMatchObject({ slideNumber: 1 });
+
+    const readableDetail = (await app.inject({
+      method: 'GET',
+      url: `/api/activities/${created.activity.id}/attempts/analytics_attempt_000`,
+      headers: { cookie: admin.cookies }
+    })).json();
+    expect(readableDetail.responses[0]).toMatchObject({
+      slideNumber: 1,
+      correct: true,
+      correctAnswer: { id: 'a', label: 'Ābols' }
+    });
+
     const pageTwo = (await app.inject({
       method: 'GET',
       url: `/api/activities/${created.activity.id}/results?page=2&pageSize=25`,
@@ -3504,6 +3557,24 @@ describe.sequential('server security hardening', () => {
     expect(responsesXlsx.headers['content-type']).toContain('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     expect(responsesXlsx.headers['content-disposition']).toContain('activity-responses.xlsx');
     expect(responsesXlsx.rawPayload.subarray(0, 2).toString()).toBe('PK');
+
+    const deniedDelete = await app.inject({
+      method: 'DELETE',
+      url: `/api/activities/${created.activity.id}/attempts/analytics_attempt_000`,
+      headers: { cookie: other.cookies, 'x-csrf-token': otherCsrf.csrfToken }
+    });
+    expect(deniedDelete.statusCode).toBe(404);
+    const deleted = await app.inject({
+      method: 'DELETE',
+      url: `/api/activities/${created.activity.id}/attempts/analytics_attempt_000`,
+      headers: adminHeaders
+    });
+    expect(deleted.statusCode).toBe(200);
+    expect(deleted.json()).toEqual({ id: 'analytics_attempt_000', deleted: true });
+    expect(db.prepare('SELECT COUNT(*) as count FROM activity_attempt_responses WHERE attempt_id = ?').get('analytics_attempt_000')).toEqual({ count: 0 });
+    expect((await app.inject({
+      method: 'GET', url: `/api/activities/${created.activity.id}/attempts/analytics_attempt_000`, headers: { cookie: admin.cookies }
+    })).statusCode).toBe(404);
     await app.close();
   });
 });

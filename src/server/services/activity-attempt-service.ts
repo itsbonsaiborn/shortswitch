@@ -151,6 +151,10 @@ export class ActivityAttemptService {
     return this.repository.getAdminAttemptDetail(userId, activityId, attemptId);
   }
 
+  deleteAdminAttempt(userId: string, activityId: string, attemptId: string) {
+    return this.repository.deleteAdminAttempt(userId, activityId, attemptId);
+  }
+
   gradeManualResponse(userId: string, activityId: string, attemptId: string, questionBlockId: string, input: { awardedPoints?: unknown; teacherFeedback?: unknown }) {
     const awardedPoints = Number(input.awardedPoints);
     if (!Number.isFinite(awardedPoints) || awardedPoints < 0 || Math.round(awardedPoints * 1000) !== awardedPoints * 1000) {

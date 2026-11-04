@@ -336,6 +336,7 @@ export interface ActivityResultsOverview {
 
 export interface ActivityQuestionAnalytics {
   questionId: string;
+  slideNumber: number;
   questionType: ActivityQuestionType;
   prompt: string;
   attempts: number;
@@ -365,10 +366,13 @@ export interface ActivityAdminResults {
 
 export interface ActivityAdminAttemptResponse {
   questionBlockId: string;
+  slideNumber: number;
   questionType: ActivityQuestionType;
   prompt: string;
   questionConfig: ActivityQuestionPublicConfig;
   answer: ActivitySupportedAnswer | null;
+  correctAnswer: unknown;
+  correct: boolean | null;
   moderationStatus: 'approved' | 'pending' | 'rejected';
   moderationReason: string | null;
   gradingStatus: ActivityResponseGradingStatus;

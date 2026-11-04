@@ -316,15 +316,15 @@ onBeforeUnmount(() => { stopDeadlineTimer(); if (clockTimer) clearInterval(clock
           <p v-if="lowTime" class="mt-3 rounded-xl bg-red-500/10 px-3 py-2 text-sm text-[var(--flexoki-red-600)]" role="status">{{ t('activityPlayer.lowTime') }}</p>
           <div class="mt-4 h-2 overflow-hidden rounded-full bg-[var(--ui-panel-muted)]" role="progressbar" :aria-valuenow="progress" aria-valuemin="0" aria-valuemax="100" :aria-label="t('activityPlayer.progress', { current: currentIndex + 1, total: attempt.slides.length })"><div class="h-full rounded-full bg-[var(--ui-accent)] transition-[width] motion-reduce:transition-none" :style="{ width: `${progress}%` }"></div></div>
         </header>
-        <article class="panel space-y-5 p-6 sm:p-8">
+        <article class="panel min-w-0 space-y-5 p-4 sm:p-8">
           <div><h1 class="text-2xl font-semibold">{{ currentSlide.title || t('activityPlayer.untitledSlide') }}</h1><p v-if="currentSlide.description" class="mt-2 leading-7 text-[var(--ui-text-muted)]">{{ currentSlide.description }}</p></div>
           <template v-for="block in currentSlide.blocks" :key="block.id">
             <h2 v-if="block.type === 'heading'" class="font-semibold" :class="block.config.level === 1 ? 'text-3xl' : block.config.level === 2 ? 'text-2xl' : 'text-xl'">{{ block.config.text }}</h2>
             <p v-else-if="block.type === 'text'" class="whitespace-pre-wrap leading-7">{{ block.config.text }}</p>
             <figure v-else-if="block.type === 'image'" class="overflow-hidden rounded-2xl border border-[var(--ui-border)]"><img :src="block.config.url" :alt="block.config.alt" class="max-h-[28rem] w-full object-contain" /><figcaption v-if="block.config.caption" class="p-3 text-sm text-[var(--ui-text-muted)]">{{ block.config.caption }}</figcaption></figure>
             <hr v-else-if="block.type === 'divider'" class="border-[var(--ui-border)]" />
-            <fieldset v-else class="rounded-2xl border border-[var(--ui-border)] p-5">
-              <legend class="px-2 text-lg font-semibold">{{ block.config.prompt }} <span v-if="block.required" class="text-[var(--ui-accent)]">*</span></legend>
+            <fieldset v-else class="min-w-0 max-w-full rounded-2xl border border-[var(--ui-border)] p-3 sm:p-5">
+              <legend class="max-w-full break-words px-2 text-lg font-semibold [overflow-wrap:anywhere]">{{ block.config.prompt }} <span v-if="block.required" class="text-[var(--ui-accent)]">*</span></legend>
               <p v-if="(block.questionType === 'single_choice' || block.questionType === 'multiple_choice') && block.config.description" class="mb-4 text-sm leading-6 text-[var(--ui-text-muted)]">{{ block.config.description }}</p>
               <p v-if="(block.questionType === 'open_answer' || block.questionType === 'word_cloud') && block.config.instructions" class="mb-4 text-sm leading-6 text-[var(--ui-text-muted)]">{{ block.config.instructions }}</p>
               <div v-if="block.questionType === 'single_choice'" class="space-y-2">

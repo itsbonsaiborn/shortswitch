@@ -790,7 +790,8 @@ export class ActivityAttemptRepository {
     const activity = this.db.prepare('SELECT id FROM live_activities WHERE id = ? AND user_id = ?').get(activityId, userId);
     if (!activity) throw new Error('Activity not found.');
     const rows = this.db.prepare(
-      `${this.adminAttemptSelect()} WHERE la.user_id = ? AND a.activity_id = ? ORDER BY a.started_at DESC`
+      `${this.adminAttemptSelect()} WHERE la.user_id = ? AND a.activity_id = ?
+       ORDER BY COALESCE(a.submitted_at, a.updated_at, a.started_at) DESC, a.id DESC`
     ).all(userId, activityId) as unknown as AdminAttemptRow[];
     return rows.map((row) => this.toAdminAttempt(row));
   }
@@ -849,11 +850,13 @@ export class ActivityAttemptRepository {
     ).get(...params) as { count: number }).count);
     const page = Math.min(input.page, Math.max(1, Math.ceil(totalItems / input.pageSize)));
     const rows = this.db.prepare(
-      `${this.adminAttemptSelect()} WHERE ${where} ORDER BY a.started_at DESC, a.id DESC LIMIT ? OFFSET ?`
+      `${this.adminAttemptSelect()} WHERE ${where}
+       ORDER BY COALESCE(a.submitted_at, a.updated_at, a.started_at) DESC, a.id DESC LIMIT ? OFFSET ?`
     ).all(...params, input.pageSize, (page - 1) * input.pageSize) as unknown as AdminAttemptRow[];
 
     const questions = (this.db.prepare(
-      `SELECT b.stable_id as questionId, b.question_type as questionType,
+      `SELECT b.stable_id as questionId, MIN(s.position) + 1 as slideNumber,
+              b.question_type as questionType,
               MAX(json_extract(b.public_config_json, '$.prompt')) as prompt,
               COUNT(DISTINCT a.id) as attempts,
               SUM(CASE WHEN r.answer_json IS NOT NULL THEN 1 ELSE 0 END) as answered,
@@ -873,10 +876,11 @@ export class ActivityAttemptRepository {
        GROUP BY b.stable_id, b.question_type
        ORDER BY MIN(s.position), MIN(b.position)`
     ).all(activityId) as unknown as Array<{
-      questionId: string; questionType: ActivityQuestionType; prompt: string; attempts: number;
+      questionId: string; slideNumber: number; questionType: ActivityQuestionType; prompt: string; attempts: number;
       answered: number; unanswered: number; fullyCorrect: number; averageAwardedPoints: number | null; maximumPoints: number;
     }>).map((row) => ({
       ...row,
+      slideNumber: Number(row.slideNumber),
       attempts: Number(row.attempts),
       answered: Number(row.answered),
       unanswered: Number(row.unanswered),
@@ -1005,21 +1009,23 @@ export class ActivityAttemptRepository {
     const version = this.db.prepare('SELECT published_version_id as versionId FROM activity_attempts WHERE id = ?')
       .get(attemptId) as { versionId: string };
     const responses = this.db.prepare(
-      `SELECT b.id as questionBlockId, b.question_type as questionType,
+      `SELECT b.id as questionBlockId, s.position + 1 as slideNumber, b.question_type as questionType,
               COALESCE(p.maximum_points_units, CAST(ROUND(b.points * 1000) AS INTEGER)) as maximumUnits,
-              b.public_config_json as configJson, r.answer_json as answerJson,
+              b.public_config_json as configJson, k.key_json as keyJson, r.answer_json as answerJson,
               COALESCE(r.moderation_status, 'approved') as moderationStatus,
               r.moderation_reason as moderationReason,
               COALESCE(r.grading_status, 'pending') as gradingStatus,
               r.awarded_points_units as awardedUnits, COALESCE(r.teacher_feedback, '') as teacherFeedback
        FROM activity_version_blocks b
        INNER JOIN activity_version_slides s ON s.id = b.slide_id
+       LEFT JOIN activity_version_question_keys k ON k.block_id = b.id
        LEFT JOIN activity_attempt_responses r ON r.attempt_id = ? AND r.question_block_id = b.id
        LEFT JOIN activity_attempt_question_points p ON p.attempt_id = ? AND p.question_block_id = b.id
        WHERE s.version_id = ? AND b.block_type = 'question'
        ORDER BY s.position, b.position`
     ).all(attemptId, attemptId, version.versionId) as unknown as Array<{
-      questionBlockId: string; questionType: ActivityQuestionType; maximumUnits: number; configJson: string;
+      questionBlockId: string; slideNumber: number; questionType: ActivityQuestionType; maximumUnits: number;
+      configJson: string; keyJson: string | null;
       answerJson: string | null; moderationStatus: 'approved' | 'pending' | 'rejected'; moderationReason: string | null;
       gradingStatus: 'pending' | 'graded' | 'manual_review';
       awardedUnits: number | null; teacherFeedback: string;
@@ -1037,17 +1043,25 @@ export class ActivityAttemptRepository {
       ...attempt,
       responses: responses.map((response) => {
         const config = JSON.parse(response.configJson) as ActivityQuestionPublicConfig;
+        const key = response.keyJson ? JSON.parse(response.keyJson) as Record<string, unknown> : {};
+        const maximumUnits = Number(response.maximumUnits);
+        const awardedUnits = response.awardedUnits === null ? null : Number(response.awardedUnits);
         return {
           questionBlockId: response.questionBlockId,
+          slideNumber: Number(response.slideNumber),
           questionType: response.questionType,
           prompt: config.prompt,
           questionConfig: config,
           answer: response.answerJson ? JSON.parse(response.answerJson) as ActivitySupportedAnswer : null,
+          correctAnswer: serializeActivityCorrectAnswer(response.questionType, config, key) ?? null,
+          correct: response.answerJson && response.gradingStatus === 'graded' && maximumUnits > 0 && awardedUnits !== null
+            ? awardedUnits >= maximumUnits
+            : null,
           moderationStatus: response.moderationStatus,
           moderationReason: response.moderationReason,
           gradingStatus: response.gradingStatus,
-          awardedPoints: response.awardedUnits === null ? null : unitsToPoints(Number(response.awardedUnits)),
-          maximumPoints: unitsToPoints(Number(response.maximumUnits)),
+          awardedPoints: awardedUnits === null ? null : unitsToPoints(awardedUnits),
+          maximumPoints: unitsToPoints(maximumUnits),
           teacherFeedback: response.teacherFeedback
         };
       }),
@@ -1061,6 +1075,24 @@ export class ActivityAttemptRepository {
         createdAt: entry.createdAt
       }))
     };
+  }
+
+  deleteAdminAttempt(userId: string, activityId: string, attemptId: string) {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const owned = this.db.prepare(
+        `SELECT a.id FROM activity_attempts a
+         INNER JOIN live_activities la ON la.id = a.activity_id
+         WHERE a.id = ? AND a.activity_id = ? AND la.user_id = ?`
+      ).get(attemptId, activityId, userId);
+      if (!owned) throw new Error('Attempt not found.');
+      this.db.prepare('DELETE FROM activity_attempts WHERE id = ?').run(attemptId);
+      this.db.exec('COMMIT');
+      return { id: attemptId, deleted: true as const };
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
   }
 
   private recalculateAttemptTotal(attemptId: string, timestamp: string) {

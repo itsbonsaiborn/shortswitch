@@ -1,12 +1,12 @@
 // @vitest-environment node
 import { describe, expect, test } from 'vitest';
 import type { ActivityAdminAttemptResponse } from '@/shared/activity-types';
-import { activityAnswerRows, activityCorrectAnswerRows, formatActivityNumber, formatActivityPercent, formatActivityScorePercent } from './activity-results';
+import { activityAnswerRows, activityChoiceReviewOptions, activityCorrectAnswerRows, formatActivityNumber, formatActivityPercent, formatActivityScorePercent } from './activity-results';
 
 const response = (overrides: Partial<ActivityAdminAttemptResponse>): ActivityAdminAttemptResponse => ({
-  questionBlockId: 'question', questionType: 'word_cloud', prompt: 'Prompt',
+  questionBlockId: 'question', slideNumber: 1, questionType: 'word_cloud', prompt: 'Prompt',
   questionConfig: { questionType: 'word_cloud', prompt: 'Prompt', instructions: '', maximumLength: 80, allowMultipleResponses: true, maximumResponses: 5, moderationMode: 'off', showResults: false, showParticipantNames: false, gradingMode: 'ungraded' },
-  answer: null, moderationStatus: 'approved', moderationReason: null, gradingStatus: 'graded',
+  answer: null, correctAnswer: null, correct: null, moderationStatus: 'approved', moderationReason: null, gradingStatus: 'graded',
   awardedPoints: 0, maximumPoints: 0, teacherFeedback: '', ...overrides
 });
 
@@ -31,6 +31,25 @@ describe('Activity result answer formatting', () => {
       questionConfig: { questionType: 'multiple_choice', prompt: 'Choose', description: '', options: [{ id: 'a', label: 'Alpha' }, { id: 'b', label: 'Beta' }], shuffleOptions: false, gradingMode: 'all_or_nothing', minimumSelections: 1, maximumSelections: 2 },
       answer: { questionType: 'multiple_choice', optionIds: ['b', 'a'] }
     }))).toEqual([{ label: '', value: 'Beta' }, { label: '', value: 'Alpha' }]);
+  });
+
+  test('builds a complete read-only choice review with correct and incorrect selections', () => {
+    const reviewed = activityChoiceReviewOptions(response({
+      questionType: 'multiple_choice',
+      questionConfig: {
+        questionType: 'multiple_choice', prompt: 'Choose', description: '',
+        options: [{ id: 'a', label: 'Alpha' }, { id: 'b', label: 'Beta' }, { id: 'c', label: 'Gamma' }, { id: 'd', label: 'Delta' }],
+        shuffleOptions: false, gradingMode: 'all_or_nothing', minimumSelections: 1, maximumSelections: 4
+      },
+      answer: { questionType: 'multiple_choice', optionIds: ['b', 'c'] },
+      correctAnswer: [{ id: 'a', label: 'Alpha' }, { id: 'c', label: 'Gamma' }],
+      correct: false
+    }));
+    expect(reviewed).toHaveLength(4);
+    expect(reviewed.find((option) => option.id === 'a')).toMatchObject({ correct: true, selected: false, incorrectSelection: false });
+    expect(reviewed.find((option) => option.id === 'b')).toMatchObject({ correct: false, selected: true, incorrectSelection: true });
+    expect(reviewed.find((option) => option.id === 'c')).toMatchObject({ correct: true, selected: true, incorrectSelection: false });
+    expect(reviewed.find((option) => option.id === 'd')).toMatchObject({ correct: false, selected: false, incorrectSelection: false });
   });
 
   test('formats Ordering and Matching answers using published labels', () => {
