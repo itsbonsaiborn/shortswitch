@@ -20,9 +20,19 @@ interface RateLimitMetadata {
 
 export class RateLimiterService {
   private buckets = new Map<string, RateLimitBucket>();
+  private lastSweepAt = 0;
+
+  private sweepExpiredBuckets(now: number) {
+    if (now - this.lastSweepAt < 60_000) return;
+    this.lastSweepAt = now;
+    for (const [key, bucket] of this.buckets) {
+      if (bucket.resetAt <= now && bucket.blockedUntil <= now) this.buckets.delete(key);
+    }
+  }
 
   private getBucket(scope: string, key: string, windowMinutes: number) {
     const now = Date.now();
+    this.sweepExpiredBuckets(now);
     const bucketKey = `${scope}:${key}`;
     const current = this.buckets.get(bucketKey);
 

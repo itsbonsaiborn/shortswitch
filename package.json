@@ -1,6 +1,6 @@
 {
   "name": "url-shortener",
-  "version": "1.3.1",
+  "version": "1.4.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -26,6 +26,10 @@
     "load:activities:50": "npm run build && node scripts/activities-load-test.mjs 50 25",
     "load:activities:200": "npm run build && node scripts/activities-load-test.mjs 200 50",
     "load:activities:500": "npm run build && node scripts/activities-load-test.mjs 500 50",
+    "load:boards:30": "npm run build && node scripts/boards-load-test.mjs 30 100 30 30",
+    "load:boards:50": "npm run build && node scripts/boards-load-test.mjs 50 100 50 50",
+    "load:boards:200": "npm run build && node scripts/boards-load-test.mjs 200 200 20 200",
+    "load:boards:500": "npm run build && node scripts/boards-load-test.mjs 500 500 20 100",
     "load:pages:50": "npm run build && node scripts/pages-load-test.mjs 50 50",
     "load:pages:200": "npm run build && node scripts/pages-load-test.mjs 200 50",
     "load:pages:500": "npm run build && node scripts/pages-load-test.mjs 500 50",

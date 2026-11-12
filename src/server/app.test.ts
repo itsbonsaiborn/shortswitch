@@ -300,6 +300,643 @@ describe.sequential('server security hardening', () => {
     expect(() => db.prepare('INSERT INTO public_slugs VALUES (?, ?, ?, ?)').run('page-slug', 'page', 'page-resource', '2026-01-01T00:00:00.000Z')).not.toThrow();
   });
 
+  test('installs the Boards foundation additively and enforces repository invariants', async () => {
+    const { DatabaseSync } = await import('node:sqlite');
+    const legacy = new DatabaseSync(testDbPath);
+    legacy.exec(`
+      CREATE TABLE public_slugs (
+        slug TEXT PRIMARY KEY,
+        resource_type TEXT NOT NULL CHECK (resource_type IN ('link', 'live_activity', 'page')),
+        resource_id TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL
+      );
+      INSERT INTO public_slugs VALUES ('legacy-page', 'page', 'legacy-page-resource', '2026-01-01T00:00:00.000Z');
+    `);
+    legacy.close();
+
+    const { getDb } = await import('./db.js');
+    const { BoardRepository } = await import('./repositories/board-repository.js');
+    const { parseBoardInput } = await import('./domain/board-domain.js');
+    const { sha256 } = await import('./utils.js');
+    const db = getDb();
+    const userId = await seedUser('boards@example.com', 'boards-test-password');
+    const repository = new BoardRepository(db);
+
+    expect(db.prepare('SELECT resource_type, resource_id FROM public_slugs WHERE slug = ?').get('legacy-page'))
+      .toEqual({ resource_type: 'page', resource_id: 'legacy-page-resource' });
+    expect(db.prepare('SELECT version, name FROM schema_migrations WHERE version = 14').get())
+      .toEqual({ version: 14, name: 'boards_foundation' });
+    expect(db.prepare('SELECT version, name FROM schema_migrations WHERE version = 15').get())
+      .toEqual({ version: 15, name: 'boards_management' });
+    expect(db.prepare('SELECT version, name FROM schema_migrations WHERE version = 16').get())
+      .toEqual({ version: 16, name: 'board_card_ownership' });
+    expect(db.prepare('SELECT version, name FROM schema_migrations WHERE version = 17').get())
+      .toEqual({ version: 17, name: 'board_grid_reactions' });
+    expect(db.prepare('SELECT version, name FROM schema_migrations WHERE version = 18').get())
+      .toEqual({ version: 18, name: 'board_theme_design' });
+    expect(db.prepare('SELECT version, name FROM schema_migrations WHERE version = 19').get())
+      .toEqual({ version: 19, name: 'board_realtime_moderation' });
+    expect(db.prepare('SELECT version, name FROM schema_migrations WHERE version = 20').get())
+      .toEqual({ version: 20, name: 'board_recovery_security' });
+    expect(db.prepare('SELECT version, name FROM schema_migrations WHERE version = 21').get())
+      .toEqual({ version: 21, name: 'board_submission_expiration' });
+    expect(db.prepare("SELECT name FROM pragma_table_info('board_settings') WHERE name = 'submissions_expires_at'").get())
+      .toEqual({ name: 'submissions_expires_at' });
+    expect(db.prepare(`SELECT name FROM pragma_table_info('board_card_credentials') WHERE name IN (
+      'recovery_failed_attempts', 'recovery_window_started_at', 'recovery_locked_until'
+    ) ORDER BY name`).all().map((column) => (column as { name: string }).name)).toEqual([
+      'recovery_failed_attempts', 'recovery_locked_until', 'recovery_window_started_at'
+    ]);
+
+    const board = repository.create(userId, 'class-board', parseBoardInput({
+      title: 'Class board',
+      status: 'published',
+      settings: {
+        moderationMode: 'review_all',
+        maxCardsTotal: 2,
+        maxCardsPerParticipant: 1
+      }
+    }));
+    expect(board).toMatchObject({
+      slug: 'class-board', status: 'published', publicRevision: 0,
+      settings: { layout: 'grid', visualStyle: 'classic', backgroundPattern: 'none', patternIntensity: 35 }
+    });
+    db.prepare(`UPDATE board_themes SET config_json = 'invalid-json' WHERE id = 'board_theme_ocean_blue'`).run();
+    expect(repository.listThemes(userId).find((theme) => theme.id === 'board_theme_ocean_blue')?.config)
+      .toEqual({ surface: 'minimal_light' });
+    expect(repository.findById('another-user', board.id)).toBeUndefined();
+    expect(db.prepare('SELECT resource_type, resource_id FROM public_slugs WHERE slug = ?').get('class-board'))
+      .toEqual({ resource_type: 'board', resource_id: board.id });
+
+    const participant = repository.upsertParticipant(board.id, sha256('participant-secret'), 'Anna');
+    const card = repository.createCard({
+      boardId: board.id,
+      participantId: participant.id,
+      card: { title: 'Idea', body: 'A useful thought', imageUrl: null, authorDisplayName: 'Anna' },
+      position: { x: 10, y: 20, width: 280, height: 180, zIndex: 1 },
+      ownerTokenHash: sha256('opaque-owner-token'),
+      recoveryPinHash: '$argon2id$v=19$m=65536,t=3,p=4$hashed-recovery-pin'
+    });
+    expect(card.moderationStatus).toBe('pending');
+    expect(repository.findPublicBySlug('class-board')?.cards).toHaveLength(0);
+    expect(db.prepare(`
+      SELECT owner_token_hash as ownerTokenHash, recovery_pin_hash as recoveryPinHash
+      FROM board_card_credentials WHERE card_id = ?
+    `).get(card.id)).toEqual({
+      ownerTokenHash: sha256('opaque-owner-token'),
+      recoveryPinHash: '$argon2id$v=19$m=65536,t=3,p=4$hashed-recovery-pin'
+    });
+
+    const approved = repository.moderateCard(userId, board.id, card.id, 'approved', null);
+    expect(approved.moderationStatus).toBe('approved');
+    expect(repository.findPublicBySlug('class-board')?.cards).toHaveLength(1);
+    expect(repository.findPublicBySlug('class-board')?.cards[0]).not.toHaveProperty('participantId');
+    expect(repository.findPublicBySlug('class-board')?.cards[0]).not.toHaveProperty('moderationReason');
+    expect(approved.position).toMatchObject({ x: 10, y: 20, width: 280, height: 180, zIndex: 1, revision: 0 });
+    expect(repository.setCardHidden(userId, board.id, card.id, true).hidden).toBe(true);
+    expect(repository.findPublicBySlug('class-board')?.cards).toEqual([]);
+    expect(repository.setCardHidden(userId, board.id, card.id, false).hidden).toBe(false);
+
+    expect(() => repository.createCard({
+      boardId: board.id,
+      participantId: participant.id,
+      card: { title: 'Second', body: 'Over the limit', imageUrl: null, authorDisplayName: 'Anna' },
+      position: { x: 0, y: 0, width: 280, height: 180, zIndex: 3 },
+      ownerTokenHash: sha256('second-owner-token'),
+      recoveryPinHash: null
+    })).toThrow('Participant card limit reached.');
+    expect(repository.listEvents(board.id, 0).map((event) => [event.revision, event.type]))
+      .toEqual([[1, 'card_created'], [2, 'card_moderated'], [3, 'card_moderated'], [4, 'card_moderated']]);
+    expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+  });
+
+  test('protects and manages Boards through the authenticated admin API', async () => {
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+    expect((await app.inject({ method: 'GET', url: '/api/boards' })).statusCode).toBe(401);
+    expect((await app.inject({ method: 'POST', url: '/api/boards', payload: { title: 'Denied' } })).statusCode).toBe(403);
+
+    const csrf = await getCsrfBundle(app);
+    const admin = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
+    const headers = { cookie: admin.cookies, 'x-csrf-token': csrf.csrfToken };
+    const createdResponse = await app.inject({
+      method: 'POST', url: '/api/boards', headers,
+      payload: {
+        title: 'Physics ideas', description: 'Classroom board', slug: 'physics-board', status: 'published',
+        settings: { moderationMode: 'review_all', maxCardsTotal: 60, maxCardsPerParticipant: 3 }
+      }
+    });
+    expect(createdResponse.statusCode).toBe(200);
+    const created = createdResponse.json();
+    expect(created).toMatchObject({ title: 'Physics ideas', slug: 'physics-board', status: 'published', cardCount: 0 });
+    expect(created.presentationUrl).toContain('/boards/physics-board/presentation');
+    await seedUser('boards-other@example.com', 'boards-other-password-42');
+    const otherCsrf = await getCsrfBundle(app);
+    const other = await login(app, 'boards-other@example.com', 'boards-other-password-42', otherCsrf);
+    expect((await app.inject({ method: 'GET', url: `/api/boards/${created.id}`, headers: { cookie: other.cookies } })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'PATCH', url: `/api/boards/${created.id}`, headers: { cookie: other.cookies, 'x-csrf-token': otherCsrf.csrfToken }, payload: { title: 'Hijacked' } })).statusCode).toBe(404);
+
+    const publicBoard = await app.inject({ method: 'GET', url: '/api/boards/public/physics-board' });
+    expect(publicBoard.statusCode).toBe(200);
+    expect(publicBoard.json()).toMatchObject({ title: 'Physics ideas', cards: [] });
+    expect(JSON.stringify(publicBoard.json())).not.toContain('userId');
+
+    const updated = await app.inject({
+      method: 'PATCH', url: `/api/boards/${created.id}`, headers,
+      payload: {
+        title: 'Physics wall', description: 'Updated', slug: 'physics-wall', status: 'published', expiresAt: null,
+        settings: {
+          ...created.settings, locked: true, readOnly: true, participantCanEdit: false,
+          maxCardsTotal: 40, themeId: 'board_theme_forest_dark', visualStyle: 'bold',
+          backgroundPattern: 'crosses', patternIntensity: 65
+        }
+      }
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json()).toMatchObject({
+      title: 'Physics wall', slug: 'physics-wall',
+      settings: {
+        locked: true, readOnly: true, participantCanEdit: false,
+        themeId: 'board_theme_forest_dark', visualStyle: 'bold',
+        backgroundPattern: 'crosses', patternIntensity: 65
+      }
+    });
+    expect((await app.inject({ method: 'GET', url: '/api/boards/public/physics-board' })).statusCode).toBe(404);
+
+    const duplicated = await app.inject({ method: 'POST', url: `/api/boards/${created.id}/duplicate`, headers, payload: {} });
+    expect(duplicated.statusCode).toBe(200);
+    expect(duplicated.json()).toMatchObject({
+      title: 'Physics wall copy', status: 'draft', cardCount: 0,
+      settings: {
+        themeId: 'board_theme_forest_dark', visualStyle: 'bold',
+        backgroundPattern: 'crosses', patternIntensity: 65
+      }
+    });
+    const list = (await app.inject({ method: 'GET', url: '/api/boards', headers: { cookie: admin.cookies } })).json();
+    expect(list.stats).toMatchObject({ totalBoards: 2, publishedBoards: 1, totalCards: 0, pendingCards: 0 });
+
+    expect((await app.inject({
+      method: 'POST', url: `/api/boards/${created.id}/archive`, headers, payload: { archived: 'false' }
+    })).statusCode).toBe(400);
+
+    const archived = await app.inject({ method: 'POST', url: `/api/boards/${created.id}/archive`, headers, payload: { archived: true } });
+    expect(archived.json().archivedAt).toBeTruthy();
+    expect((await app.inject({ method: 'GET', url: '/api/boards/public/physics-wall' })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'GET', url: '/api/boards/public/physics-wall/events' })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'DELETE', url: `/api/boards/${duplicated.json().id}`, headers })).statusCode).toBe(200);
+    await app.close();
+  });
+
+  test('authorizes Board card mutations with HttpOnly ownership sessions and rate-limited PIN recovery', async () => {
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+    const adminCsrf = await getCsrfBundle(app);
+    const admin = await login(app, 'admin@example.com', 'test-admin-password-42', adminCsrf);
+    const adminHeaders = { cookie: admin.cookies, 'x-csrf-token': adminCsrf.csrfToken };
+    const created = await app.inject({
+      method: 'POST', url: '/api/boards', headers: adminHeaders,
+      payload: {
+        title: 'Secure classroom', slug: 'secure-classroom', status: 'published',
+        settings: { moderationMode: 'review_all', maxCardsTotal: 5, maxCardsPerParticipant: 2, requireCardTitle: false }
+      }
+    });
+    const board = created.json();
+    expect((await app.inject({ method: 'GET', url: `/api/boards/${board.id}/cards` })).statusCode).toBe(401);
+
+    const participantCsrf = await getCsrfBundle(app);
+    const cardResponse = await app.inject({
+      method: 'POST', url: '/api/boards/public/secure-classroom/cards',
+      headers: { cookie: participantCsrf.csrfCookies, 'x-csrf-token': participantCsrf.csrfToken },
+      payload: { title: '', body: 'First line\nSecond line', imageUrl: 'https://images.example/card.png', authorDisplayName: 'Anna', layout: 'image_text' }
+    });
+    expect(cardResponse.statusCode).toBe(201);
+    const createdCard = cardResponse.json();
+    expect(createdCard.recoveryPin).toMatch(/^\d{6}$/);
+    expect(createdCard.card).toMatchObject({ owned: true, body: 'First line\nSecond line', layout: 'image_text', moderationStatus: 'pending' });
+    const ownershipCookie = extractCookies(cardResponse.headers['set-cookie'] as string[] | string | undefined);
+    expect(getSetCookieEntries(cardResponse.headers['set-cookie'] as string[] | string | undefined).join('\n')).toContain('HttpOnly');
+    expect(ownershipCookie).toContain('ss_board_');
+    const participantCookies = `${participantCsrf.csrfCookies}; ${ownershipCookie}`;
+
+    const publicSnapshot = await app.inject({ method: 'GET', url: '/api/boards/public/secure-classroom', headers: { cookie: participantCookies } });
+    expect(publicSnapshot.json().cards[0]).toMatchObject({ id: createdCard.card.id, owned: true });
+    expect(JSON.stringify(publicSnapshot.json())).not.toContain(createdCard.recoveryPin);
+    expect(JSON.stringify(publicSnapshot.json())).not.toContain('ownerTokenHash');
+
+    const strangerCsrf = await getCsrfBundle(app);
+    expect((await app.inject({ method: 'GET', url: '/api/boards/public/secure-classroom', headers: { cookie: strangerCsrf.csrfCookies } })).json().cards).toEqual([]);
+    const strangerUpdate = await app.inject({
+      method: 'PATCH', url: `/api/boards/public/secure-classroom/cards/${createdCard.card.id}`,
+      headers: { cookie: strangerCsrf.csrfCookies, 'x-csrf-token': strangerCsrf.csrfToken },
+      payload: { title: 'Hijacked', body: 'No access', imageUrl: null, authorDisplayName: null, layout: 'text' }
+    });
+    expect(strangerUpdate.statusCode).toBe(400);
+
+    const ownerUpdate = await app.inject({
+      method: 'PATCH', url: `/api/boards/public/secure-classroom/cards/${createdCard.card.id}`,
+      headers: { cookie: participantCookies, 'x-csrf-token': participantCsrf.csrfToken },
+      payload: { title: 'Updated', body: 'Owned content', imageUrl: null, authorDisplayName: 'Anna', layout: 'compact' }
+    });
+    expect(ownerUpdate.statusCode).toBe(200);
+    expect(ownerUpdate.json()).toMatchObject({ title: 'Updated', layout: 'compact', moderationStatus: 'pending', owned: true });
+
+    const secondCard = await app.inject({
+      method: 'POST', url: '/api/boards/public/secure-classroom/cards',
+      headers: { cookie: participantCookies, 'x-csrf-token': participantCsrf.csrfToken },
+      payload: { title: 'Temporary', body: 'Participant can remove this', imageUrl: null, authorDisplayName: 'Anna', layout: 'text' }
+    });
+    expect(secondCard.statusCode).toBe(201);
+    expect((await app.inject({
+      method: 'DELETE', url: `/api/boards/public/secure-classroom/cards/${secondCard.json().card.id}`,
+      headers: { cookie: participantCookies, 'x-csrf-token': participantCsrf.csrfToken }
+    })).statusCode).toBe(200);
+
+    const missingCardRecovery = await app.inject({
+      method: 'POST', url: '/api/boards/public/secure-classroom/cards/missing-card/recover',
+      headers: { cookie: strangerCsrf.csrfCookies, 'x-csrf-token': strangerCsrf.csrfToken }, payload: { pin: '000000' }
+    });
+    const wrongPinRecovery = await app.inject({
+      method: 'POST', url: `/api/boards/public/secure-classroom/cards/${createdCard.card.id}/recover`,
+      headers: { cookie: strangerCsrf.csrfCookies, 'x-csrf-token': strangerCsrf.csrfToken }, payload: { pin: '000000' }
+    });
+    expect([missingCardRecovery.statusCode, missingCardRecovery.json().message]).toEqual([400, 'Invalid recovery PIN.']);
+    expect([wrongPinRecovery.statusCode, wrongPinRecovery.json().message]).toEqual([400, 'Invalid recovery PIN.']);
+
+    const recovered = await app.inject({
+      method: 'POST', url: `/api/boards/public/secure-classroom/cards/${createdCard.card.id}/recover`,
+      headers: { cookie: strangerCsrf.csrfCookies, 'x-csrf-token': strangerCsrf.csrfToken }, payload: { pin: createdCard.recoveryPin }
+    });
+    expect(recovered.statusCode).toBe(200);
+    const recoveredCookie = extractCookies(recovered.headers['set-cookie'] as string[] | string | undefined);
+    expect(recoveredCookie).toContain('ss_board_');
+    expect((await app.inject({
+      method: 'PATCH', url: `/api/boards/public/secure-classroom/cards/${createdCard.card.id}`,
+      headers: { cookie: participantCookies, 'x-csrf-token': participantCsrf.csrfToken },
+      payload: { title: 'Old session', body: 'Must be revoked', imageUrl: null, authorDisplayName: 'Anna', layout: 'text' }
+    })).statusCode).toBe(400);
+
+    const adminCards = await app.inject({ method: 'GET', url: `/api/boards/${board.id}/cards`, headers: { cookie: admin.cookies } });
+    expect(adminCards.statusCode).toBe(200);
+    expect(adminCards.json()[0]).toMatchObject({ id: createdCard.card.id, title: 'Updated', moderationStatus: 'pending' });
+    expect(JSON.stringify(adminCards.json())).not.toContain('recoveryPinHash');
+    await seedUser('board-intruder@example.com', 'board-intruder-password-42');
+    const intruderCsrf = await getCsrfBundle(app);
+    const intruder = await login(app, 'board-intruder@example.com', 'board-intruder-password-42', intruderCsrf);
+    expect((await app.inject({ method: 'GET', url: `/api/boards/${board.id}/cards`, headers: { cookie: intruder.cookies } })).statusCode).toBe(404);
+    expect((await app.inject({
+      method: 'DELETE', url: `/api/boards/${board.id}/cards/${createdCard.card.id}`,
+      headers: { cookie: intruder.cookies, 'x-csrf-token': intruderCsrf.csrfToken }
+    })).statusCode).toBe(404);
+    const pendingReaction = await app.inject({
+      method: 'PUT', url: `/api/boards/public/secure-classroom/cards/${createdCard.card.id}/reaction`,
+      headers: { cookie: strangerCsrf.csrfCookies, 'x-csrf-token': strangerCsrf.csrfToken },
+      payload: { reaction: 'like' }
+    });
+    expect(pendingReaction.statusCode).toBe(404);
+
+    const approved = await app.inject({
+      method: 'POST', url: `/api/boards/${board.id}/cards/${createdCard.card.id}/moderation`,
+      headers: adminHeaders, payload: { status: 'approved' }
+    });
+    expect(approved.statusCode).toBe(200);
+    expect(approved.json().moderationStatus).toBe('approved');
+    expect((await app.inject({ method: 'GET', url: '/api/boards/public/secure-classroom', headers: { cookie: strangerCsrf.csrfCookies } })).json().cards[0])
+      .toMatchObject({ id: createdCard.card.id, owned: false, moderationStatus: 'approved', reactions: { likes: 0, dislikes: 0, current: null } });
+
+    expect((await app.inject({
+      method: 'PUT', url: `/api/boards/public/secure-classroom/cards/${createdCard.card.id}/reaction`,
+      payload: { reaction: 'like' }
+    })).statusCode).toBe(403);
+    expect((await app.inject({
+      method: 'GET', url: '/api/boards/public/secure-classroom/cards/missing-card/reaction'
+    })).statusCode).toBe(404);
+
+    const liked = await app.inject({
+      method: 'PUT', url: `/api/boards/public/secure-classroom/cards/${createdCard.card.id}/reaction`,
+      headers: { cookie: strangerCsrf.csrfCookies, 'x-csrf-token': strangerCsrf.csrfToken },
+      payload: { reaction: 'like' }
+    });
+    expect(liked.statusCode).toBe(200);
+    expect(liked.json()).toEqual({ likes: 1, dislikes: 0, current: 'like' });
+    const reactionCookie = extractCookies(liked.headers['set-cookie'] as string[] | string | undefined);
+    expect(reactionCookie).toContain('ss_board_react_');
+    expect(reactionCookie).not.toContain('ss_board_ownership');
+    expect(getSetCookieEntries(liked.headers['set-cookie'] as string[] | string | undefined).join('\n')).toContain('HttpOnly');
+    const reactionCookies = `${strangerCsrf.csrfCookies}; ${reactionCookie}`;
+
+    const repeatedLike = await app.inject({
+      method: 'PUT', url: `/api/boards/public/secure-classroom/cards/${createdCard.card.id}/reaction`,
+      headers: { cookie: reactionCookies, 'x-csrf-token': strangerCsrf.csrfToken },
+      payload: { reaction: 'like' }
+    });
+    expect(repeatedLike.json()).toEqual({ likes: 1, dislikes: 0, current: 'like' });
+
+    const switched = await app.inject({
+      method: 'PUT', url: `/api/boards/public/secure-classroom/cards/${createdCard.card.id}/reaction`,
+      headers: { cookie: reactionCookies, 'x-csrf-token': strangerCsrf.csrfToken },
+      payload: { reaction: 'dislike' }
+    });
+    expect(switched.json()).toEqual({ likes: 0, dislikes: 1, current: 'dislike' });
+    const reactedSnapshot = await app.inject({
+      method: 'GET', url: '/api/boards/public/secure-classroom', headers: { cookie: reactionCookies }
+    });
+    expect(reactedSnapshot.json().cards[0].reactions).toEqual({ likes: 0, dislikes: 1, current: 'dislike' });
+    expect((await app.inject({
+      method: 'GET', url: `/api/boards/public/secure-classroom/cards/${createdCard.card.id}/reaction`,
+      headers: { cookie: strangerCsrf.csrfCookies }
+    })).json()).toEqual({ likes: 0, dislikes: 1, current: null });
+
+    const removedReaction = await app.inject({
+      method: 'DELETE', url: `/api/boards/public/secure-classroom/cards/${createdCard.card.id}/reaction`,
+      headers: { cookie: reactionCookies, 'x-csrf-token': strangerCsrf.csrfToken }
+    });
+    expect(removedReaction.json()).toEqual({ likes: 0, dislikes: 0, current: null });
+
+    const concurrentLikes = await Promise.all([1, 2, 3].map(() => app.inject({
+      method: 'PUT', url: `/api/boards/public/secure-classroom/cards/${createdCard.card.id}/reaction`,
+      headers: { cookie: reactionCookies, 'x-csrf-token': strangerCsrf.csrfToken },
+      payload: { reaction: 'like' }
+    })));
+    expect(concurrentLikes.every((response) => response.statusCode === 200)).toBe(true);
+    expect((await app.inject({
+      method: 'GET', url: `/api/boards/public/secure-classroom/cards/${createdCard.card.id}/reaction`,
+      headers: { cookie: reactionCookies }
+    })).json()).toEqual({ likes: 1, dislikes: 0, current: 'like' });
+
+    let reactionSpamStatus = 0;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const response = await app.inject({
+        method: 'PUT', url: `/api/boards/public/secure-classroom/cards/${createdCard.card.id}/reaction`,
+        headers: { cookie: reactionCookies, 'x-csrf-token': strangerCsrf.csrfToken },
+        payload: { reaction: attempt % 2 === 0 ? 'dislike' : 'like' }
+      });
+      reactionSpamStatus = response.statusCode;
+    }
+    expect(reactionSpamStatus).toBe(429);
+
+    const reset = await app.inject({ method: 'POST', url: `/api/boards/${board.id}/cards/${createdCard.card.id}/ownership/reset`, headers: adminHeaders, payload: {} });
+    expect(reset.statusCode).toBe(200);
+    expect(reset.json().recoveryPin).toMatch(/^\d{6}$/);
+    expect(reset.json().recoveryPin).not.toBe(createdCard.recoveryPin);
+    const recoveredCookies = `${strangerCsrf.csrfCookies}; ${recoveredCookie}`;
+    expect((await app.inject({
+      method: 'DELETE', url: `/api/boards/public/secure-classroom/cards/${createdCard.card.id}`,
+      headers: { cookie: recoveredCookies, 'x-csrf-token': strangerCsrf.csrfToken }
+    })).statusCode).toBe(400);
+
+    let lockedRecoveryStatus = 0;
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const response = await app.inject({
+        method: 'POST', url: `/api/boards/public/secure-classroom/cards/${createdCard.card.id}/recover`,
+        headers: { cookie: strangerCsrf.csrfCookies, 'x-csrf-token': strangerCsrf.csrfToken },
+        payload: { pin: '111111' }
+      });
+      lockedRecoveryStatus = response.statusCode;
+    }
+    expect(lockedRecoveryStatus).toBe(429);
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const response = await app.inject({
+        method: 'POST', url: `/api/boards/public/secure-classroom/cards/${createdCard.card.id}/recover`,
+        remoteAddress: `198.51.100.${attempt + 10}`,
+        headers: { cookie: strangerCsrf.csrfCookies, 'x-csrf-token': strangerCsrf.csrfToken },
+        payload: { pin: '222222' }
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().message).toBe('Invalid recovery PIN.');
+    }
+    const lockedCorrectPin = await app.inject({
+      method: 'POST', url: `/api/boards/public/secure-classroom/cards/${createdCard.card.id}/recover`,
+      remoteAddress: '198.51.100.99',
+      headers: { cookie: strangerCsrf.csrfCookies, 'x-csrf-token': strangerCsrf.csrfToken },
+      payload: { pin: reset.json().recoveryPin }
+    });
+    expect(lockedCorrectPin.statusCode).toBe(400);
+    expect(lockedCorrectPin.json().message).toBe('Invalid recovery PIN.');
+
+    const { getDb } = await import('./db.js');
+    expect(getDb().prepare(`SELECT recovery_failed_attempts as attempts, recovery_locked_until as lockedUntil
+      FROM board_card_credentials WHERE card_id = ?`).get(createdCard.card.id)).toMatchObject({
+      attempts: 10,
+      lockedUntil: expect.any(String)
+    });
+
+    expect((await app.inject({ method: 'DELETE', url: `/api/boards/${board.id}/cards/${createdCard.card.id}`, headers: adminHeaders })).statusCode).toBe(200);
+    expect((getDb().prepare('SELECT COUNT(*) as count FROM board_card_reactions WHERE card_id = ?').get(createdCard.card.id) as { count: number }).count).toBe(0);
+    expect((await app.inject({ method: 'GET', url: `/api/boards/${board.id}/cards`, headers: { cookie: admin.cookies } })).json()).toEqual([]);
+    await app.close();
+  });
+
+  test('shares the Live word filter with Boards and keeps rejected or hidden cards private', async () => {
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+    const adminCsrf = await getCsrfBundle(app);
+    const admin = await login(app, 'admin@example.com', 'test-admin-password-42', adminCsrf);
+    const adminHeaders = { cookie: admin.cookies, 'x-csrf-token': adminCsrf.csrfToken };
+    expect((await app.inject({
+      method: 'POST', url: '/api/moderation/rules', headers: adminHeaders,
+      payload: { pattern: 'aizliegts vārds', matchMode: 'contains' }
+    })).statusCode).toBe(200);
+    const createdBoard = await app.inject({
+      method: 'POST', url: '/api/boards', headers: adminHeaders,
+      payload: { title: 'Moderated board', slug: 'moderated-board', status: 'published', settings: { moderationMode: 'auto_approve' } }
+    });
+    const board = createdBoard.json();
+    const participant = await getCsrfBundle(app);
+    const createdCard = await app.inject({
+      method: 'POST', url: '/api/boards/public/moderated-board/cards',
+      headers: { cookie: participant.csrfCookies, 'x-csrf-token': participant.csrfToken },
+      payload: { title: 'AIZLIEGTS   VĀRDS', body: 'Body', imageUrl: null, authorDisplayName: 'Anna', layout: 'text' }
+    });
+    expect(createdCard.statusCode).toBe(201);
+    expect(createdCard.json().card.moderationStatus).toBe('pending');
+    expect(JSON.stringify(createdCard.json())).not.toContain('matched ban rule');
+    const ownershipCookie = extractCookies(createdCard.headers['set-cookie'] as string[] | string | undefined);
+    const ownerCookies = `${participant.csrfCookies}; ${ownershipCookie}`;
+    expect((await app.inject({ method: 'GET', url: '/api/boards/public/moderated-board', headers: { cookie: ownerCookies } })).json().cards)
+      .toHaveLength(1);
+    expect((await app.inject({ method: 'GET', url: '/api/boards/public/moderated-board' })).json().cards).toEqual([]);
+    const adminCards = await app.inject({ method: 'GET', url: `/api/boards/${board.id}/cards`, headers: { cookie: admin.cookies } });
+    expect(adminCards.json()[0].moderationReason).toContain('Card title matched ban rule');
+
+    const cardId = createdCard.json().card.id;
+    const zeroWidthBypass = await app.inject({
+      method: 'PATCH', url: `/api/boards/public/moderated-board/cards/${cardId}`,
+      headers: { cookie: ownerCookies, 'x-csrf-token': participant.csrfToken },
+      payload: { title: 'Safe title', body: 'aizliegts\u200B vārds', imageUrl: null, authorDisplayName: 'Anna', layout: 'text' }
+    });
+    expect(zeroWidthBypass.statusCode).toBe(200);
+    expect(zeroWidthBypass.json().moderationStatus).toBe('pending');
+    expect((await app.inject({ method: 'GET', url: `/api/boards/${board.id}/cards`, headers: { cookie: admin.cookies } }))
+      .json()[0].moderationReason).toContain('Card body matched ban rule');
+
+    expect((await app.inject({
+      method: 'POST', url: `/api/boards/${board.id}/cards/${cardId}/moderation`, headers: adminHeaders,
+      payload: { status: 'rejected' }
+    })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'GET', url: '/api/boards/public/moderated-board', headers: { cookie: ownerCookies } })).json().cards)
+      .toEqual([]);
+
+    await app.inject({
+      method: 'POST', url: `/api/boards/${board.id}/cards/${cardId}/moderation`, headers: adminHeaders,
+      payload: { status: 'approved' }
+    });
+    expect((await app.inject({
+      method: 'POST', url: `/api/boards/${board.id}/cards/${cardId}/visibility`, headers: adminHeaders,
+      payload: { hidden: true }
+    })).json().hidden).toBe(true);
+    expect((await app.inject({ method: 'GET', url: '/api/boards/public/moderated-board' })).json().cards).toEqual([]);
+    expect((await app.inject({
+      method: 'PUT', url: `/api/boards/public/moderated-board/cards/${cardId}/reaction`,
+      headers: { cookie: participant.csrfCookies, 'x-csrf-token': participant.csrfToken }, payload: { reaction: 'like' }
+    })).statusCode).toBe(404);
+    expect((await app.inject({
+      method: 'POST', url: `/api/boards/${board.id}/cards/${cardId}/visibility`, headers: adminHeaders,
+      payload: { hidden: false }
+    })).json().hidden).toBe(false);
+    expect((await app.inject({ method: 'GET', url: '/api/boards/public/moderated-board' })).json().cards).toHaveLength(1);
+    await app.close();
+  });
+
+  test('keeps classroom submissions usable behind a shared IP and enforces body, lock, and ownership boundaries', async () => {
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+    const adminCsrf = await getCsrfBundle(app);
+    const admin = await login(app, 'admin@example.com', 'test-admin-password-42', adminCsrf);
+    const adminHeaders = { cookie: admin.cookies, 'x-csrf-token': adminCsrf.csrfToken };
+    const created = await app.inject({
+      method: 'POST', url: '/api/boards', headers: adminHeaders,
+      payload: {
+        title: 'Shared classroom', slug: 'shared-classroom', status: 'published',
+        settings: { moderationMode: 'auto_approve', maxCardsTotal: 40, maxCardsPerParticipant: 1 }
+      }
+    });
+    expect(created.statusCode).toBe(200);
+    const board = created.json();
+    const participant = await getCsrfBundle(app);
+    const participantHeaders = { cookie: participant.csrfCookies, 'x-csrf-token': participant.csrfToken };
+
+    const responses = [];
+    for (let index = 0; index < 31; index += 1) {
+      responses.push(await app.inject({
+        method: 'POST', url: '/api/boards/public/shared-classroom/cards',
+        remoteAddress: '203.0.113.10', headers: participantHeaders,
+        payload: { title: `Student ${index + 1}`, body: 'Classroom response', layout: 'text' }
+      }));
+    }
+    expect(responses.every((response) => response.statusCode === 201)).toBe(true);
+
+    const oversized = await app.inject({
+      method: 'POST', url: '/api/boards/public/shared-classroom/cards',
+      headers: { ...participantHeaders, 'content-type': 'application/json' },
+      payload: JSON.stringify({ title: 'Oversized', body: 'x'.repeat(70_000), layout: 'text' })
+    });
+    expect(oversized.statusCode).toBe(413);
+
+    const first = responses[0].json();
+    const firstOwnership = extractCookies(responses[0].headers['set-cookie'] as string[] | string | undefined);
+    const firstOwnerHeaders = {
+      cookie: `${participant.csrfCookies}; ${firstOwnership}`,
+      'x-csrf-token': participant.csrfToken
+    };
+    const locked = await app.inject({
+      method: 'PATCH', url: `/api/boards/${board.id}`, headers: adminHeaders,
+      payload: {
+        title: board.title, description: board.description, slug: board.slug, status: board.status,
+        expiresAt: board.expiresAt, settings: { ...board.settings, locked: true }
+      }
+    });
+    expect(locked.statusCode).toBe(200);
+    expect((await app.inject({
+      method: 'POST', url: '/api/boards/public/shared-classroom/cards',
+      headers: participantHeaders,
+      payload: { title: 'Closed submission', body: 'Must fail', layout: 'text' }
+    })).statusCode).toBe(400);
+    expect((await app.inject({
+      method: 'PATCH', url: `/api/boards/public/shared-classroom/cards/${first.card.id}`,
+      headers: firstOwnerHeaders,
+      payload: { title: 'Locked edit', body: 'Still allowed', imageUrl: null, authorDisplayName: null, layout: 'text' }
+    })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: 'PUT', url: `/api/boards/public/shared-classroom/cards/${first.card.id}/reaction`,
+      headers: participantHeaders, payload: { reaction: 'like' }
+    })).statusCode).toBe(200);
+
+    const submissionsExpired = new Date(Date.now() - 60_000).toISOString();
+    const scheduledClosure = await app.inject({
+      method: 'PATCH', url: `/api/boards/${board.id}`, headers: adminHeaders,
+      payload: {
+        title: board.title, description: board.description, slug: board.slug, status: board.status,
+        expiresAt: board.expiresAt,
+        settings: { ...board.settings, locked: false, submissionsExpiresAt: submissionsExpired }
+      }
+    });
+    expect(scheduledClosure.statusCode).toBe(200);
+    expect(scheduledClosure.json().settings).toMatchObject({
+      locked: false, submissionsExpiresAt: submissionsExpired
+    });
+    expect((await app.inject({
+      method: 'POST', url: '/api/boards/public/shared-classroom/cards',
+      headers: participantHeaders,
+      payload: { title: 'Expired submission window', body: 'Must fail', layout: 'text' }
+    })).statusCode).toBe(400);
+    expect((await app.inject({
+      method: 'PATCH', url: `/api/boards/public/shared-classroom/cards/${first.card.id}`,
+      headers: firstOwnerHeaders,
+      payload: { title: 'After deadline', body: 'Existing edit stays allowed', imageUrl: null, authorDisplayName: null, layout: 'text' }
+    })).statusCode).toBe(200);
+
+    const readOnly = await app.inject({
+      method: 'PATCH', url: `/api/boards/${board.id}`, headers: adminHeaders,
+      payload: {
+        title: board.title, description: board.description, slug: board.slug, status: board.status,
+        expiresAt: board.expiresAt, settings: { ...board.settings, locked: true, readOnly: true }
+      }
+    });
+    expect(readOnly.statusCode).toBe(200);
+    expect(readOnly.json().settings).toMatchObject({
+      readOnly: true, participantCanEdit: false, participantCanDelete: false
+    });
+    expect((await app.inject({
+      method: 'PATCH', url: `/api/boards/public/shared-classroom/cards/${first.card.id}`,
+      headers: firstOwnerHeaders,
+      payload: { title: 'Read-only edit', body: 'Must fail', imageUrl: null, authorDisplayName: null, layout: 'text' }
+    })).statusCode).toBe(400);
+    expect((await app.inject({
+      method: 'DELETE', url: `/api/boards/public/shared-classroom/cards/${first.card.id}/reaction`,
+      headers: participantHeaders
+    })).statusCode).toBe(400);
+
+    await app.close();
+  });
+
+  test('opens a scoped Board SSE stream with an initial revisioned snapshot', async () => {
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+    const csrf = await getCsrfBundle(app);
+    const admin = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
+    const created = await app.inject({
+      method: 'POST', url: '/api/boards',
+      headers: { cookie: admin.cookies, 'x-csrf-token': csrf.csrfToken },
+      payload: { title: 'Realtime board', slug: 'realtime-board', status: 'published', settings: { moderationMode: 'auto_approve' } }
+    });
+    expect(created.statusCode).toBe(200);
+    const address = await app.listen({ host: '127.0.0.1', port: 0 });
+    const controller = new AbortController();
+    const response = await fetch(`${address}/api/boards/public/realtime-board/events`, { signal: controller.signal });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('text/event-stream');
+    expect(response.headers.get('cache-control')).toContain('no-cache');
+    const reader = response.body!.getReader();
+    const first = await reader.read();
+    const payload = new TextDecoder().decode(first.value);
+    expect(payload).toContain('event: snapshot');
+    expect(payload).toContain('"slug":"realtime-board"');
+    await reader.cancel();
+    controller.abort();
+    await app.close();
+  });
+
   test('upgrades Page block constraints for Double without losing existing blocks', async () => {
     const { DatabaseSync } = await import('node:sqlite');
     const legacy = new DatabaseSync(testDbPath);
@@ -1354,6 +1991,9 @@ describe.sequential('server security hardening', () => {
     expect(loggedPayload).not.toContain('wrong-password');
     expect(redactedLogPaths).toContain('sessionId');
     expect(redactedLogPaths).toContain('csrfToken');
+    expect(redactedLogPaths).toContain('ownerToken');
+    expect(redactedLogPaths).toContain('recoveryPin');
+    expect(redactedLogPaths).toContain('pin');
 
     await app.close();
   });

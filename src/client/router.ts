@@ -15,8 +15,12 @@ export const routes: RouteRecordRaw[] = [
   { path: '/app/pages/new', component: () => import('./pages/PageEditorPage.vue'), meta: { title: 'Create Page' } },
   { path: '/app/pages/:id', component: () => import('./pages/PageEditorPage.vue'), meta: { title: 'Edit Page' } },
   { path: '/app/pages/:id/analytics', component: () => import('./pages/PageAnalyticsPage.vue'), meta: { title: 'Page analytics' } },
+  { path: '/app/boards', component: () => import('./pages/BoardsPage.vue'), meta: { title: 'Boards' } },
+  { path: '/app/boards/new', component: () => import('./pages/BoardEditorPage.vue'), meta: { title: 'Create Board' } },
+  { path: '/app/boards/:id', component: () => import('./pages/BoardEditorPage.vue'), meta: { title: 'Edit Board' } },
   { path: '/app/analytics', component: () => import('./pages/GlobalAnalyticsPage.vue'), meta: { title: 'Analytics' } },
   { path: '/app/settings', component: () => import('./pages/SettingsPage.vue'), meta: { title: 'Settings' } },
   { path: '/present/:slug', component: () => import('./pages/LivePresentationPage.vue'), meta: { public: true } },
+  { path: '/boards/:slug/presentation', component: () => import('./pages/PublicBoardPage.vue'), meta: { public: true, presentation: true } },
   { path: '/:slug', component: () => import('./pages/PublicSlugPage.vue'), meta: { public: true } }
 ];

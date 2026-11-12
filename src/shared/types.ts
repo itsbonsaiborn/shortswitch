@@ -129,6 +129,7 @@ export interface SecuritySettings {
 }
 
 export * from './activity-types.js';
+export * from './board-types.js';
 
 export interface CurrentUser {
   id: string;

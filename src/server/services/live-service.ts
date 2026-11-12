@@ -4,7 +4,6 @@ import type {
   LiveActivitySummary,
   LiveResultsSnapshot,
   LiveResponseStatus,
-  ModerationRule,
   ModerationMatchMode
 } from '@/shared/types.js';
 import { UAParser } from 'ua-parser-js';
@@ -12,17 +11,15 @@ import { config } from '../config.js';
 import { logger } from '../logger.js';
 import { LiveRepository } from '../repositories/live-repository.js';
 import { createSlugGenerator, expirationFromInput, hmacSha256, humanReferrer, nowIso, validateCustomSlug, validateGeneratedSlug } from '../utils.js';
+import { ModerationFilterService } from './moderation-filter-service.js';
 
 const activityTypes = new Set(['open_answer', 'word_cloud', 'multiple_choice', 'scale']);
 const identityModes = new Set(['anonymous', 'named']);
 const activityStatuses = new Set(['active', 'closed']);
 const moderationModes = new Set(['off', 'filter_only', 'review_all']);
 const responseStatuses = new Set(['approved', 'pending', 'rejected']);
-const matchModes = new Set(['whole_word', 'contains']);
-
 const normalizedText = (value: string) => value.normalize('NFKC').trim().replace(/\s+/gu, ' ');
 const normalizedMatchText = (value: string) => normalizedText(value).toLocaleLowerCase();
-const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 export const LIVE_PUBLIC_OPEN_ANSWER_LIMIT = 100;
 export const LIVE_PUBLIC_WORD_CLOUD_LIMIT = 150;
 const LIVE_PUBLIC_PAGE_LIMIT = 100;
@@ -39,7 +36,8 @@ const normalizeOsLabel = (name?: string, version?: string) => {
 
 export class LiveService {
   private repository = new LiveRepository();
-  private moderationRuleCache = new Map<string, ModerationRule[]>();
+
+  constructor(private readonly moderationFilter = new ModerationFilterService()) {}
 
   list(userId: string) {
     return this.repository.list(userId);
@@ -347,8 +345,8 @@ export class LiveService {
 
     if (activity.moderationMode !== 'off') {
       const ownerId = this.repository.getOwnerId(activity.id)!;
-      const nameMatch = participantName ? this.findRuleMatch(ownerId, participantName) : null;
-      const answerMatch = originalText ? this.findRuleMatch(ownerId, originalText) : null;
+      const nameMatch = participantName ? this.moderationFilter.match(ownerId, participantName) : null;
+      const answerMatch = originalText ? this.moderationFilter.match(ownerId, originalText) : null;
       const matchReasons = [
         nameMatch ? `Participant name matched ban rule: ${nameMatch.pattern}` : null,
         answerMatch ? `Answer matched ban rule: ${answerMatch.pattern}` : null
@@ -389,7 +387,7 @@ export class LiveService {
       publishedText = normalizedText(String(input.publishedText ?? response.publishedText ?? response.originalText));
       if (!publishedText) throw new Error('Published text cannot be empty.');
       if (publishedText.length > activity.maxAnswerLength) throw new Error('Published text is too long.');
-      const match = this.findRuleMatch(userId, publishedText);
+      const match = this.moderationFilter.match(userId, publishedText);
       if (status === 'approved' && match && !input.confirmRuleMatch) {
         throw new Error(`Edited text still matches ban rule: ${match.pattern}. Confirm to approve.`);
       }
@@ -404,7 +402,7 @@ export class LiveService {
       participantName = null;
     }
     const participantNameMatch = participantName
-      ? this.findRuleMatch(userId, participantName)
+      ? this.moderationFilter.match(userId, participantName)
       : null;
     if (status === 'approved' && participantNameMatch && !input.confirmRuleMatch) {
       throw new Error(`Participant name still matches ban rule: ${participantNameMatch.pattern}. Confirm to approve.`);
@@ -413,50 +411,19 @@ export class LiveService {
   }
 
   listRules(userId: string) {
-    const rules = this.repository.listModerationRules(userId);
-    this.moderationRuleCache.set(userId, rules);
-    return rules;
+    return this.moderationFilter.list(userId);
   }
 
   createRule(userId: string, pattern: string, matchMode: ModerationMatchMode) {
-    const validated = this.validateRule(pattern, matchMode);
-    const result = this.repository.createModerationRule(userId, validated.pattern, validated.matchMode);
-    this.moderationRuleCache.delete(userId);
-    return result;
+    return this.moderationFilter.create(userId, pattern, matchMode);
   }
 
   updateRule(userId: string, id: string, pattern: string, matchMode: ModerationMatchMode) {
-    const validated = this.validateRule(pattern, matchMode);
-    const result = this.repository.updateModerationRule(id, userId, validated.pattern, validated.matchMode);
-    if (!result) throw new Error('Moderation rule not found.');
-    this.moderationRuleCache.delete(userId);
-    return result;
+    return this.moderationFilter.update(userId, id, pattern, matchMode);
   }
 
   deleteRule(userId: string, id: string) {
-    if (!this.repository.deleteModerationRule(id, userId)) throw new Error('Moderation rule not found.');
-    this.moderationRuleCache.delete(userId);
-  }
-
-  private validateRule(pattern: string, matchMode: ModerationMatchMode) {
-    const cleanPattern = normalizedText(String(pattern ?? ''));
-    if (!cleanPattern || cleanPattern.length > 120) throw new Error('Rule must contain between 1 and 120 characters.');
-    if (!matchModes.has(matchMode)) throw new Error('Invalid match mode.');
-    return { pattern: cleanPattern, matchMode };
-  }
-
-  private findRuleMatch(userId: string, text: string) {
-    const normalized = normalizedMatchText(text);
-    let rules = this.moderationRuleCache.get(userId);
-    if (!rules) {
-      rules = this.repository.listModerationRules(userId);
-      this.moderationRuleCache.set(userId, rules);
-    }
-    return rules.find((rule) => {
-      const pattern = normalizedMatchText(rule.pattern);
-      if (rule.matchMode === 'contains') return normalized.includes(pattern);
-      return new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRegex(pattern)}(?=$|[^\\p{L}\\p{N}])`, 'u').test(normalized);
-    });
+    this.moderationFilter.delete(userId, id);
   }
 
   private getPublicSnapshot(activity: LiveActivitySummary): LiveResultsSnapshot {

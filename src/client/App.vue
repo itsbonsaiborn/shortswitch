@@ -71,7 +71,7 @@ const onCreated = async (link: LinkRecord) => {
 <template>
   <div v-if="authNavigationPending" class="min-h-dvh bg-[var(--ui-page)]" aria-busy="true"></div>
   <RouterView v-else-if="isLoginRoute || isPublicRoute || isStandaloneRoute || !user" />
-  <AppShell v-else @create-link="createOpen = true" @create-live="router.push('/app/activities/new')" @create-page="router.push('/app/pages/new')">
+  <AppShell v-else @create-link="createOpen = true" @create-live="router.push('/app/activities/new')" @create-page="router.push('/app/pages/new')" @create-board="router.push('/app/boards/new')">
     <RouterView />
   </AppShell>
   <template v-if="showAdminOverlays">

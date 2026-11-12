@@ -449,6 +449,384 @@ const migrations: Migration[] = [
         INNER JOIN activity_version_blocks b ON b.slide_id = s.id AND b.block_type = 'question';
       `);
     }
+  },
+  {
+    version: 14,
+    name: 'boards_foundation',
+    up(db) {
+      const publicSlugTable = db.prepare(
+        `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'public_slugs'`
+      ).get() as { sql: string } | undefined;
+      if (publicSlugTable && !publicSlugTable.sql.includes("'board'")) {
+        db.exec(`
+          ALTER TABLE public_slugs RENAME TO public_slugs_pre_boards;
+          CREATE TABLE public_slugs (
+            slug TEXT PRIMARY KEY,
+            resource_type TEXT NOT NULL CHECK (resource_type IN ('link', 'live_activity', 'page', 'board')),
+            resource_id TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL
+          );
+          INSERT INTO public_slugs (slug, resource_type, resource_id, created_at)
+          SELECT slug, resource_type, resource_id, created_at FROM public_slugs_pre_boards;
+          DROP TABLE public_slugs_pre_boards;
+        `);
+      }
+
+      db.exec(`
+        CREATE TABLE board_themes (
+          id TEXT PRIMARY KEY,
+          owner_user_id TEXT,
+          name TEXT NOT NULL,
+          config_json TEXT NOT NULL,
+          is_system INTEGER NOT NULL DEFAULT 0 CHECK (is_system IN (0, 1)),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE boards (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          slug TEXT NOT NULL UNIQUE,
+          title TEXT NOT NULL,
+          description TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'published', 'disabled')),
+          public_revision INTEGER NOT NULL DEFAULT 0 CHECK (public_revision >= 0),
+          published_at TEXT,
+          archived_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE (user_id, id),
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE board_settings (
+          board_id TEXT PRIMARY KEY,
+          theme_id TEXT NOT NULL,
+          layout TEXT NOT NULL DEFAULT 'freeform' CHECK (layout IN ('freeform')),
+          is_read_only INTEGER NOT NULL DEFAULT 0 CHECK (is_read_only IN (0, 1)),
+          is_locked INTEGER NOT NULL DEFAULT 0 CHECK (is_locked IN (0, 1)),
+          require_participant_name INTEGER NOT NULL DEFAULT 0 CHECK (require_participant_name IN (0, 1)),
+          moderation_mode TEXT NOT NULL DEFAULT 'review_all' CHECK (moderation_mode IN ('auto_approve', 'review_all')),
+          max_cards_total INTEGER NOT NULL DEFAULT 500 CHECK (max_cards_total BETWEEN 1 AND 5000),
+          max_cards_per_participant INTEGER NOT NULL DEFAULT 10 CHECK (max_cards_per_participant BETWEEN 1 AND 100),
+          max_title_length INTEGER NOT NULL DEFAULT 160 CHECK (max_title_length BETWEEN 1 AND 300),
+          max_body_length INTEGER NOT NULL DEFAULT 5000 CHECK (max_body_length BETWEEN 1 AND 20000),
+          allow_image_urls INTEGER NOT NULL DEFAULT 1 CHECK (allow_image_urls IN (0, 1)),
+          participant_can_edit INTEGER NOT NULL DEFAULT 1 CHECK (participant_can_edit IN (0, 1)),
+          participant_can_delete INTEGER NOT NULL DEFAULT 1 CHECK (participant_can_delete IN (0, 1)),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (board_id) REFERENCES boards(id) ON DELETE CASCADE,
+          FOREIGN KEY (theme_id) REFERENCES board_themes(id) ON DELETE RESTRICT
+        );
+
+        CREATE TABLE board_participants (
+          id TEXT PRIMARY KEY,
+          board_id TEXT NOT NULL,
+          participant_key_hash TEXT NOT NULL,
+          display_name TEXT,
+          card_count INTEGER NOT NULL DEFAULT 0 CHECK (card_count >= 0),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          last_seen_at TEXT NOT NULL,
+          UNIQUE (board_id, participant_key_hash),
+          UNIQUE (board_id, id),
+          FOREIGN KEY (board_id) REFERENCES boards(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE board_cards (
+          id TEXT PRIMARY KEY,
+          board_id TEXT NOT NULL,
+          participant_id TEXT,
+          author_display_name TEXT,
+          title TEXT NOT NULL,
+          body TEXT NOT NULL,
+          image_url TEXT,
+          moderation_status TEXT NOT NULL DEFAULT 'pending' CHECK (moderation_status IN ('pending', 'approved', 'rejected')),
+          moderation_reason TEXT,
+          published_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE (board_id, id),
+          FOREIGN KEY (board_id) REFERENCES boards(id) ON DELETE CASCADE,
+          FOREIGN KEY (participant_id) REFERENCES board_participants(id) ON DELETE SET NULL
+        );
+
+        CREATE TABLE board_card_positions (
+          card_id TEXT PRIMARY KEY,
+          board_id TEXT NOT NULL,
+          x REAL NOT NULL DEFAULT 0,
+          y REAL NOT NULL DEFAULT 0,
+          width REAL NOT NULL DEFAULT 280 CHECK (width BETWEEN 160 AND 1200),
+          height REAL NOT NULL DEFAULT 180 CHECK (height BETWEEN 100 AND 1600),
+          z_index INTEGER NOT NULL DEFAULT 0 CHECK (z_index >= 0),
+          revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (board_id, card_id) REFERENCES board_cards(board_id, id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE board_card_credentials (
+          card_id TEXT PRIMARY KEY,
+          board_id TEXT NOT NULL,
+          owner_token_hash TEXT NOT NULL UNIQUE,
+          recovery_pin_hash TEXT,
+          credential_version INTEGER NOT NULL DEFAULT 1 CHECK (credential_version >= 1),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          last_used_at TEXT,
+          FOREIGN KEY (board_id, card_id) REFERENCES board_cards(board_id, id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE board_card_moderation_events (
+          id TEXT PRIMARY KEY,
+          board_id TEXT NOT NULL,
+          card_id TEXT NOT NULL,
+          previous_status TEXT CHECK (previous_status IN ('pending', 'approved', 'rejected')),
+          next_status TEXT NOT NULL CHECK (next_status IN ('pending', 'approved', 'rejected')),
+          reason TEXT,
+          moderator_user_id TEXT,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY (board_id, card_id) REFERENCES board_cards(board_id, id) ON DELETE CASCADE,
+          FOREIGN KEY (moderator_user_id) REFERENCES users(id) ON DELETE SET NULL
+        );
+
+        CREATE TABLE board_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          board_id TEXT NOT NULL,
+          revision INTEGER NOT NULL CHECK (revision > 0),
+          event_type TEXT NOT NULL CHECK (event_type IN ('board_updated', 'card_created', 'card_updated', 'card_moved', 'card_moderated', 'card_deleted')),
+          entity_id TEXT,
+          payload_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL,
+          UNIQUE (board_id, revision),
+          FOREIGN KEY (board_id) REFERENCES boards(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX idx_boards_user_updated ON boards(user_id, updated_at DESC);
+        CREATE INDEX idx_boards_status_updated ON boards(status, updated_at DESC);
+        CREATE INDEX idx_board_themes_owner_updated ON board_themes(owner_user_id, updated_at DESC);
+        CREATE INDEX idx_board_participants_board_seen ON board_participants(board_id, last_seen_at DESC);
+        CREATE INDEX idx_board_cards_board_status_created ON board_cards(board_id, moderation_status, created_at DESC);
+        CREATE INDEX idx_board_cards_participant_created ON board_cards(board_id, participant_id, created_at DESC);
+        CREATE INDEX idx_board_positions_board_z ON board_card_positions(board_id, z_index, card_id);
+        CREATE INDEX idx_board_moderation_board_created ON board_card_moderation_events(board_id, created_at DESC);
+        CREATE INDEX idx_board_events_board_revision ON board_events(board_id, revision);
+      `);
+
+      const timestamp = nowIso();
+      const insertTheme = db.prepare(`
+        INSERT OR IGNORE INTO board_themes (id, owner_user_id, name, config_json, is_system, created_at, updated_at)
+        VALUES (?, NULL, ?, ?, 1, ?, ?)
+      `);
+      for (const theme of [
+        ['board_theme_classic_cream', 'Classic Cream', '{"surface":"classic_cream"}'],
+        ['board_theme_forest_dark', 'Forest Dark', '{"surface":"forest_dark"}'],
+        ['board_theme_soft_lavender', 'Soft Lavender', '{"surface":"soft_lavender"}'],
+        ['board_theme_ocean_blue', 'Ocean Blue', '{"surface":"ocean_blue"}'],
+        ['board_theme_minimal_light', 'Minimal Light', '{"surface":"minimal_light"}']
+      ] as const) {
+        insertTheme.run(theme[0], theme[1], theme[2], timestamp, timestamp);
+      }
+    }
+  },
+  {
+    version: 15,
+    name: 'boards_management',
+    up(db) {
+      const columns = db.prepare('PRAGMA table_info(boards)').all() as Array<{ name: string }>;
+      if (!columns.some((column) => column.name === 'expires_at')) {
+        db.exec('ALTER TABLE boards ADD COLUMN expires_at TEXT;');
+      }
+      db.exec('CREATE INDEX IF NOT EXISTS idx_boards_expiration ON boards(expires_at);');
+    }
+  },
+  {
+    version: 16,
+    name: 'board_card_ownership',
+    up(db) {
+      const settingsColumns = db.prepare('PRAGMA table_info(board_settings)').all() as Array<{ name: string }>;
+      if (!settingsColumns.some((column) => column.name === 'require_card_title')) {
+        db.exec(`ALTER TABLE board_settings ADD COLUMN require_card_title INTEGER NOT NULL DEFAULT 1 CHECK (require_card_title IN (0, 1));`);
+      }
+      const cardColumns = db.prepare('PRAGMA table_info(board_cards)').all() as Array<{ name: string }>;
+      if (!cardColumns.some((column) => column.name === 'card_layout')) {
+        db.exec(`ALTER TABLE board_cards ADD COLUMN card_layout TEXT NOT NULL DEFAULT 'text' CHECK (card_layout IN ('text', 'image_text', 'compact'));`);
+      }
+      db.exec(`
+        CREATE TABLE board_ownership_sessions (
+          id TEXT PRIMARY KEY,
+          board_id TEXT NOT NULL,
+          session_token_hash TEXT NOT NULL UNIQUE,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          expires_at TEXT NOT NULL,
+          last_used_at TEXT,
+          FOREIGN KEY (board_id) REFERENCES boards(id) ON DELETE CASCADE
+        );
+        CREATE TABLE board_ownership_session_cards (
+          session_id TEXT NOT NULL,
+          card_id TEXT NOT NULL,
+          granted_at TEXT NOT NULL,
+          PRIMARY KEY (session_id, card_id),
+          FOREIGN KEY (session_id) REFERENCES board_ownership_sessions(id) ON DELETE CASCADE,
+          FOREIGN KEY (card_id) REFERENCES board_cards(id) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_board_ownership_sessions_board_expiry ON board_ownership_sessions(board_id, expires_at);
+        CREATE INDEX idx_board_ownership_session_cards_card ON board_ownership_session_cards(card_id, session_id);
+      `);
+    }
+  },
+  {
+    version: 17,
+    name: 'board_grid_reactions',
+    up(db) {
+      db.exec(`
+        ALTER TABLE board_settings RENAME TO board_settings_pre_grid;
+        CREATE TABLE board_settings (
+          board_id TEXT PRIMARY KEY,
+          theme_id TEXT NOT NULL,
+          layout TEXT NOT NULL DEFAULT 'grid' CHECK (layout IN ('grid')),
+          is_read_only INTEGER NOT NULL DEFAULT 0 CHECK (is_read_only IN (0, 1)),
+          is_locked INTEGER NOT NULL DEFAULT 0 CHECK (is_locked IN (0, 1)),
+          require_participant_name INTEGER NOT NULL DEFAULT 0 CHECK (require_participant_name IN (0, 1)),
+          moderation_mode TEXT NOT NULL DEFAULT 'review_all' CHECK (moderation_mode IN ('auto_approve', 'review_all')),
+          max_cards_total INTEGER NOT NULL DEFAULT 500 CHECK (max_cards_total BETWEEN 1 AND 5000),
+          max_cards_per_participant INTEGER NOT NULL DEFAULT 10 CHECK (max_cards_per_participant BETWEEN 1 AND 100),
+          max_title_length INTEGER NOT NULL DEFAULT 160 CHECK (max_title_length BETWEEN 1 AND 300),
+          max_body_length INTEGER NOT NULL DEFAULT 5000 CHECK (max_body_length BETWEEN 1 AND 20000),
+          allow_image_urls INTEGER NOT NULL DEFAULT 1 CHECK (allow_image_urls IN (0, 1)),
+          participant_can_edit INTEGER NOT NULL DEFAULT 1 CHECK (participant_can_edit IN (0, 1)),
+          participant_can_delete INTEGER NOT NULL DEFAULT 1 CHECK (participant_can_delete IN (0, 1)),
+          require_card_title INTEGER NOT NULL DEFAULT 1 CHECK (require_card_title IN (0, 1)),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (board_id) REFERENCES boards(id) ON DELETE CASCADE,
+          FOREIGN KEY (theme_id) REFERENCES board_themes(id) ON DELETE RESTRICT
+        );
+        INSERT INTO board_settings (
+          board_id, theme_id, layout, is_read_only, is_locked, require_participant_name,
+          moderation_mode, max_cards_total, max_cards_per_participant, max_title_length,
+          max_body_length, allow_image_urls, participant_can_edit, participant_can_delete,
+          require_card_title, created_at, updated_at
+        )
+        SELECT board_id, theme_id, 'grid', is_read_only, is_locked, require_participant_name,
+          moderation_mode, max_cards_total, max_cards_per_participant, max_title_length,
+          max_body_length, allow_image_urls, participant_can_edit, participant_can_delete,
+          require_card_title, created_at, updated_at
+        FROM board_settings_pre_grid;
+        DROP TABLE board_settings_pre_grid;
+
+        CREATE TABLE board_reaction_sessions (
+          id TEXT PRIMARY KEY,
+          board_id TEXT NOT NULL,
+          session_token_hash TEXT NOT NULL UNIQUE,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          expires_at TEXT NOT NULL,
+          last_used_at TEXT,
+          FOREIGN KEY (board_id) REFERENCES boards(id) ON DELETE CASCADE
+        );
+        CREATE TABLE board_card_reactions (
+          board_id TEXT NOT NULL,
+          card_id TEXT NOT NULL,
+          session_id TEXT NOT NULL,
+          reaction_type TEXT NOT NULL CHECK (reaction_type IN ('like', 'dislike')),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (card_id, session_id),
+          FOREIGN KEY (board_id, card_id) REFERENCES board_cards(board_id, id) ON DELETE CASCADE,
+          FOREIGN KEY (session_id) REFERENCES board_reaction_sessions(id) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_board_reaction_sessions_board_expiry
+          ON board_reaction_sessions(board_id, expires_at);
+        CREATE INDEX idx_board_card_reactions_card_type
+          ON board_card_reactions(board_id, card_id, reaction_type);
+      `);
+    }
+  },
+  {
+    version: 18,
+    name: 'board_theme_design',
+    up(db) {
+      const columns = db.prepare('PRAGMA table_info(board_settings)').all() as Array<{ name: string }>;
+      if (!columns.some((column) => column.name === 'visual_style')) {
+        db.exec(`ALTER TABLE board_settings ADD COLUMN visual_style TEXT NOT NULL DEFAULT 'classic' CHECK (visual_style IN ('classic', 'minimal', 'soft', 'bold'));`);
+      }
+      if (!columns.some((column) => column.name === 'background_pattern')) {
+        db.exec(`ALTER TABLE board_settings ADD COLUMN background_pattern TEXT NOT NULL DEFAULT 'none' CHECK (background_pattern IN ('none', 'dots', 'grid', 'soft_glow', 'crosses'));`);
+      }
+      if (!columns.some((column) => column.name === 'pattern_intensity')) {
+        db.exec(`ALTER TABLE board_settings ADD COLUMN pattern_intensity INTEGER NOT NULL DEFAULT 35 CHECK (pattern_intensity BETWEEN 0 AND 100);`);
+      }
+    }
+  },
+  {
+    version: 19,
+    name: 'board_realtime_moderation',
+    up(db) {
+      const cardColumns = db.prepare('PRAGMA table_info(board_cards)').all() as Array<{ name: string }>;
+      if (!cardColumns.some((column) => column.name === 'is_hidden')) {
+        db.exec(`ALTER TABLE board_cards ADD COLUMN is_hidden INTEGER NOT NULL DEFAULT 0 CHECK (is_hidden IN (0, 1));`);
+      }
+
+      const eventTable = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'board_events'")
+        .get() as { sql: string } | undefined;
+      if (eventTable && !eventTable.sql.includes("'reaction_updated'")) {
+        db.exec(`
+          ALTER TABLE board_events RENAME TO board_events_pre_realtime;
+          CREATE TABLE board_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            board_id TEXT NOT NULL,
+            revision INTEGER NOT NULL CHECK (revision > 0),
+            event_type TEXT NOT NULL CHECK (event_type IN (
+              'board_updated', 'card_created', 'card_updated', 'card_moved',
+              'card_moderated', 'card_deleted', 'reaction_updated'
+            )),
+            entity_id TEXT,
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            UNIQUE (board_id, revision),
+            FOREIGN KEY (board_id) REFERENCES boards(id) ON DELETE CASCADE
+          );
+          INSERT INTO board_events (id, board_id, revision, event_type, entity_id, payload_json, created_at)
+          SELECT id, board_id, revision, event_type, entity_id, payload_json, created_at
+          FROM board_events_pre_realtime;
+          DROP TABLE board_events_pre_realtime;
+          CREATE INDEX idx_board_events_board_revision ON board_events(board_id, revision);
+        `);
+      }
+    }
+  },
+  {
+    version: 20,
+    name: 'board_recovery_security',
+    up(db) {
+      const columns = db.prepare('PRAGMA table_info(board_card_credentials)').all() as Array<{ name: string }>;
+      if (!columns.some((column) => column.name === 'recovery_failed_attempts')) {
+        db.exec(`ALTER TABLE board_card_credentials ADD COLUMN recovery_failed_attempts INTEGER NOT NULL DEFAULT 0 CHECK (recovery_failed_attempts >= 0);`);
+      }
+      if (!columns.some((column) => column.name === 'recovery_window_started_at')) {
+        db.exec(`ALTER TABLE board_card_credentials ADD COLUMN recovery_window_started_at TEXT;`);
+      }
+      if (!columns.some((column) => column.name === 'recovery_locked_until')) {
+        db.exec(`ALTER TABLE board_card_credentials ADD COLUMN recovery_locked_until TEXT;`);
+      }
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_board_credentials_recovery_lock ON board_card_credentials(board_id, recovery_locked_until);`);
+    }
+  },
+  {
+    version: 21,
+    name: 'board_submission_expiration',
+    up(db) {
+      const settingsTable = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'board_settings'").get();
+      if (!settingsTable) return;
+      const columns = db.prepare('PRAGMA table_info(board_settings)').all() as Array<{ name: string }>;
+      if (!columns.some((column) => column.name === 'submissions_expires_at')) {
+        db.exec('ALTER TABLE board_settings ADD COLUMN submissions_expires_at TEXT;');
+      }
+      db.exec('CREATE INDEX IF NOT EXISTS idx_board_settings_submission_expiration ON board_settings(submissions_expires_at);');
+    }
   }
 ];
 

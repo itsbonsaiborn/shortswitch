@@ -103,7 +103,7 @@ export const getDb = () => {
 
       CREATE TABLE IF NOT EXISTS public_slugs (
         slug TEXT PRIMARY KEY,
-        resource_type TEXT NOT NULL CHECK (resource_type IN ('link', 'live_activity', 'page')),
+        resource_type TEXT NOT NULL CHECK (resource_type IN ('link', 'live_activity', 'page', 'board')),
         resource_id TEXT NOT NULL UNIQUE,
         created_at TEXT NOT NULL
       );
@@ -315,7 +315,7 @@ export const getDb = () => {
           ALTER TABLE public_slugs RENAME TO public_slugs_legacy;
           CREATE TABLE public_slugs (
             slug TEXT PRIMARY KEY,
-            resource_type TEXT NOT NULL CHECK (resource_type IN ('link', 'live_activity', 'page')),
+            resource_type TEXT NOT NULL CHECK (resource_type IN ('link', 'live_activity', 'page', 'board')),
             resource_id TEXT NOT NULL UNIQUE,
             created_at TEXT NOT NULL
           );

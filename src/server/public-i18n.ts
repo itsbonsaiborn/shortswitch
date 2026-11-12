@@ -3,6 +3,7 @@ import lv from '../client/locales/lv.json' with { type: 'json' };
 import type { Locale } from '../shared/types.js';
 
 export type PublicMessageKey = keyof typeof en.public;
+export type BoardPublicMessageKey = keyof typeof en.boardPublic;
 
 export const publicText = (
   locale: Locale,
@@ -16,3 +17,6 @@ export const publicText = (
     template
   );
 };
+
+export const boardPublicText = (locale: Locale, key: BoardPublicMessageKey) =>
+  (locale === 'lv' ? lv.boardPublic[key] : en.boardPublic[key]) || en.boardPublic[key];

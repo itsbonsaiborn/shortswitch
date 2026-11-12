@@ -27,6 +27,12 @@ import { ActivityService } from './services/activity-service.js';
 import { registerActivityRoutes } from './activity-routes.js';
 import { ActivityAttemptService } from './services/activity-attempt-service.js';
 import { registerActivityPublicRoutes } from './activity-public-routes.js';
+import { BoardService } from './services/board-service.js';
+import { registerBoardRoutes } from './board-routes.js';
+import { BoardCardService } from './services/board-card-service.js';
+import { BoardReactionService } from './services/board-reaction-service.js';
+import { BoardRealtimeService } from './services/board-realtime-service.js';
+import { ModerationFilterService } from './services/moderation-filter-service.js';
 import { renderLinkDisabledPage, renderLinkExpiredPage, renderLinkNotFoundPage, renderProtectedLinkPage, renderPublicServiceUnavailablePage, renderShortLinkPreviewPage } from './views/error-pages.js';
 import { isSafeRouteSlug, isTrustedCorsOrigin } from './utils.js';
 import { resolvePublicLocale } from '../shared/public-locale.js';
@@ -45,11 +51,16 @@ export const buildApp = async () => {
   const settingsRepository = new SettingsRepository();
   const users = new UserRepository();
   const rateLimiter = new RateLimiterService();
-  const live = new LiveService();
+  const moderationFilter = new ModerationFilterService();
+  const live = new LiveService(moderationFilter);
   const liveRealtime = new LiveRealtimeService();
   const pages = new PageService();
   const activities = new ActivityService();
   const activityAttempts = new ActivityAttemptService();
+  const boards = new BoardService();
+  const boardCards = new BoardCardService(rateLimiter, moderationFilter);
+  const boardReactions = new BoardReactionService(rateLimiter);
+  const boardRealtime = new BoardRealtimeService();
   const clientRoot = path.resolve('dist/client');
   const clientIndexPath = path.resolve(clientRoot, 'index.html');
   const publicIconRoot = path.join(clientRoot, 'icons');
@@ -127,7 +138,7 @@ export const buildApp = async () => {
     return reply.type(getContentType(filePath)).send(fs.readFileSync(filePath));
   };
   const renderClientIndexHtml = (metadata?: {
-    resourceType?: 'live' | 'page' | 'activity';
+    resourceType?: 'live' | 'page' | 'activity' | 'board';
     title?: string;
     description?: string;
     canonicalUrl?: string;
@@ -169,6 +180,7 @@ export const buildApp = async () => {
   let liveIndexPayloads: ClientIndexPayloads | undefined;
   const activityIndexPayloadCache = new Map<string, ClientIndexPayloads>();
   const pageIndexPayloadCache = new Map<string, ClientIndexPayloads>();
+  const boardIndexPayloadCache = new Map<string, ClientIndexPayloads>();
   const getClientIndexPayloads = () => {
     if (clientIndexPayloads) return clientIndexPayloads;
     clientIndexPayloads = compressClientHtml(renderClientIndexHtml());
@@ -209,6 +221,20 @@ export const buildApp = async () => {
       if (oldestKey) activityIndexPayloadCache.delete(oldestKey);
     }
     activityIndexPayloadCache.set(activity.versionId, payloads);
+    return payloads;
+  };
+  const getBoardIndexPayloads = (board: { id: string; updatedAt: string; title: string; description: string; publicUrl: string }) => {
+    const key = `${board.id}:${board.updatedAt}`;
+    const cached = boardIndexPayloadCache.get(key);
+    if (cached) return cached;
+    const payloads = compressClientHtml(renderClientIndexHtml({
+      resourceType: 'board',
+      title: board.title,
+      description: board.description || config.appDescription,
+      canonicalUrl: board.publicUrl
+    }));
+    if (boardIndexPayloadCache.size >= 100) boardIndexPayloadCache.delete(boardIndexPayloadCache.keys().next().value as string);
+    boardIndexPayloadCache.set(key, payloads);
     return payloads;
   };
   const acceptedEncodingQuality = (header: string | undefined, encoding: 'br' | 'gzip') => {
@@ -280,6 +306,7 @@ export const buildApp = async () => {
     clearInterval(analyticsCleanupTimer);
     clearInterval(activityExpirationTimer);
     liveRealtime.close();
+    boardRealtime.close();
     await links.flushAnalytics();
   });
 
@@ -332,13 +359,14 @@ export const buildApp = async () => {
 
   app.addHook('onRequest', async (request, reply) => {
     const pathname = request.url.split('?')[0];
-    if (pathname.startsWith('/api/live/public/') || pathname.startsWith('/api/pages/public/') || pathname.startsWith('/api/activities/public/')) {
+    if (pathname.startsWith('/api/live/public/') || pathname.startsWith('/api/pages/public/') || pathname.startsWith('/api/activities/public/') || pathname.startsWith('/api/boards/public/')) {
       reply.header('Cache-Control', 'no-store');
     } else if (
       pathname === '/api/live' || pathname.startsWith('/api/live/') || pathname.startsWith('/api/moderation/') ||
       pathname === '/api/activities' || pathname.startsWith('/api/activities/') ||
       pathname.startsWith('/api/settings/') ||
-      pathname === '/api/pages' || pathname.startsWith('/api/pages/')
+      pathname === '/api/pages' || pathname.startsWith('/api/pages/') ||
+      pathname === '/api/boards' || pathname.startsWith('/api/boards/')
     ) {
       reply.header('Cache-Control', 'private, no-store');
     }
@@ -348,6 +376,19 @@ export const buildApp = async () => {
     if (!config.defaults.apiRateLimitEnabled) return;
     if (!request.url.startsWith('/api/')) return;
     if (request.url === '/api/health') return;
+    const pathname = request.url.split('?')[0];
+    // Boards public routes have layered board/session/IP controls. Applying the
+    // generic IP bucket as well would punish an entire classroom behind one NAT.
+    if (pathname.startsWith('/api/boards/public/')) return;
+    if (pathname === '/api/auth/csrf-token') {
+      const allowed = rateLimiter.consume('csrf-public', request.ip ?? 'unknown', {
+        maxAttempts: 1_000,
+        windowMinutes: config.defaults.apiRateLimitWindowMinutes,
+        blockMinutes: config.defaults.apiRateLimitWindowMinutes
+      });
+      if (!allowed) return reply.code(429).send({ message: 'Too many requests. Please try again later.' });
+      return;
+    }
 
     const allowed = rateLimiter.consume(
       'api',
@@ -373,6 +414,7 @@ export const buildApp = async () => {
   await registerPageRoutes(app, { pages, sessions });
   await registerActivityRoutes(app, { activities, attempts: activityAttempts, sessions });
   await registerActivityPublicRoutes(app, { attempts: activityAttempts, rateLimiter });
+  await registerBoardRoutes(app, { boards, boardCards, boardReactions, realtime: boardRealtime, sessions, rateLimiter });
 
   app.get('/api/health', async () => ({ ok: true }));
 
@@ -817,6 +859,16 @@ export const buildApp = async () => {
     return sendClientIndex(request, reply);
   });
 
+  app.get('/boards/:slug/presentation', async (request, reply) => {
+    const locale = resolvePublicLocale(request.headers['accept-language']);
+    const status = boards.publicStatus((request.params as { slug: string }).slug);
+    if (status.state === 'not_found') return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage(locale));
+    if (status.state === 'disabled') return applyNoStore(reply).code(403).type('text/html').send(renderLinkDisabledPage(locale, 'board'));
+    if (status.state === 'expired') return applyNoStore(reply).code(410).type('text/html').send(renderLinkExpiredPage(locale, 'board'));
+    if (!fs.existsSync(clientIndexPath)) return applyNoStore(reply).code(503).type('text/html').send(renderPublicServiceUnavailablePage(locale));
+    return sendClientIndex(request, reply, getBoardIndexPayloads(status.board));
+  });
+
   app.get('/:slug', async (request, reply) => {
     const locale = resolvePublicLocale(request.headers['accept-language']);
     const slug = (request.params as { slug: string }).slug;
@@ -853,6 +905,13 @@ export const buildApp = async () => {
         return applyNoStore(reply).code(503).type('text/html').send(renderPublicServiceUnavailablePage(locale));
       }
       return sendClientIndex(request, reply, getPageIndexPayloads(page));
+    }
+    const board = boards.publicStatus(slug);
+    if (board.state === 'disabled') return applyNoStore(reply).code(403).type('text/html').send(renderLinkDisabledPage(locale, 'board'));
+    if (board.state === 'expired') return applyNoStore(reply).code(410).type('text/html').send(renderLinkExpiredPage(locale, 'board'));
+    if (board.state === 'available') {
+      if (!fs.existsSync(clientIndexPath)) return applyNoStore(reply).code(503).type('text/html').send(renderPublicServiceUnavailablePage(locale));
+      return sendClientIndex(request, reply, getBoardIndexPayloads(board.board));
     }
     const link = links.getLinkBySlug(slug);
     if (!link) return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage(locale));

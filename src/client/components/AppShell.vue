@@ -15,7 +15,7 @@ const { appName, loadAppConfig } = useAppConfig();
 const { theme, setTheme } = useTheme();
 const { sidebarCollapsed: savedSidebarCollapsed, setSidebarCollapsed } = usePreferences();
 const { t } = useI18n();
-const emit = defineEmits<{ createLink: []; createLive: []; createPage: [] }>();
+const emit = defineEmits<{ createLink: []; createLive: []; createPage: []; createBoard: [] }>();
 
 const mobileOpen = ref(false);
 const sidebarRef = ref<HTMLElement | null>(null);
@@ -43,6 +43,11 @@ const tabs = [
     name: 'navigation.pages',
     path: '/app/pages',
     icon: 'pages'
+  },
+  {
+    name: 'navigation.boards',
+    path: '/app/boards',
+    icon: 'boards'
   },
   {
     name: 'navigation.analytics',
@@ -105,11 +110,12 @@ const doLogout = async () => {
   await logout();
   await router.push('/login');
 };
-const runCreateAction = (action: 'link' | 'live' | 'page') => {
+const runCreateAction = (action: 'link' | 'live' | 'page' | 'board') => {
   createMenuOpen.value = false;
   if (action === 'link') emit('createLink');
   else if (action === 'live') emit('createLive');
-  else emit('createPage');
+  else if (action === 'page') emit('createPage');
+  else emit('createBoard');
 };
 
 const positionCreateMenu = () => {
@@ -228,6 +234,7 @@ onBeforeUnmount(() => {
                   <svg v-else-if="tab.icon === 'pages'" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="h-5 w-5">
                     <path d="M6 2.75A2.75 2.75 0 0 0 3.25 5.5v13A2.75 2.75 0 0 0 6 21.25h12a2.75 2.75 0 0 0 2.75-2.75v-13A2.75 2.75 0 0 0 18 2.75zm1.25 4.5h9.5v1.5h-9.5zm0 4h9.5v1.5h-9.5zm0 4h6.5v1.5h-6.5z" />
                   </svg>
+                  <svg v-else-if="tab.icon === 'boards'" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="h-5 w-5"><path d="M4 3a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm1 3h6v5H5zm8 0h6v8h-6zM5 13h6v5H5zm8 3h6v2h-6z"/></svg>
                   <svg v-else-if="tab.icon === 'analytics'" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="h-5 w-5">
                     <path d="M3 22V8h4v14zm7 0V2h4v20zm7 0v-8h4v8z" />
                   </svg>
@@ -349,6 +356,7 @@ onBeforeUnmount(() => {
                       <button class="w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-[var(--ui-panel-muted)]" role="menuitem" @click="runCreateAction('link')">{{ t('navigation.createLink') }}</button>
                       <button class="w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-[var(--ui-panel-muted)]" role="menuitem" @click="runCreateAction('live')">{{ t('navigation.createLive') }}</button>
                       <button class="w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-[var(--ui-panel-muted)]" role="menuitem" @click="runCreateAction('page')">{{ t('navigation.createPage') }}</button>
+                      <button class="w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-[var(--ui-panel-muted)]" role="menuitem" @click="runCreateAction('board')">{{ t('navigation.createBoard') }}</button>
                     </div>
                   </Transition>
                 </Teleport>

@@ -1,5 +1,5 @@
 import { config } from '../config.js';
-import { publicText } from '../public-i18n.js';
+import { boardPublicText, publicText } from '../public-i18n.js';
 import type { Locale } from '../../shared/types.js';
 
 const escapeHtml = (value: string) =>
@@ -373,15 +373,17 @@ ${renderCommonHead(options.title, options.description, appOgImage, config.appNam
   </body>
 </html>`;
 
-export const renderLinkExpiredPage = (locale: Locale = 'en', resource: 'link' | 'live' = 'link') => {
-  const titleKey = resource === 'live' ? 'activityExpiredTitle' : 'linkExpiredTitle';
-  const descriptionKey = resource === 'live' ? 'activityExpiredDescription' : 'linkExpiredDescription';
+export const renderLinkExpiredPage = (locale: Locale = 'en', resource: 'link' | 'live' | 'board' = 'link') => {
+  if (resource === 'board') return pageShell(locale, boardPublicText(locale, 'expiredTitle'), boardPublicText(locale, 'expiredTitle'), boardPublicText(locale, 'expiredDescription'));
+  const titleKey = resource === 'link' ? 'linkExpiredTitle' : 'activityExpiredTitle';
+  const descriptionKey = resource === 'link' ? 'linkExpiredDescription' : 'activityExpiredDescription';
   return pageShell(locale, publicText(locale, titleKey), publicText(locale, titleKey), publicText(locale, descriptionKey));
 };
 
-export const renderLinkDisabledPage = (locale: Locale = 'en', resource: 'link' | 'page' = 'link') => {
-  const titleKey = resource === 'page' ? 'pageDisabledTitle' : 'linkDisabledTitle';
-  const descriptionKey = resource === 'page' ? 'pageDisabledDescription' : 'linkDisabledDescription';
+export const renderLinkDisabledPage = (locale: Locale = 'en', resource: 'link' | 'page' | 'board' = 'link') => {
+  if (resource === 'board') return pageShell(locale, boardPublicText(locale, 'disabledTitle'), boardPublicText(locale, 'disabledTitle'), boardPublicText(locale, 'disabledDescription'));
+  const titleKey = resource === 'link' ? 'linkDisabledTitle' : 'pageDisabledTitle';
+  const descriptionKey = resource === 'link' ? 'linkDisabledDescription' : 'pageDisabledDescription';
   return pageShell(locale, publicText(locale, titleKey), publicText(locale, titleKey), publicText(locale, descriptionKey));
 };
 

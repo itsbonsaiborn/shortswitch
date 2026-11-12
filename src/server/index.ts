@@ -4,7 +4,7 @@ import { logger } from './logger.js';
 
 const start = async () => {
   const app = await buildApp();
-  await app.listen({ host: '0.0.0.0', port: config.port });
+  await app.listen({ host: '0.0.0.0', port: config.port, backlog: 1024 });
   logger.info({ port: config.port }, 'server started');
 };
 
