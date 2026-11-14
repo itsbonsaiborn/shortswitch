@@ -84,8 +84,14 @@ export class AuthService {
   }
 
   async changePassword(userId: string, sessionId: string, nextPassword: string) {
-    if (!nextPassword.trim()) {
+    if (typeof nextPassword !== 'string' || !nextPassword.trim()) {
       throw new Error('New password is required.');
+    }
+    if (nextPassword.length < 12) {
+      throw new Error('New password must contain at least 12 characters.');
+    }
+    if (nextPassword.length > 256) {
+      throw new Error('New password must not exceed 256 characters.');
     }
     const passwordHash = await argon2.hash(nextPassword);
     this.users.updatePassword(userId, passwordHash);

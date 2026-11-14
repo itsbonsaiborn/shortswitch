@@ -145,7 +145,7 @@ onMounted(load);
         </div>
         <label class="mt-4 block min-w-0">
           <span class="mb-2 block text-sm font-medium">{{ t('settings.newPassword') }}</span>
-          <input v-model="password" class="input" type="password" :placeholder="t('settings.passwordPlaceholder')" />
+          <input v-model="password" class="input" type="password" minlength="12" maxlength="256" autocomplete="new-password" :placeholder="t('settings.passwordPlaceholder')" />
         </label>
         <div class="mt-5 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
           <button class="btn-primary w-full sm:w-auto" @click="changePassword">{{ t('settings.password') }}</button>

@@ -4,6 +4,7 @@ import type { Locale } from '../shared/types.js';
 
 export type PublicMessageKey = keyof typeof en.public;
 export type BoardPublicMessageKey = keyof typeof en.boardPublic;
+export type ExternalLinkMessageKey = keyof typeof en.externalLink;
 
 export const publicText = (
   locale: Locale,
@@ -20,3 +21,6 @@ export const publicText = (
 
 export const boardPublicText = (locale: Locale, key: BoardPublicMessageKey) =>
   (locale === 'lv' ? lv.boardPublic[key] : en.boardPublic[key]) || en.boardPublic[key];
+
+export const externalLinkText = (locale: Locale, key: ExternalLinkMessageKey) =>
+  (locale === 'lv' ? lv.externalLink[key] : en.externalLink[key]) || en.externalLink[key];

@@ -2,6 +2,10 @@ import type { FastifyInstance } from 'fastify';
 import type { PageInput, PageStatus } from '@/shared/types.js';
 import type { SessionService } from './services/session-service.js';
 import { PageService } from './services/page-service.js';
+import type { RateLimiterService } from './services/rate-limiter-service.js';
+
+const PUBLIC_CLICK_PAGE_LIMIT = { maxAttempts: 3_000, windowMinutes: 1, blockMinutes: 1 } as const;
+const PUBLIC_CLICK_IP_LIMIT = { maxAttempts: 600, windowMinutes: 1, blockMinutes: 1 } as const;
 
 const errorStatus = (message: string) => {
   if (message.includes('not found')) return 404;
@@ -11,9 +15,9 @@ const errorStatus = (message: string) => {
 
 export const registerPageRoutes = async (
   app: FastifyInstance<any, any, any, any>,
-  dependencies: { pages: PageService; sessions: SessionService }
+  dependencies: { pages: PageService; sessions: SessionService; rateLimiter: RateLimiterService }
 ) => {
-  const { pages, sessions } = dependencies;
+  const { pages, sessions, rateLimiter } = dependencies;
   const requireAdmin = async (
     request: Parameters<SessionService['requireAuth']>[0],
     reply: Parameters<SessionService['requireAuth']>[1]
@@ -134,8 +138,14 @@ export const registerPageRoutes = async (
 
   app.post('/api/pages/public/:slug/clicks', async (request, reply) => {
     try {
+      const slug = (request.params as { slug: string }).slug;
+      const requestKey = request.ip ?? 'unknown';
+      if (!rateLimiter.consume('page-click-page', slug, PUBLIC_CLICK_PAGE_LIMIT, { slug }) ||
+          !rateLimiter.consume('page-click-ip', `${slug}:${requestKey}`, PUBLIC_CLICK_IP_LIMIT, { slug })) {
+        return reply.code(429).send({ message: 'Too many requests. Please try again later.' });
+      }
       pages.trackClick(
-        (request.params as { slug: string }).slug,
+        slug,
         request.body as { blockId?: string; eventId?: string },
         {
           ip: request.ip,

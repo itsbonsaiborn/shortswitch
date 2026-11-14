@@ -5,6 +5,7 @@ import ActivityImageLabelingInput from './ActivityImageLabelingInput.vue';
 import ActivityMatchingInput from './ActivityMatchingInput.vue';
 import ActivityOrderingInput from './ActivityOrderingInput.vue';
 import { formatActivityNumber } from '../lib/activity-results';
+import RichTextContent from './RichTextContent.vue';
 
 const props = defineProps<{ slide: ActivitySlide | null; activityTitle: string; mode: 'desktop' | 'mobile'; standalone?: boolean; theme?: ActivityTheme; layout?: ActivityLayout; backgroundPattern?: ActivityBackgroundPattern; patternIntensity?: number }>();
 const imageAnswers = reactive<Record<string, Array<{ markerId: string; labelId: string }>>>({});
@@ -42,10 +43,10 @@ const toggleMultiple = (blockId: string, optionId: string) => {
         <hr v-else-if="block.type === 'divider'" class="border-[var(--ui-border)]" :class="block.config.style === 'dashed' ? 'border-dashed' : block.config.style === 'dotted' ? 'border-dotted' : ''" />
         <section v-else class="activity-themed-card rounded-3xl border border-[var(--ui-border)] bg-[var(--ui-panel)] p-5">
           <div class="flex items-start justify-between gap-3">
-            <h3 class="text-lg font-semibold">{{ block.config.prompt }}</h3>
+            <h3 class="text-lg font-semibold"><RichTextContent :value="block.config.prompt" inline /></h3>
             <span class="rounded-full bg-[var(--ui-accent-soft)] px-2.5 py-1 text-xs text-[var(--ui-accent)]">{{ formatActivityNumber(block.points) }} pt</span>
           </div>
-          <p v-if="(block.questionType === 'single_choice' || block.questionType === 'multiple_choice') && block.config.description" class="mt-2 text-sm leading-6 text-[var(--ui-text-muted)]">{{ block.config.description }}</p>
+          <RichTextContent v-if="(block.questionType === 'single_choice' || block.questionType === 'multiple_choice') && block.config.description" :value="block.config.description" class="mt-2 text-sm leading-6 text-[var(--ui-text-muted)]" />
           <div v-if="block.questionType === 'single_choice' || block.questionType === 'multiple_choice'" class="mt-4 space-y-2">
             <label v-for="option in block.config.options" :key="option.id" class="flex cursor-pointer items-center gap-3 rounded-2xl border px-4 py-3 transition-colors" :class="(block.questionType === 'single_choice' ? singleAnswers[block.id] === option.id : (multipleAnswers[block.id] ?? []).includes(option.id)) ? 'border-[var(--ui-accent)] bg-[var(--ui-accent-soft)]' : 'border-[var(--ui-border)] hover:border-[var(--ui-accent)]'">
               <input v-if="block.questionType === 'single_choice'" v-model="singleAnswers[block.id]" type="radio" :name="`preview-${block.id}`" :value="option.id" class="text-[var(--ui-accent)]" />

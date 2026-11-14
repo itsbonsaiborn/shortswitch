@@ -3,10 +3,11 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router';
 import type { LinkRecord, LiveActivitySummary, PageBackgroundPattern, PageBlock, PageBlockType, PageDetail, PageInput, PageLayout, PageNestedBlock, PageNestedBlockType, PageTheme } from '@/shared/types';
 import { useI18n } from 'vue-i18n';
-import { api } from '../lib/api';
+import { ApiError, api } from '../lib/api';
 import { useToast } from '../composables/useToast';
 import LinkPicker from '../components/LinkPicker.vue';
 import PageBlockIcon from '../components/PageBlockIcon.vue';
+import RichTextEditor from '../components/RichTextEditor.vue';
 import LiveActivityPicker from '../components/LiveActivityPicker.vue';
 import PageRenderer from '../components/PageRenderer.vue';
 
@@ -179,6 +180,9 @@ const load = async () => {
   } catch (error) {
     loadError.value = (error as Error).message || t('errors.load');
     pushToast({ tone: 'error', title: t('notices.pageLoadFailed'), description: loadError.value });
+    if (pageId.value && error instanceof ApiError && error.status === 404) {
+      await router.replace('/app/pages');
+    }
   } finally { loading.value = false; }
 };
 const insertBlock = (type: PageBlockType, index = form.blocks.length, openEditor = false) => {
@@ -963,7 +967,7 @@ watch(blockTypeSearch, () => void nextTick(syncAddBlockPopover), { flush: 'post'
               <label><span class="field-label">{{ t('editor.size') }}</span><select v-model="editingBlock.config.size" class="input px-3 py-2"><option value="small">{{ t('options.small') }}</option><option value="medium">{{ t('options.medium') }}</option><option value="large">{{ t('options.large') }}</option></select></label>
             </template>
             <template v-else-if="editingBlock.type === 'text'">
-              <label class="sm:col-span-2"><span class="field-label">{{ t('editor.text') }}</span><textarea v-model="editingBlock.config.text" class="input min-h-36 px-3 py-2" maxlength="4000" /></label>
+              <div class="sm:col-span-2"><span class="field-label">{{ t('editor.text') }}</span><RichTextEditor v-model="editingBlock.config.text" class="mt-2" :max-length="4000" min-height-class="min-h-36" :aria-label="t('editor.text')" /></div>
               <label><span class="field-label">{{ t('editor.alignment') }}</span><select v-model="editingBlock.config.alignment" class="input px-3 py-2"><option value="left">{{ t('options.left') }}</option><option value="center">{{ t('options.center') }}</option><option value="right">{{ t('options.right') }}</option></select></label>
             </template>
             <template v-else-if="editingBlock.type === 'link'">

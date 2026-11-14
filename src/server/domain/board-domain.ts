@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { BoardCardInput, BoardInput, BoardSettings } from '@/shared/board-types.js';
+import { stripRichText } from '../../shared/rich-text.js';
 
 const stableId = z.string().trim().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/);
 const optionalText = (maximum: number) => z.string().trim().max(maximum).default('');
@@ -15,7 +16,9 @@ const cardTitle = z.string().trim().max(300)
   .default('');
 const cardBody = z.string()
   .transform((value) => value.replace(/\r\n?/g, '\n').trim())
-  .pipe(z.string().min(1).max(20000).refine((value) => !unsafePlainTextControls.test(value), 'Board card text contains unsupported characters.'));
+  .pipe(z.string().min(1).max(20000)
+    .refine((value) => Boolean(stripRichText(value)), 'Board card text is required.')
+    .refine((value) => !unsafePlainTextControls.test(value), 'Board card text contains unsupported characters.'));
 const optionalNullableText = (maximum: number) => z.preprocess(
   (value) => typeof value === 'string' && !value.trim() ? null : value,
   z.string().trim().min(1).max(maximum)
@@ -97,7 +100,7 @@ export const parseBoardCardInput = (
 ): BoardCardInput => {
   const parsed = boardCardInputSchema.parse(input) as BoardCardInput;
   if (parsed.title.length > settings.maxTitleLength) throw new Error('Board card title is too long.');
-  if (settings.requireCardTitle && !parsed.title) throw new Error('Board card title is required.');
+  if (settings.requireCardTitle && !stripRichText(parsed.title)) throw new Error('Board card title is required.');
   if (parsed.body.length > settings.maxBodyLength) throw new Error('Board card body is too long.');
   if (parsed.imageUrl && !settings.allowImageUrls) throw new Error('Image URLs are disabled for this board.');
   if (settings.requireParticipantName && !parsed.authorDisplayName) throw new Error('Participant name is required.');

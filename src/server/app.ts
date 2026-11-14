@@ -14,7 +14,6 @@ import { logger } from './logger.js';
 import { AuthService } from './services/auth-service.js';
 import { LinkService } from './services/link-service.js';
 import { SessionService } from './services/session-service.js';
-import type { LinkRow } from './repositories/link-repository.js';
 import { SettingsRepository } from './repositories/settings-repository.js';
 import { UserRepository } from './repositories/user-repository.js';
 import { RateLimiterService } from './services/rate-limiter-service.js';
@@ -33,15 +32,22 @@ import { BoardCardService } from './services/board-card-service.js';
 import { BoardReactionService } from './services/board-reaction-service.js';
 import { BoardRealtimeService } from './services/board-realtime-service.js';
 import { ModerationFilterService } from './services/moderation-filter-service.js';
-import { renderLinkDisabledPage, renderLinkExpiredPage, renderLinkNotFoundPage, renderProtectedLinkPage, renderPublicServiceUnavailablePage, renderShortLinkPreviewPage } from './views/error-pages.js';
-import { isSafeRouteSlug, isTrustedCorsOrigin } from './utils.js';
+import { ServiceSectionService } from './services/service-section-service.js';
+import { ServiceSubmissionService } from './services/service-submission-service.js';
+import { registerServiceSectionRoutes } from './service-section-routes.js';
+import { SERVICE_FOOTER_MARKER, renderExternalLinkConfirmationPage, renderInvalidLinkDestinationPage, renderLinkDisabledPage, renderLinkExpiredPage, renderLinkNotFoundPage, renderProtectedLinkPage, renderPublicServiceUnavailablePage, renderServiceFooterHtml } from './views/error-pages.js';
+import { isSafeRouteSlug, isTrustedCorsOrigin, isTrustedLocalProxyAddress, validateTargetUrl } from './utils.js';
 import { resolvePublicLocale } from '../shared/public-locale.js';
 import { publicText } from './public-i18n.js';
+import { serviceSectionDefinitions } from '../shared/service-section-types.js';
+import type { ServiceFooterLink } from '../shared/types.js';
 
 export const buildApp = async () => {
   const app = Fastify({
     loggerInstance: logger,
-    trustProxy: true,
+    // Cloudflare Tunnel connects from the local host or Docker bridge. Trust only
+    // that immediate hop so a client-supplied X-Forwarded-For prefix cannot become request.ip.
+    trustProxy: (address, hop) => hop === 0 && isTrustedLocalProxyAddress(address),
     logController: new LogController({ disableRequestLogging: true }),
     bodyLimit: 64 * 1024
   });
@@ -61,6 +67,8 @@ export const buildApp = async () => {
   const boardCards = new BoardCardService(rateLimiter, moderationFilter);
   const boardReactions = new BoardReactionService(rateLimiter);
   const boardRealtime = new BoardRealtimeService();
+  const serviceSections = new ServiceSectionService();
+  const serviceSubmissions = new ServiceSubmissionService();
   const clientRoot = path.resolve('dist/client');
   const clientIndexPath = path.resolve(clientRoot, 'index.html');
   const publicIconRoot = path.join(clientRoot, 'icons');
@@ -78,33 +86,38 @@ export const buildApp = async () => {
     reply.header('Cache-Control', 'no-cache');
     return reply;
   };
-  const isPreviewBot = (userAgent: string | undefined) =>
-    /facebookexternalhit|Facebot|Twitterbot|Slackbot|Discordbot|TelegramBot|WhatsApp|LinkedInBot|SkypeUriPreview|googlebot|bingbot|applebot|DuckAssistBot|embedly|quora link preview|vkShare|pinterest|redditbot|ia_archiver/i.test(
-      userAgent ?? ''
-    );
-  const getLinkPreviewMeta = (link: LinkRow) => {
-    const shortUrl = `${new URL(config.baseUrl).host}/${link.slug}`;
-    let targetHost = 'destination';
+  app.addHook('onSend', async (request, _reply, payload) => {
+    if (typeof payload !== 'string' || !payload.includes(SERVICE_FOOTER_MARKER)) return payload;
+    const locale = resolvePublicLocale(request.headers['accept-language']);
+    let footerLinks: ServiceFooterLink[];
     try {
-      targetHost = new URL(link.targetUrl).host;
+      footerLinks = serviceSections.getFooterLinks(locale);
     } catch {
-      targetHost = 'destination';
+      footerLinks = serviceSectionDefinitions.filter((section) => section.required).map((section) => ({
+        type: section.type,
+        href: section.publicPath,
+        label: locale === 'lv' ? section.titleLv : section.titleEn
+      }));
+      footerLinks.push({
+        type: 'report_abuse',
+        href: '/service/report-abuse',
+        label: locale === 'lv' ? 'Ziņot par pārkāpumu' : 'Report Abuse'
+      });
     }
-
-    if (link.passwordHash) {
+    return payload.replaceAll(SERVICE_FOOTER_MARKER, renderServiceFooterHtml(footerLinks));
+  });
+  const resolveStoredLinkDestination = (rawTargetUrl: string) => {
+    try {
+      const targetUrl = validateTargetUrl(rawTargetUrl);
+      const parsed = new URL(targetUrl);
       return {
-        title: shortUrl,
-        description: `Password-protected short link on ${config.appName}. Access to ${targetHost} requires a password.`,
-        shortUrl: `${config.baseUrl.replace(/\/$/, '')}/${link.slug}`
+        targetUrl,
+        targetHostname: parsed.hostname,
+        internal: parsed.origin === new URL(config.baseUrl).origin
       };
+    } catch {
+      return undefined;
     }
-
-    return {
-      title: shortUrl,
-      description: `Short link on ${config.appName} that points to ${targetHost}.`,
-      shortUrl: `${config.baseUrl.replace(/\/$/, '')}/${link.slug}`,
-      targetUrl: link.targetUrl
-    };
   };
   const escapeHtml = (value: string) =>
     value
@@ -274,6 +287,7 @@ export const buildApp = async () => {
   links.cleanupAnalytics();
   pages.cleanupAnalytics();
   live.cleanupAnalytics();
+  serviceSubmissions.cleanupExpired();
   activityAttempts.expireDueAttempts();
 
   for (const warning of config.startupWarnings) {
@@ -285,8 +299,9 @@ export const buildApp = async () => {
       const deletedRows = links.cleanupAnalytics();
       const deletedPageRows = pages.cleanupAnalytics();
       const deletedLiveRows = live.cleanupAnalytics();
-      if (deletedRows > 0 || deletedPageRows > 0 || deletedLiveRows > 0) {
-        logger.info({ deletedRows, deletedPageRows, deletedLiveRows }, 'analytics retention cleanup completed');
+      const deletedServiceSubmissions = serviceSubmissions.cleanupExpired();
+      if (deletedRows > 0 || deletedPageRows > 0 || deletedLiveRows > 0 || deletedServiceSubmissions > 0) {
+        logger.info({ deletedRows, deletedPageRows, deletedLiveRows, deletedServiceSubmissions }, 'retention cleanup completed');
       }
     } catch (error) {
       logger.error({ err: error }, 'analytics retention cleanup failed');
@@ -329,8 +344,8 @@ export const buildApp = async () => {
             baseUri: ["'self'"],
             objectSrc: ["'none'"],
             frameAncestors: ["'none'"],
-            // Protected link forms legitimately redirect to validated external http(s) destinations.
-            formAction: ["'self'", 'https:', 'http:'],
+            // Protected link forms submit only to the local access route; the server performs the redirect.
+            formAction: ["'self'"],
             scriptSrc: ["'self'"],
             styleSrc: ["'self'", "'unsafe-inline'"],
             imgSrc: ["'self'", 'data:', 'blob:', 'https:', 'http:'],
@@ -366,7 +381,10 @@ export const buildApp = async () => {
       pathname === '/api/activities' || pathname.startsWith('/api/activities/') ||
       pathname.startsWith('/api/settings/') ||
       pathname === '/api/pages' || pathname.startsWith('/api/pages/') ||
-      pathname === '/api/boards' || pathname.startsWith('/api/boards/')
+      pathname === '/api/boards' || pathname.startsWith('/api/boards/') ||
+      pathname === '/api/service-sections' || pathname.startsWith('/api/service-sections/') ||
+      pathname === '/api/service-submissions' || pathname.startsWith('/api/service-submissions/') ||
+      pathname === '/api/service-submission-settings'
     ) {
       reply.header('Cache-Control', 'private, no-store');
     }
@@ -411,10 +429,11 @@ export const buildApp = async () => {
     sessions,
     rateLimiter
   });
-  await registerPageRoutes(app, { pages, sessions });
+  await registerPageRoutes(app, { pages, sessions, rateLimiter });
   await registerActivityRoutes(app, { activities, attempts: activityAttempts, sessions });
   await registerActivityPublicRoutes(app, { attempts: activityAttempts, rateLimiter });
   await registerBoardRoutes(app, { boards, boardCards, boardReactions, realtime: boardRealtime, sessions, rateLimiter });
+  await registerServiceSectionRoutes(app, { sections: serviceSections, submissions: serviceSubmissions, sessions, rateLimiter });
 
   app.get('/api/health', async () => ({ ok: true }));
 
@@ -758,10 +777,7 @@ export const buildApp = async () => {
       return applyNoStore(reply).redirect(`/${encodeURIComponent(slug)}`);
     }
 
-    const preview = getLinkPreviewMeta(link);
     return applyNoStore(reply).type('text/html').send(renderProtectedLinkPage({
-      title: preview.title,
-      description: preview.description,
       locale
     }));
   });
@@ -826,6 +842,10 @@ export const buildApp = async () => {
       }
 
       logger.info({ slug, ip: getRequestIpForLogs(request.ip) }, 'password protected link access');
+      const destination = resolveStoredLinkDestination(link.targetUrl);
+      if (!destination) {
+        return applyNoStore(reply).code(400).type('text/html').send(renderInvalidLinkDestinationPage(locale));
+      }
       links.queueAnalytics(link.id, link.slug, {
         userAgent: request.headers['user-agent'],
         referrer: request.headers.referer,
@@ -835,7 +855,14 @@ export const buildApp = async () => {
         region: request.headers['x-region'] as string | undefined,
         city: request.headers['x-city'] as string | undefined
       });
-      return applyNoStore(reply).code(303).redirect(link.targetUrl);
+      if (destination.internal) {
+        return applyNoStore(reply).code(303).redirect(destination.targetUrl);
+      }
+      return applyNoStore(reply).code(200).type('text/html').send(renderExternalLinkConfirmationPage({
+        targetUrl: destination.targetUrl,
+        targetHostname: destination.targetHostname,
+        locale
+      }));
     }
   );
 
@@ -938,11 +965,12 @@ export const buildApp = async () => {
         return applyNoStore(reply).code(429).type('text/plain; charset=utf-8').send(publicText(locale, 'tooManyRequests'));
       }
     }
-    if (isPreviewBot(request.headers['user-agent'])) {
-      return applyNoStore(reply).type('text/html').send(renderShortLinkPreviewPage({ ...getLinkPreviewMeta(link), locale }));
-    }
-
     if (link.passwordHash) return applyNoStore(reply).redirect(`/access/${encodeURIComponent(slug)}`);
+
+    const destination = resolveStoredLinkDestination(link.targetUrl);
+    if (!destination) {
+      return applyNoStore(reply).code(400).type('text/html').send(renderInvalidLinkDestinationPage(locale));
+    }
 
     links.queueAnalytics(link.id, link.slug, {
       userAgent: request.headers['user-agent'],
@@ -954,7 +982,12 @@ export const buildApp = async () => {
       city: request.headers['x-city'] as string | undefined
     });
 
-    return applyNoStore(reply).redirect(link.targetUrl);
+    if (destination.internal) return applyNoStore(reply).redirect(destination.targetUrl);
+    return applyNoStore(reply).code(200).type('text/html').send(renderExternalLinkConfirmationPage({
+      targetUrl: destination.targetUrl,
+      targetHostname: destination.targetHostname,
+      locale
+    }));
   });
 
   if (fs.existsSync(clientRoot)) {

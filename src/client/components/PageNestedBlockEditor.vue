@@ -4,6 +4,7 @@ import type { LinkRecord, LiveActivitySummary, PageBlockType, PageNestedBlock, P
 import LinkPicker from './LinkPicker.vue';
 import LiveActivityPicker from './LiveActivityPicker.vue';
 import PageBlockIcon from './PageBlockIcon.vue';
+import RichTextEditor from './RichTextEditor.vue';
 
 const { t } = useI18n();
 
@@ -50,7 +51,7 @@ const changeType = (event: Event) => {
         <label><span class="field-label">{{ t('editor.alignment') }}</span><select v-model="block.config.alignment" class="input px-3 py-2"><option value="left">{{ t('options.left') }}</option><option value="center">{{ t('options.center') }}</option><option value="right">{{ t('options.right') }}</option></select></label>
       </template>
       <template v-else-if="block.type === 'text'">
-        <label><span class="field-label">{{ t('editor.text') }}</span><textarea v-model="block.config.text" class="input min-h-28 px-3 py-2" maxlength="4000" /></label>
+        <div><span class="field-label">{{ t('editor.text') }}</span><RichTextEditor v-model="block.config.text" class="mt-2" :max-length="4000" min-height-class="min-h-28" :aria-label="t('editor.text')" /></div>
         <label><span class="field-label">{{ t('editor.alignment') }}</span><select v-model="block.config.alignment" class="input px-3 py-2"><option value="left">{{ t('options.left') }}</option><option value="center">{{ t('options.center') }}</option><option value="right">{{ t('options.right') }}</option></select></label>
       </template>
       <template v-else-if="block.type === 'link'">

@@ -13,6 +13,7 @@ import { BoardRepository } from '../repositories/board-repository.js';
 import { RateLimiterService } from './rate-limiter-service.js';
 import { sha256 } from '../utils.js';
 import { ModerationFilterService } from './moderation-filter-service.js';
+import { stripRichText } from '../../shared/rich-text.js';
 
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const RECOVERY_LIMIT = { maxAttempts: 5, windowMinutes: 10, blockMinutes: 15 } as const;
@@ -50,7 +51,7 @@ export class BoardCardService {
       ['Participant name', input.authorDisplayName]
     ].flatMap(([label, value]) => {
       if (!value) return [];
-      const rule = this.moderationFilter.match(ownerId, value);
+      const rule = this.moderationFilter.match(ownerId, stripRichText(value));
       return rule ? [`${label} matched ban rule: ${rule.pattern}`] : [];
     });
     return matches.length ? matches.join('; ') : null;

@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router';
 import { useAppConfig } from '../composables/useAppConfig';
 import { useAuth } from '../composables/useAuth';
 import { useI18n } from 'vue-i18n';
+import ServiceFooter from '../components/ServiceFooter.vue';
 
 const router = useRouter();
 const { appName, loadAppConfig } = useAppConfig();
@@ -31,7 +32,8 @@ loadAppConfig();
 
 <template>
   <div class="flex min-h-screen items-center justify-center p-4">
-    <div class="panel w-full max-w-md p-8 md:p-10">
+    <div class="w-full max-w-md space-y-5">
+    <div class="panel p-8 md:p-10">
       <div class="flex flex-col items-center text-center">
         <img
           src="/icons/icon-192.png"
@@ -59,6 +61,8 @@ loadAppConfig();
           {{ loading ? t('auth.signingIn') : t('auth.signIn') }}
         </button>
       </form>
+    </div>
+    <ServiceFooter />
     </div>
   </div>
 </template>

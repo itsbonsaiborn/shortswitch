@@ -77,7 +77,7 @@ ShortSwitch is built around secure defaults for self-hosted use.
 - Centralized log redaction for passwords, cookies, auth headers, CSRF tokens, and session identifiers
 - Rate limits for login and password-protected links
 - Strict slug validation and reserved slug protection
-- Safe redirect validation for destination URLs
+- Safe destination validation and a no-redirect confirmation page for external URLs
 - Privacy-aware analytics with hashed IP support
 - Analytics cleanup retention job
 
@@ -85,7 +85,7 @@ ShortSwitch is built around secure defaults for self-hosted use.
 
 - No JWTs are stored in `localStorage`
 - Analytics can run with `STORE_RAW_IP=false` and `IP_HASH_SECRET`
-- Analytics failures do not block redirects
+- Analytics failures do not block Link confirmation pages or same-origin navigation
 - The built-in rate limiter is in-memory and intended for a single-container deployment
 
 ## Quick Start
@@ -101,6 +101,8 @@ docker pull bonsaiborn/shortswitch:latest
 ### Local Docker run
 
 ```bash
+cp .env.example .env
+# Fill ADMIN_PASSWORD and IP_HASH_SECRET in .env with unique random values.
 docker compose up --build
 ```
 
@@ -164,7 +166,8 @@ services:
     container_name: shortswitch
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      # Keep the origin local when a host-level reverse proxy or Cloudflare Tunnel is used.
+      - "127.0.0.1:3000:3000"
     environment:
       NODE_ENV: production
       PORT: 3000
@@ -184,7 +187,7 @@ services:
       ENABLE_CSP: "true"
 
       ADMIN_EMAIL: test@test.en
-      ADMIN_PASSWORD: Q7b1GftYTQ7jbnz1CbJ*
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
       ADMIN_NAME: username
       RESET_ADMIN: "false"
 
@@ -196,7 +199,7 @@ services:
       BLOCK_LOCAL_URLS: "true"
       BLOCK_PRIVATE_IPS: "true"
       STORE_RAW_IP: "false"
-      IP_HASH_SECRET: "&ygj03ZNyqr&0vDeNkXmkz$TZMd0cfBrkuj"
+      IP_HASH_SECRET: ${IP_HASH_SECRET:?Set IP_HASH_SECRET in .env}
       ANALYTICS_RETENTION_DAYS: 90
 
       LOG_LEVEL: info

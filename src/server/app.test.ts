@@ -264,6 +264,7 @@ describe.sequential('server security hardening', () => {
     const {
       renderLinkDisabledPage,
       renderLinkExpiredPage,
+      renderExternalLinkConfirmationPage,
       renderProtectedLinkPage,
       renderPublicServiceUnavailablePage
     } = await import('./views/error-pages.js');
@@ -275,6 +276,317 @@ describe.sequential('server security hardening', () => {
     expect(renderLinkExpiredPage('lv', 'live')).toContain('Aktivitātes termiņš ir beidzies');
     expect(renderLinkDisabledPage('lv', 'page')).toContain('Lapa ir atspējota');
     expect(renderPublicServiceUnavailablePage('lv')).toContain('Pakalpojums nav pieejams');
+    expect(renderExternalLinkConfirmationPage({
+      locale: 'lv', targetHostname: 'example.com', targetUrl: 'https://example.com/path'
+    })).toContain('Atvērt mērķa adresi');
+  });
+
+  test('manages service page drafts and publishes safe localized content with essential fallbacks', async () => {
+    const { buildApp } = await import('./app.js');
+    const { getDb } = await import('./db.js');
+    const app = await buildApp();
+
+    expect(getDb().prepare('SELECT name FROM schema_migrations WHERE version = 23').get())
+      .toEqual({ name: 'service_contacts_visual_config' });
+    expect(getDb().prepare('SELECT name FROM schema_migrations WHERE version = 24').get())
+      .toEqual({ name: 'service_submissions' });
+    expect(getDb().prepare('SELECT name FROM schema_migrations WHERE version = 25').get())
+      .toEqual({ name: 'service_submission_inbox_settings' });
+
+    expect((await app.inject({ method: 'GET', url: '/api/service-sections' })).statusCode).toBe(401);
+    const initialSecurity = await app.inject({
+      method: 'GET', url: '/service/security', headers: { 'accept-language': 'lv-LV' }
+    });
+    expect(initialSecurity.statusCode).toBe(200);
+    expect(initialSecurity.body).toContain('Drošības politika');
+    expect(initialSecurity.body).toContain('/service/privacy');
+
+    const csrf = await getCsrfBundle(app);
+    const admin = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
+    const headers = { cookie: admin.cookies, 'x-csrf-token': csrf.csrfToken };
+    const list = await app.inject({ method: 'GET', url: '/api/service-sections', headers: { cookie: admin.cookies } });
+    expect(list.statusCode).toBe(200);
+    expect(list.json().sections).toHaveLength(4);
+
+    await seedUser('legacy-user@example.com', 'legacy-user-password-42');
+    const legacyCsrf = await getCsrfBundle(app);
+    const legacyUser = await login(app, 'legacy-user@example.com', 'legacy-user-password-42', legacyCsrf);
+    expect((await app.inject({
+      method: 'GET', url: '/api/service-sections', headers: { cookie: legacyUser.cookies }
+    })).statusCode).toBe(403);
+    expect((await app.inject({
+      method: 'GET', url: '/api/service-submissions', headers: { cookie: legacyUser.cookies }
+    })).statusCode).toBe(403);
+
+    const maliciousBody = 'Published safely <script>alert(1)</script> & reviewed.';
+    const draftPayload = {
+      titleEn: 'About this deployment', bodyEn: maliciousBody,
+      titleLv: 'Par šo vidi', bodyLv: 'Droši publicēts saturs.',
+      enabled: true, showInFooter: true
+    };
+    const draft = await app.inject({
+      method: 'PATCH', url: '/api/service-sections/about', headers, payload: draftPayload
+    });
+    expect(draft.statusCode).toBe(200);
+    expect(draft.json()).toMatchObject({ hasUnpublishedChanges: true, published: true });
+    const beforePublish = await app.inject({ method: 'GET', url: '/service/about' });
+    expect(beforePublish.body).not.toContain('Published safely');
+
+    const published = await app.inject({
+      method: 'POST', url: '/api/service-sections/about/publish', headers, payload: draftPayload
+    });
+    expect(published.statusCode).toBe(200);
+    expect(published.json()).toMatchObject({ hasUnpublishedChanges: false, needsReview: false });
+    const publicPage = await app.inject({ method: 'GET', url: '/service/about' });
+    expect(publicPage.statusCode).toBe(200);
+    expect(publicPage.body).toContain('Published safely &lt;script&gt;alert(1)&lt;/script&gt; &amp; reviewed.');
+    expect(publicPage.body).not.toContain('<script>alert(1)</script>');
+
+    const disabledAbout = await app.inject({
+      method: 'PATCH', url: '/api/service-sections/about', headers,
+      payload: { ...draftPayload, enabled: false }
+    });
+    expect(disabledAbout.statusCode).toBe(200);
+    expect((await app.inject({ method: 'GET', url: '/service/about' })).statusCode).toBe(404);
+
+    const contacts = list.json().sections.find((section: { type: string }) => section.type === 'contacts');
+    expect(contacts.contactConfig.blocks.some((block: { type: string }) => block.type === 'contact_form')).toBe(true);
+    const requiredUpdate = await app.inject({
+      method: 'PATCH', url: '/api/service-sections/contacts', headers,
+      payload: { ...contacts, enabled: false }
+    });
+    expect(requiredUpdate.statusCode).toBe(200);
+    expect(requiredUpdate.json().enabled).toBe(true);
+    expect((await app.inject({ method: 'GET', url: '/service/contacts' })).statusCode).toBe(200);
+
+    const invalidContactCard = await app.inject({
+      method: 'PATCH', url: '/api/service-sections/contacts', headers,
+      payload: {
+        ...contacts,
+        contactConfig: { blocks: [
+          { id: 'bad-social', type: 'social_card', titleEn: 'Unsafe', titleLv: 'Nedroša', descriptionEn: '', descriptionLv: '', icon: 'website', url: 'javascript:alert(1)' },
+          { id: 'required-form', type: 'contact_form', titleEn: 'Contact form', titleLv: 'Saziņas forma', descriptionEn: '', descriptionLv: '' }
+        ] }
+      }
+    });
+    expect(invalidContactCard.statusCode).toBe(400);
+    const missingControlledForm = await app.inject({
+      method: 'PATCH', url: '/api/service-sections/contacts', headers,
+      payload: { ...contacts, contactConfig: { blocks: [{ id: 'only-text', type: 'text', bodyEn: 'Text', bodyLv: 'Teksts' }] } }
+    });
+    expect(missingControlledForm.statusCode).toBe(400);
+
+    const contactPayload = {
+      ...contacts,
+      contactConfig: { blocks: [
+        { id: 'heading', type: 'heading', titleEn: 'Contact <script>alert(1)</script>', titleLv: 'Saziņa' },
+        { id: 'text', type: 'text', bodyEn: 'Choose a monitored channel.', bodyLv: 'Izvēlieties uzraudzītu saziņas kanālu.' },
+        { id: 'email', type: 'contact_email', titleEn: 'Email us', titleLv: 'Rakstiet mums', email: 'support@example.test' },
+        { id: 'social', type: 'social_card', titleEn: 'Project site', titleLv: 'Projekta vietne', descriptionEn: 'External information', descriptionLv: 'Ārēja informācija', icon: 'website', url: 'https://example.test/community' },
+        { id: 'divider', type: 'divider' },
+        { id: 'form', type: 'contact_form', titleEn: 'Contact form', titleLv: 'Saziņas forma', descriptionEn: 'Available in a later stage.', descriptionLv: 'Būs pieejama vēlāk.' }
+      ] }
+    };
+    const savedContacts = await app.inject({ method: 'PATCH', url: '/api/service-sections/contacts', headers, payload: contactPayload });
+    expect(savedContacts.statusCode).toBe(200);
+    expect(savedContacts.json()).toMatchObject({ hasUnpublishedChanges: true, contactConfig: contactPayload.contactConfig });
+    const beforeContactPublish = await app.inject({ method: 'GET', url: '/service/contacts' });
+    expect(beforeContactPublish.body).not.toContain('support@example.test');
+    expect(beforeContactPublish.body).not.toContain('mailto:');
+    const publishedContacts = await app.inject({ method: 'POST', url: '/api/service-sections/contacts/publish', headers, payload: contactPayload });
+    expect(publishedContacts.statusCode).toBe(200);
+    const publicContacts = await app.inject({ method: 'GET', url: '/service/contacts' });
+    expect(publicContacts.statusCode).toBe(200);
+    expect(publicContacts.body).toContain('mailto:support@example.test');
+    expect(publicContacts.body).toContain('https://example.test/community');
+    expect(publicContacts.body).toContain('src="https://example.test/favicon.ico"');
+    expect(publicContacts.body).toContain('referrerpolicy="no-referrer"');
+    expect(publicContacts.body).toContain('data-contact-form-component');
+    expect(publicContacts.body).toContain('action="/service/contacts/submit"');
+    expect(publicContacts.body).toContain('Contact &lt;script&gt;alert(1)&lt;/script&gt;');
+    expect(publicContacts.body).not.toContain('<script>alert(1)</script>');
+    expect(publicContacts.body).toContain('<form');
+
+    const footer = await app.inject({ method: 'GET', url: '/api/public/service-sections' });
+    expect(footer.statusCode).toBe(200);
+    const footerTypes = footer.json().links.map((link: { type: string }) => link.type);
+    expect(footerTypes).not.toContain('about');
+    expect(footerTypes).toEqual(expect.arrayContaining(['security', 'privacy', 'contacts', 'report_abuse']));
+
+    const errorPage = await app.inject({ method: 'GET', url: '/missing-service-footer' });
+    expect(errorPage.body).toContain('data-service-page-footer');
+    expect(errorPage.body).toContain('/service/security');
+    expect(errorPage.body).toContain('/service/report-abuse');
+    expect(errorPage.body).not.toContain('SHORTSWITCH_SERVICE_FOOTER');
+    await app.close();
+  });
+
+  test('validates, deduplicates, persists and protects public service submissions', async () => {
+    const { buildApp } = await import('./app.js');
+    const { getDb } = await import('./db.js');
+    const app = await buildApp();
+
+    expect((await app.inject({ method: 'GET', url: '/api/service-submissions' })).statusCode).toBe(401);
+
+    const contacts = await app.inject({ method: 'GET', url: '/service/contacts' });
+    const contactCookie = extractCookies(contacts.headers['set-cookie'] as string[] | string | undefined);
+    expect(contacts.statusCode).toBe(200);
+    expect(contactCookie).toContain('shortswitch_service_form=');
+
+    const invalid = await app.inject({
+      method: 'POST', url: '/service/contacts/submit',
+      headers: { cookie: contactCookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: new URLSearchParams({ email: 'not-an-email', subject: 'Hello', message: '<script>alert(1)</script>' }).toString()
+    });
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.body).toContain('Enter a valid email address.');
+    expect(invalid.body).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+    expect(invalid.body).not.toContain('<script>alert(1)</script>');
+
+    const contactPayload = new URLSearchParams({
+      email: 'teacher@example.test', subject: 'Stored safely', message: '<script>alert(1)</script>\nPlease reply.'
+    }).toString();
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const response = await app.inject({
+        method: 'POST', url: '/service/contacts/submit',
+        headers: { cookie: contactCookie, 'content-type': 'application/x-www-form-urlencoded' }, payload: contactPayload
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain('Your message was received.');
+    }
+    expect(getDb().prepare("SELECT COUNT(*) AS count FROM service_submissions WHERE submission_type = 'contact'").get())
+      .toEqual({ count: 1 });
+
+    const honeypot = await app.inject({
+      method: 'POST', url: '/service/contacts/submit',
+      headers: { cookie: contactCookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: new URLSearchParams({ email: 'bot@example.test', subject: 'Bot', message: 'Bot', website: 'https://spam.test' }).toString()
+    });
+    expect(honeypot.statusCode).toBe(200);
+    expect(getDb().prepare("SELECT COUNT(*) AS count FROM service_submissions WHERE submission_type = 'contact'").get())
+      .toEqual({ count: 1 });
+
+    const reportPage = await app.inject({ method: 'GET', url: '/service/report-abuse', headers: { 'accept-language': 'lv-LV' } });
+    const reportCookie = extractCookies(reportPage.headers['set-cookie'] as string[] | string | undefined);
+    expect(reportPage.statusCode).toBe(200);
+    expect(reportPage.body).toContain('Ziņot par ļaunprātīgu izmantošanu');
+    expect(reportPage.body).toContain('action="/service/report-abuse/submit"');
+
+    const externalLink = await app.inject({
+      method: 'POST', url: '/service/report-abuse/submit',
+      headers: { cookie: reportCookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: new URLSearchParams({ link: 'https://evil.example/path', reason: 'phishing', description: 'Suspicious.' }).toString()
+    });
+    expect(externalLink.statusCode).toBe(400);
+    const unsafeScheme = await app.inject({
+      method: 'POST', url: '/service/report-abuse/submit',
+      headers: { cookie: reportCookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: new URLSearchParams({ link: 'javascript:alert(1)', reason: 'phishing', description: 'Suspicious.' }).toString()
+    });
+    expect(unsafeScheme.statusCode).toBe(400);
+
+    const report = await app.inject({
+      method: 'POST', url: '/service/report-abuse/submit',
+      headers: { cookie: reportCookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: new URLSearchParams({
+        link: 'identifier-that-does-not-exist', reason: 'phishing',
+        description: "' OR 1=1; DROP TABLE links; --", reporterEmail: 'reporter@example.test'
+      }).toString()
+    });
+    expect(report.statusCode).toBe(200);
+    expect(getDb().prepare('SELECT COUNT(*) AS count FROM service_submissions').get()).toEqual({ count: 2 });
+    expect(getDb().prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'links'").get()).toEqual({ name: 'links' });
+
+    const csrf = await getCsrfBundle(app);
+    const admin = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
+    const adminList = await app.inject({ method: 'GET', url: '/api/service-submissions', headers: { cookie: admin.cookies } });
+    expect(adminList.statusCode).toBe(200);
+    expect(adminList.headers['cache-control']).toBe('private, no-store');
+    expect(adminList.json().submissions).toHaveLength(2);
+    expect(adminList.json().submissions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'contact', email: 'teacher@example.test', message: '<script>alert(1)</script>\nPlease reply.' }),
+      expect.objectContaining({ type: 'report_abuse', linkIdentifier: 'identifier-that-does-not-exist', reporterEmail: 'reporter@example.test' })
+    ]));
+
+    const reportEntry = adminList.json().submissions.find((entry: { type: string }) => entry.type === 'report_abuse');
+    const updated = await app.inject({
+      method: 'PATCH', url: `/api/service-submissions/${reportEntry.id}/status`,
+      headers: { cookie: admin.cookies, 'x-csrf-token': csrf.csrfToken }, payload: { status: 'in_progress' }
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json().status).toBe('in_progress');
+
+    const filtered = await app.inject({
+      method: 'GET', url: '/api/service-submissions?type=report_abuse&status=in_progress&search=DROP%20TABLE',
+      headers: { cookie: admin.cookies }
+    });
+    expect(filtered.statusCode).toBe(200);
+    expect(filtered.json()).toEqual(expect.objectContaining({ total: 1, newCount: 1 }));
+    expect(filtered.json().submissions).toHaveLength(1);
+
+    expect((await app.inject({ method: 'GET', url: '/api/service-submission-settings' })).statusCode).toBe(401);
+    const settings = await app.inject({
+      method: 'PATCH', url: '/api/service-submission-settings',
+      headers: { cookie: admin.cookies, 'x-csrf-token': csrf.csrfToken },
+      payload: { allowedEmailDomains: ['@Example.Test', 'school.lv'], publicContactEmail: 'contact@example.test', retentionDays: 90 }
+    });
+    expect(settings.statusCode).toBe(200);
+    expect(settings.json()).toEqual(expect.objectContaining({
+      allowedEmailDomains: ['example.test', 'school.lv'], publicContactEmail: 'contact@example.test', retentionDays: 90
+    }));
+
+    const blockedPage = await app.inject({ method: 'GET', url: '/service/contacts' });
+    const blockedCookie = extractCookies(blockedPage.headers['set-cookie'] as string[] | string | undefined);
+    const blockedSender = await app.inject({
+      method: 'POST', url: '/service/contacts/submit',
+      headers: { cookie: blockedCookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: new URLSearchParams({ email: 'person@outside.test', subject: 'Blocked', message: 'Not stored' }).toString()
+    });
+    expect(blockedSender.statusCode).toBe(400);
+    expect(blockedSender.body).toContain('email domain is not accepted');
+    expect(getDb().prepare("SELECT COUNT(*) AS count FROM service_submissions WHERE subject = 'Blocked'").get()).toEqual({ count: 0 });
+
+    const publicContactsWithEmail = await app.inject({ method: 'GET', url: '/service/contacts' });
+    expect(publicContactsWithEmail.body).toContain('mailto:contact@example.test');
+    expect(publicContactsWithEmail.body).not.toContain('allowedEmailDomains');
+
+    const deleted = await app.inject({
+      method: 'DELETE', url: `/api/service-submissions/${reportEntry.id}`,
+      headers: { cookie: admin.cookies, 'x-csrf-token': csrf.csrfToken }
+    });
+    expect(deleted.statusCode).toBe(204);
+    expect(getDb().prepare('SELECT COUNT(*) AS count FROM service_submissions WHERE id = ?').get(reportEntry.id)).toEqual({ count: 0 });
+    await app.close();
+  });
+
+  test('rate limits one form session without treating a shared IP as one participant', async () => {
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+
+    for (let participant = 0; participant < 12; participant += 1) {
+      const page = await app.inject({ method: 'GET', url: '/service/contacts' });
+      const cookie = extractCookies(page.headers['set-cookie'] as string[] | string | undefined);
+      const response = await app.inject({
+        method: 'POST', url: '/service/contacts/submit',
+        headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+        payload: new URLSearchParams({ email: `student${participant}@example.test`, subject: `Question ${participant}`, message: 'Classroom message' }).toString()
+      });
+      expect(response.statusCode).toBe(200);
+    }
+
+    const page = await app.inject({ method: 'GET', url: '/service/contacts' });
+    const cookie = extractCookies(page.headers['set-cookie'] as string[] | string | undefined);
+    let finalStatus = 0;
+    for (let attempt = 0; attempt < 9; attempt += 1) {
+      const response = await app.inject({
+        method: 'POST', url: '/service/contacts/submit',
+        headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+        payload: new URLSearchParams({ email: 'limited@example.test', subject: `Attempt ${attempt}`, message: 'Repeated submission' }).toString()
+      });
+      finalStatus = response.statusCode;
+    }
+    expect(finalStatus).toBe(429);
+    await app.close();
   });
 
   test('upgrades the shared slug registry for Pages without losing legacy rows', async () => {
@@ -340,6 +652,10 @@ describe.sequential('server security hardening', () => {
       .toEqual({ version: 20, name: 'board_recovery_security' });
     expect(db.prepare('SELECT version, name FROM schema_migrations WHERE version = 21').get())
       .toEqual({ version: 21, name: 'board_submission_expiration' });
+    expect(db.prepare('SELECT version, name FROM schema_migrations WHERE version = 22').get())
+      .toEqual({ version: 22, name: 'service_sections' });
+    expect(db.prepare('SELECT section_type FROM service_sections ORDER BY section_type').all())
+      .toHaveLength(4);
     expect(db.prepare("SELECT name FROM pragma_table_info('board_settings') WHERE name = 'submissions_expires_at'").get())
       .toEqual({ name: 'submissions_expires_at' });
     expect(db.prepare(`SELECT name FROM pragma_table_info('board_card_credentials') WHERE name IN (
@@ -1163,8 +1479,9 @@ describe.sequential('server security hardening', () => {
     });
     expect(deleteWithoutCsrf.statusCode).toBe(403);
 
-    const redirect = await app.inject({ method: 'GET', url: '/secure01' });
-    expect(redirect.statusCode).toBe(302);
+    const confirmation = await app.inject({ method: 'GET', url: '/secure01' });
+    expect(confirmation.statusCode).toBe(200);
+    expect(confirmation.body).toContain('https://example.org/');
 
     await app.close();
   });
@@ -1336,6 +1653,37 @@ describe.sequential('server security hardening', () => {
     await blockedApp.close();
   });
 
+  test('client supplied X-Forwarded-For prefixes cannot split login rate-limit buckets behind a local proxy', async () => {
+    setBaseEnv(testDbPath, {
+      LOGIN_MAX_FAILED_ATTEMPTS: '2',
+      LOGIN_ATTEMPT_WINDOW_MINUTES: '10',
+      LOGIN_BLOCK_MINUTES: '10'
+    });
+    vi.resetModules();
+
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+    const csrf = await getCsrfBundle(app);
+    const statuses: number[] = [];
+    for (let index = 0; index < 3; index += 1) {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/auth/login',
+        remoteAddress: '127.0.0.1',
+        payload: { email: 'spoof-test@example.com', password: 'wrong-password' },
+        headers: {
+          cookie: csrf.csrfCookies,
+          'x-csrf-token': csrf.csrfToken,
+          'x-forwarded-for': `203.0.113.${index + 1}, 198.51.100.77`
+        }
+      });
+      statuses.push(response.statusCode);
+    }
+    expect(statuses).toEqual([401, 401, 429]);
+
+    await app.close();
+  });
+
   test('protected link rate limit triggers', async () => {
     setBaseEnv(testDbPath, {
       PROTECTED_LINK_MAX_FAILED_ATTEMPTS: '1',
@@ -1389,7 +1737,7 @@ describe.sequential('server security hardening', () => {
     await app.close();
   });
 
-  test('protected link with valid password redirects with 303 See Other', async () => {
+  test('protected external link reveals its destination only after a valid password and never redirects automatically', async () => {
     const { buildApp } = await import('./app.js');
     const app = await buildApp();
     const csrf = await getCsrfBundle(app);
@@ -1406,14 +1754,28 @@ describe.sequential('server security hardening', () => {
     });
     expect(created.statusCode).toBe(200);
 
-    const redirect = await app.inject({
+    const directAccess = await app.inject({ method: 'GET', url: '/secret2' });
+    expect(directAccess.statusCode).toBe(302);
+    expect(directAccess.headers.location).toBe('/access/secret2');
+    expect(directAccess.body).not.toContain('example.com');
+
+    const form = await app.inject({ method: 'GET', url: '/access/secret2' });
+    expect(form.statusCode).toBe(200);
+    expect(form.body).not.toContain('example.com');
+
+    const confirmation = await app.inject({
       method: 'POST',
       url: '/access/secret2',
       payload: { password: '123456' }
     });
 
-    expect(redirect.statusCode).toBe(303);
-    expect(redirect.headers.location).toBe('https://example.com/protected');
+    expect(confirmation.statusCode).toBe(200);
+    expect(confirmation.headers.location).toBeUndefined();
+    expect(confirmation.body).toContain('example.com');
+    expect(confirmation.body).toContain('https://example.com/protected');
+    expect(confirmation.body).toContain('rel="noopener noreferrer external"');
+    expect(confirmation.body).toContain('referrerpolicy="no-referrer"');
+    expect(confirmation.body).not.toContain('http-equiv="refresh"');
 
     await app.close();
   });
@@ -1449,6 +1811,103 @@ describe.sequential('server security hardening', () => {
     });
     expect(postAccess.statusCode).toBe(302);
     expect(postAccess.headers.location).toBe('/plain01');
+
+    await app.close();
+  });
+
+  test('external links render a localized responsive confirmation page without automatic navigation', async () => {
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+    const csrf = await getCsrfBundle(app);
+    const { cookies } = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/links',
+      payload: {
+        targetUrl: 'https://outside.example/path?q=%22%3E%3Cscript%3Ealert(1)%3C%2Fscript%3E',
+        slug: 'confirm1'
+      },
+      headers: { cookie: cookies, 'x-csrf-token': csrf.csrfToken }
+    });
+    expect(created.statusCode).toBe(200);
+
+    for (const userAgent of ['Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)', 'facebookexternalhit/1.1']) {
+      const confirmation = await app.inject({
+        method: 'GET', url: '/confirm1', headers: { 'accept-language': 'lv-LV', 'user-agent': userAgent }
+      });
+      expect(confirmation.statusCode).toBe(200);
+      expect(confirmation.headers.location).toBeUndefined();
+      expect(confirmation.headers['cache-control']).toContain('no-store');
+      expect(confirmation.body).toContain('<html lang="lv">');
+      expect(confirmation.body).toContain('Tu atstāj ShortSwitch');
+      expect(confirmation.body).toContain('outside.example');
+      expect(confirmation.body).toContain('name="viewport"');
+      expect(confirmation.body).toContain('@media (max-width: 520px)');
+      expect(confirmation.body).toContain('target="_blank"');
+      expect(confirmation.body).toContain('/service/security');
+      expect(confirmation.body).toContain('/service/report-abuse');
+      expect(confirmation.body).toContain('data-service-page-footer');
+      expect(confirmation.body).not.toContain('<script>');
+      expect(confirmation.body).not.toContain('http-equiv="refresh"');
+      expect(confirmation.body).not.toMatch(/<script\b/i);
+    }
+
+    await app.close();
+  });
+
+  test('same-origin stored destinations retain direct navigation while invalid stored destinations fail closed', async () => {
+    setBaseEnv(testDbPath, { PUBLIC_URL: 'https://short.example' });
+    vi.resetModules();
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+    const csrf = await getCsrfBundle(app);
+    const { cookies } = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
+    const headers = { cookie: cookies, 'x-csrf-token': csrf.csrfToken };
+
+    const internal = await app.inject({
+      method: 'POST', url: '/api/links', headers,
+      payload: { targetUrl: 'https://short.example/app/pages', slug: 'internal1' }
+    });
+    expect(internal.statusCode).toBe(200);
+    const internalNavigation = await app.inject({ method: 'GET', url: '/internal1' });
+    expect(internalNavigation.statusCode).toBe(302);
+    expect(internalNavigation.headers.location).toBe('https://short.example/app/pages');
+
+    const invalid = await app.inject({
+      method: 'POST', url: '/api/links', headers,
+      payload: { targetUrl: 'https://example.com/safe', slug: 'invalid1' }
+    });
+    expect(invalid.statusCode).toBe(200);
+    const { getDb } = await import('./db.js');
+    getDb().prepare('UPDATE links SET target_url = ? WHERE id = ?').run('javascript:alert(1)', invalid.json().id);
+    const failedClosed = await app.inject({ method: 'GET', url: '/invalid1' });
+    expect(failedClosed.statusCode).toBe(400);
+    expect(failedClosed.headers.location).toBeUndefined();
+    expect(failedClosed.body).toContain('Link unavailable');
+    expect(failedClosed.body).not.toContain('javascript:');
+
+    await app.close();
+  });
+
+  test('disabled external links keep their destination private and do not render confirmation controls', async () => {
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+    const csrf = await getCsrfBundle(app);
+    const { cookies } = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
+    const headers = { cookie: cookies, 'x-csrf-token': csrf.csrfToken };
+    const created = await app.inject({
+      method: 'POST', url: '/api/links', headers,
+      payload: { targetUrl: 'https://private-destination.example/hidden', slug: 'disabled1' }
+    });
+    expect(created.statusCode).toBe(200);
+    expect((await app.inject({
+      method: 'POST', url: `/api/links/${created.json().id}/enabled`, headers, payload: { enabled: false }
+    })).statusCode).toBe(200);
+
+    const disabled = await app.inject({ method: 'GET', url: '/disabled1' });
+    expect(disabled.statusCode).toBe(403);
+    expect(disabled.body).not.toContain('private-destination.example');
+    expect(disabled.body).not.toContain('open-link');
 
     await app.close();
   });
@@ -1772,7 +2231,7 @@ describe.sequential('server security hardening', () => {
     await app.close();
   });
 
-  test('password change rejects an empty password', async () => {
+  test('password change enforces the production password length policy', async () => {
     const { buildApp } = await import('./app.js');
     const app = await buildApp();
     const csrf = await getCsrfBundle(app);
@@ -1791,6 +2250,24 @@ describe.sequential('server security hardening', () => {
     expect(response.statusCode).toBe(400);
     expect(response.json().message).toContain('New password is required.');
 
+    const shortResponse = await app.inject({
+      method: 'POST',
+      url: '/api/settings/password',
+      payload: { password: 'too-short' },
+      headers: { cookie: cookies, 'x-csrf-token': csrf.csrfToken }
+    });
+    expect(shortResponse.statusCode).toBe(400);
+    expect(shortResponse.json().message).toContain('at least 12 characters');
+
+    const oversizedResponse = await app.inject({
+      method: 'POST',
+      url: '/api/settings/password',
+      payload: { password: 'x'.repeat(257) },
+      headers: { cookie: cookies, 'x-csrf-token': csrf.csrfToken }
+    });
+    expect(oversizedResponse.statusCode).toBe(400);
+    expect(oversizedResponse.json().message).toContain('must not exceed 256 characters');
+
     await app.close();
   });
 
@@ -1800,7 +2277,7 @@ describe.sequential('server security hardening', () => {
     const csrf = await getCsrfBundle(app);
     const { cookies } = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
 
-    const blockedTargets = ['javascript:alert(1)', 'data:text/html,evil', 'ftp://example.com', 'localhost', 'http://localhost:8080'];
+    const blockedTargets = ['javascript:alert(1)', 'data:text/html,evil', 'ftp://example.com', 'localhost', 'http://localhost:8080', 'https://user:password@example.com'];
 
     for (const targetUrl of blockedTargets) {
       const response = await app.inject({
@@ -1840,6 +2317,43 @@ describe.sequential('server security hardening', () => {
     await app.close();
   });
 
+  test('private-address policy rejects special-use and IPv4-mapped destinations when enabled', async () => {
+    setBaseEnv(testDbPath, { BLOCK_PRIVATE_IPS: 'true' });
+    vi.resetModules();
+
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+    const csrf = await getCsrfBundle(app);
+    const { cookies } = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
+    const blockedTargets = [
+      'http://10.0.0.1',
+      'http://100.64.0.1',
+      'http://192.0.2.1',
+      'http://198.18.0.1',
+      'http://[::ffff:127.0.0.1]'
+    ];
+    for (const [index, targetUrl] of blockedTargets.entries()) {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/links',
+        payload: { targetUrl, slug: `private${index}` },
+        headers: { cookie: cookies, 'x-csrf-token': csrf.csrfToken }
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().message).toContain('Private IP destinations are blocked');
+    }
+
+    const publicTarget = await app.inject({
+      method: 'POST',
+      url: '/api/links',
+      payload: { targetUrl: 'https://example.com', slug: 'public-ip-policy' },
+      headers: { cookie: cookies, 'x-csrf-token': csrf.csrfToken }
+    });
+    expect(publicTarget.statusCode).toBe(200);
+
+    await app.close();
+  });
+
   test('analytics remains async, does not store raw IP by default, and analytics endpoints require auth', async () => {
     const analyticsRecordSpy = vi.spyOn((await import('./repositories/analytics-repository.js')).AnalyticsRepository.prototype, 'record');
     analyticsRecordSpy.mockImplementationOnce(() => {
@@ -1864,12 +2378,12 @@ describe.sequential('server security hardening', () => {
     });
     const link = created.json();
 
-    const redirect = await app.inject({
+    const confirmation = await app.inject({
       method: 'GET',
       url: '/analyt1',
       remoteAddress: '203.0.113.7'
     });
-    expect(redirect.statusCode).toBe(302);
+    expect(confirmation.statusCode).toBe(200);
 
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(loggerErrorSpy).toHaveBeenCalled();
@@ -1884,7 +2398,7 @@ describe.sequential('server security hardening', () => {
         'accept-language': 'lv-LV,lv;q=0.9'
       }
     });
-    expect(recordedRedirect.statusCode).toBe(302);
+    expect(recordedRedirect.statusCode).toBe(200);
     await new Promise((resolve) => setImmediate(resolve));
 
     const { getDb } = await import('./db.js');
@@ -2907,7 +3421,7 @@ describe.sequential('server security hardening', () => {
     expect((await app.inject({ method: 'DELETE', url: `/api/pages/${created.id}`, headers: adminHeaders })).statusCode).toBe(200);
     expect((await app.inject({ method: 'GET', url: '/datorika-renamed' })).statusCode).toBe(404);
 
-    expect((await app.inject({ method: 'GET', url: '/page-link', headers: { 'user-agent': 'Mozilla/5.0' } })).statusCode).toBe(302);
+    expect((await app.inject({ method: 'GET', url: '/page-link', headers: { 'user-agent': 'Mozilla/5.0' } })).statusCode).toBe(200);
     expect((await app.inject({ method: 'GET', url: '/page-live' })).statusCode).toBe(200);
     await app.close();
   });

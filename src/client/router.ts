@@ -18,6 +18,7 @@ export const routes: RouteRecordRaw[] = [
   { path: '/app/boards', component: () => import('./pages/BoardsPage.vue'), meta: { title: 'Boards' } },
   { path: '/app/boards/new', component: () => import('./pages/BoardEditorPage.vue'), meta: { title: 'Create Board' } },
   { path: '/app/boards/:id', component: () => import('./pages/BoardEditorPage.vue'), meta: { title: 'Edit Board' } },
+  { path: '/app/service-sections', component: () => import('./pages/ServiceSectionsPage.vue'), meta: { title: 'Service Sections' } },
   { path: '/app/analytics', component: () => import('./pages/GlobalAnalyticsPage.vue'), meta: { title: 'Analytics' } },
   { path: '/app/settings', component: () => import('./pages/SettingsPage.vue'), meta: { title: 'Settings' } },
   { path: '/present/:slug', component: () => import('./pages/LivePresentationPage.vue'), meta: { public: true } },

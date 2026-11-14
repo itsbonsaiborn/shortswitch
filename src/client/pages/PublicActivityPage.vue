@@ -8,6 +8,7 @@ import ActivityOrderingInput from '../components/ActivityOrderingInput.vue';
 import ActivityMatchingInput from '../components/ActivityMatchingInput.vue';
 import ActivityImageLabelingInput from '../components/ActivityImageLabelingInput.vue';
 import ActivityDeleteIcon from '../components/ActivityDeleteIcon.vue';
+import RichTextContent from '../components/RichTextContent.vue';
 import { activityCorrectAnswerRows, formatActivityNumber } from '../lib/activity-results';
 
 const route = useRoute();
@@ -290,7 +291,7 @@ onBeforeUnmount(() => { stopDeadlineTimer(); if (clockTimer) clearInterval(clock
             <div class="flex flex-wrap items-start justify-between gap-3">
               <div class="min-w-0">
                 <p class="text-xs font-semibold uppercase tracking-[.14em] text-[var(--ui-accent)]">{{ t('activityPlayer.progress', { current: (resultQuestion(result.questionBlockId)?.slide.position ?? 0) + 1, total: attempt.slides.length }) }}</p>
-                <h2 class="mt-1 break-words font-semibold">{{ resultQuestion(result.questionBlockId)?.block.config.prompt ?? t('activityResults.question') }}</h2>
+                <h2 class="mt-1 break-words font-semibold"><RichTextContent :value="resultQuestion(result.questionBlockId)?.block.config.prompt ?? t('activityResults.question')" inline /></h2>
               </div>
               <p class="shrink-0 rounded-full bg-[var(--ui-panel-muted)] px-3 py-1.5 text-sm font-semibold">{{ formatActivityNumber(result.awardedPoints) }} / {{ formatActivityNumber(result.maximumPoints) }}</p>
             </div>
@@ -324,8 +325,8 @@ onBeforeUnmount(() => { stopDeadlineTimer(); if (clockTimer) clearInterval(clock
             <figure v-else-if="block.type === 'image'" class="overflow-hidden rounded-2xl border border-[var(--ui-border)]"><img :src="block.config.url" :alt="block.config.alt" class="max-h-[28rem] w-full object-contain" /><figcaption v-if="block.config.caption" class="p-3 text-sm text-[var(--ui-text-muted)]">{{ block.config.caption }}</figcaption></figure>
             <hr v-else-if="block.type === 'divider'" class="border-[var(--ui-border)]" />
             <fieldset v-else class="min-w-0 max-w-full rounded-2xl border border-[var(--ui-border)] p-3 sm:p-5">
-              <legend class="max-w-full break-words px-2 text-lg font-semibold [overflow-wrap:anywhere]">{{ block.config.prompt }} <span v-if="block.required" class="text-[var(--ui-accent)]">*</span></legend>
-              <p v-if="(block.questionType === 'single_choice' || block.questionType === 'multiple_choice') && block.config.description" class="mb-4 text-sm leading-6 text-[var(--ui-text-muted)]">{{ block.config.description }}</p>
+              <legend class="max-w-full break-words px-2 text-lg font-semibold [overflow-wrap:anywhere]"><RichTextContent :value="block.config.prompt" inline /> <span v-if="block.required" class="text-[var(--ui-accent)]">*</span></legend>
+              <RichTextContent v-if="(block.questionType === 'single_choice' || block.questionType === 'multiple_choice') && block.config.description" :value="block.config.description" class="mb-4 text-sm leading-6 text-[var(--ui-text-muted)]" />
               <p v-if="(block.questionType === 'open_answer' || block.questionType === 'word_cloud') && block.config.instructions" class="mb-4 text-sm leading-6 text-[var(--ui-text-muted)]">{{ block.config.instructions }}</p>
               <div v-if="block.questionType === 'single_choice'" class="space-y-2">
                 <label v-for="option in block.config.options" :key="option.id" class="flex min-h-12 cursor-pointer items-center gap-3 rounded-xl border p-3 transition-colors focus-within:ring-2 focus-within:ring-[var(--ui-accent)]" :class="selectedOption(block.id) === option.id ? 'border-[var(--ui-accent)] bg-[var(--ui-accent-soft)]' : 'border-[var(--ui-border)] hover:border-[var(--ui-border-strong)]'"><input type="radio" :name="block.id" :checked="selectedOption(block.id) === option.id" @change="setAnswer(block.id, { questionType: 'single_choice', optionId: option.id })" /><span>{{ option.label }}</span></label>

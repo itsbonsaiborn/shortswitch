@@ -6,7 +6,7 @@ import type { ApexOptions } from 'apexcharts';
 import VueApexCharts from 'vue3-apexcharts';
 import { useI18n } from 'vue-i18n';
 import type { PageAnalytics, PageDetail } from '@/shared/types';
-import { api } from '../lib/api';
+import { ApiError, api } from '../lib/api';
 import { useTheme } from '../composables/useTheme';
 import AnalyticsBreakdownGrid from '../components/AnalyticsBreakdownGrid.vue';
 import AnalyticsVisitTable from '../components/AnalyticsVisitTable.vue';
@@ -121,7 +121,12 @@ const load = async (initial = page.value === null || analytics.value === null) =
     } else {
       analytics.value = await analyticsRequest;
     }
-  } catch (caught) { error.value = (caught as Error).message || t('errors.pageAnalyticsUnavailable'); }
+  } catch (caught) {
+    error.value = (caught as Error).message || t('errors.pageAnalyticsUnavailable');
+    if (initial && caught instanceof ApiError && caught.status === 404) {
+      await router.replace('/app/pages');
+    }
+  }
   finally {
     if (initial) loading.value = false;
   }

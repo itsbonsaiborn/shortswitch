@@ -827,6 +827,154 @@ const migrations: Migration[] = [
       }
       db.exec('CREATE INDEX IF NOT EXISTS idx_board_settings_submission_expiration ON board_settings(submissions_expires_at);');
     }
+  },
+  {
+    version: 22,
+    name: 'service_sections',
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS service_sections (
+          section_type TEXT PRIMARY KEY CHECK (section_type IN ('about', 'security', 'privacy', 'contacts')),
+          is_required INTEGER NOT NULL DEFAULT 0 CHECK (is_required IN (0, 1)),
+          is_enabled INTEGER NOT NULL DEFAULT 1 CHECK (is_enabled IN (0, 1)),
+          show_in_footer INTEGER NOT NULL DEFAULT 1 CHECK (show_in_footer IN (0, 1)),
+          needs_review INTEGER NOT NULL DEFAULT 1 CHECK (needs_review IN (0, 1)),
+          draft_title_en TEXT NOT NULL,
+          draft_body_en TEXT NOT NULL,
+          draft_title_lv TEXT NOT NULL,
+          draft_body_lv TEXT NOT NULL,
+          published_title_en TEXT NOT NULL,
+          published_body_en TEXT NOT NULL,
+          published_title_lv TEXT NOT NULL,
+          published_body_lv TEXT NOT NULL,
+          is_published INTEGER NOT NULL DEFAULT 1 CHECK (is_published IN (0, 1)),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          published_at TEXT
+        );
+      `);
+
+      const insert = db.prepare(`
+        INSERT OR IGNORE INTO service_sections (
+          section_type, is_required, is_enabled, show_in_footer, needs_review,
+          draft_title_en, draft_body_en, draft_title_lv, draft_body_lv,
+          published_title_en, published_body_en, published_title_lv, published_body_lv,
+          is_published, created_at, updated_at, published_at
+        ) VALUES (?, ?, 1, 1, 1, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+      `);
+      const timestamp = nowIso();
+      const defaults = [
+        ['about', 0, 'About ShortSwitch', 'ShortSwitch is a self-hosted educational platform for short links, public pages, activities, and collaborative boards.\n\nAdministrator review required: adapt this description to your deployment before publication.', 'Par ShortSwitch', 'ShortSwitch ir pašmitināta izglītības platforma īsajām saitēm, publiskajām lapām, aktivitātēm un sadarbības tāfelēm.\n\nNepieciešama administratora pārbaude: pirms publicēšanas pielāgojiet šo aprakstu savai videi.'],
+        ['security', 1, 'Security Policy', 'This page is reserved for security information and responsible vulnerability reporting instructions.\n\nAdministrator review required: add a monitored reporting channel and deployment-specific guidance. No security contact is configured by default.', 'Drošības politika', 'Šī lapa ir paredzēta drošības informācijai un norādījumiem par atbildīgu ievainojamību ziņošanu.\n\nNepieciešama administratora pārbaude: pievienojiet uzraudzītu ziņošanas kanālu un videi atbilstošus norādījumus. Drošības kontaktinformācija pēc noklusējuma nav norādīta.'],
+        ['privacy', 1, 'Privacy Policy', 'This page must be reviewed and updated by the operator to describe how this ShortSwitch deployment handles personal data, analytics, retention, and participant content.\n\nNo deployment-specific legal or privacy statement is configured by default.', 'Privātuma politika', 'Operatoram šī lapa ir jāpārskata un jāatjaunina, aprakstot, kā konkrētā ShortSwitch vide apstrādā personas datus, analītiku, glabāšanas termiņus un dalībnieku saturu.\n\nVidei specifisks juridisks vai privātuma paziņojums pēc noklusējuma nav konfigurēts.'],
+        ['contacts', 1, 'Contacts', 'Operator contact details have not been configured.\n\nAdministrator review required: add a monitored contact method before relying on this page for support or safety reports.', 'Kontakti', 'Operatora kontaktinformācija nav konfigurēta.\n\nNepieciešama administratora pārbaude: pirms izmantot šo lapu atbalsta vai drošības ziņojumiem, pievienojiet uzraudzītu saziņas veidu.']
+      ] as const;
+      for (const [type, required, titleEn, bodyEn, titleLv, bodyLv] of defaults) {
+        insert.run(type, required, titleEn, bodyEn, titleLv, bodyLv, titleEn, bodyEn, titleLv, bodyLv, timestamp, timestamp, timestamp);
+      }
+    }
+  },
+  {
+    version: 23,
+    name: 'service_contacts_visual_config',
+    up(db) {
+      const columns = db.prepare('PRAGMA table_info(service_sections)').all() as Array<{ name: string }>;
+      if (!columns.some((column) => column.name === 'draft_config_json')) {
+        db.exec(`ALTER TABLE service_sections ADD COLUMN draft_config_json TEXT NOT NULL DEFAULT '{}';`);
+      }
+      if (!columns.some((column) => column.name === 'published_config_json')) {
+        db.exec(`ALTER TABLE service_sections ADD COLUMN published_config_json TEXT NOT NULL DEFAULT '{}';`);
+      }
+    }
+  },
+  {
+    version: 24,
+    name: 'service_submissions',
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS service_submissions (
+          id TEXT PRIMARY KEY,
+          submission_type TEXT NOT NULL CHECK (submission_type IN ('contact', 'report_abuse')),
+          status TEXT NOT NULL DEFAULT 'new' CHECK (status IN ('new', 'in_review', 'resolved', 'dismissed')),
+          email TEXT,
+          subject TEXT,
+          message TEXT,
+          link_identifier TEXT,
+          reason TEXT CHECK (reason IS NULL OR reason IN ('phishing', 'malware', 'spam', 'harassment', 'copyright', 'privacy', 'other')),
+          description TEXT,
+          reporter_email TEXT,
+          duplicate_key TEXT NOT NULL UNIQUE,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          CHECK (
+            (submission_type = 'contact' AND email IS NOT NULL AND subject IS NOT NULL AND message IS NOT NULL AND link_identifier IS NULL AND reason IS NULL AND description IS NULL AND reporter_email IS NULL)
+            OR
+            (submission_type = 'report_abuse' AND email IS NULL AND subject IS NULL AND message IS NULL AND link_identifier IS NOT NULL AND reason IS NOT NULL AND description IS NOT NULL)
+          )
+        );
+        CREATE INDEX IF NOT EXISTS idx_service_submissions_status_created
+          ON service_submissions(status, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_service_submissions_type_created
+          ON service_submissions(submission_type, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_service_submissions_link
+          ON service_submissions(link_identifier, created_at DESC);
+      `);
+    }
+  },
+  {
+    version: 25,
+    name: 'service_submission_inbox_settings',
+    up(db) {
+      db.exec(`
+        ALTER TABLE service_submissions RENAME TO service_submissions_stage5;
+        CREATE TABLE service_submissions (
+          id TEXT PRIMARY KEY,
+          submission_type TEXT NOT NULL CHECK (submission_type IN ('contact', 'report_abuse')),
+          status TEXT NOT NULL DEFAULT 'new' CHECK (status IN ('new', 'in_progress', 'resolved', 'rejected')),
+          email TEXT,
+          subject TEXT,
+          message TEXT,
+          link_identifier TEXT,
+          reason TEXT CHECK (reason IS NULL OR reason IN ('phishing', 'malware', 'spam', 'harassment', 'copyright', 'privacy', 'other')),
+          description TEXT,
+          reporter_email TEXT,
+          duplicate_key TEXT NOT NULL UNIQUE,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          CHECK (
+            (submission_type = 'contact' AND email IS NOT NULL AND subject IS NOT NULL AND message IS NOT NULL AND link_identifier IS NULL AND reason IS NULL AND description IS NULL AND reporter_email IS NULL)
+            OR
+            (submission_type = 'report_abuse' AND email IS NULL AND subject IS NULL AND message IS NULL AND link_identifier IS NOT NULL AND reason IS NOT NULL AND description IS NOT NULL)
+          )
+        );
+        INSERT INTO service_submissions (
+          id, submission_type, status, email, subject, message, link_identifier, reason,
+          description, reporter_email, duplicate_key, created_at, updated_at
+        )
+        SELECT id, submission_type,
+          CASE status WHEN 'in_review' THEN 'in_progress' WHEN 'dismissed' THEN 'rejected' ELSE status END,
+          email, subject, message, link_identifier, reason, description, reporter_email,
+          duplicate_key, created_at, updated_at
+        FROM service_submissions_stage5;
+        DROP TABLE service_submissions_stage5;
+        CREATE INDEX idx_service_submissions_status_created ON service_submissions(status, created_at DESC);
+        CREATE INDEX idx_service_submissions_type_created ON service_submissions(submission_type, created_at DESC);
+        CREATE INDEX idx_service_submissions_link ON service_submissions(link_identifier, created_at DESC);
+
+        CREATE TABLE service_submission_settings (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          allowed_email_domains_json TEXT NOT NULL DEFAULT '[]',
+          public_contact_email TEXT,
+          retention_days INTEGER NOT NULL DEFAULT 365 CHECK (retention_days BETWEEN 1 AND 3650),
+          updated_at TEXT NOT NULL
+        );
+      `);
+      db.prepare(`
+        INSERT INTO service_submission_settings (
+          id, allowed_email_domains_json, public_contact_email, retention_days, updated_at
+        ) VALUES (1, '[]', NULL, 365, ?)
+      `).run(nowIso());
+    }
   }
 ];
 

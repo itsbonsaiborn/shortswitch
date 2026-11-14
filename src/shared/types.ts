@@ -475,3 +475,6 @@ export interface PageAnalytics {
   breakdowns: AnalyticsBreakdowns;
   recentClicks: AnalyticsVisitDetail[];
 }
+
+export * from './service-section-types.js';
+export * from './service-submission-types.js';

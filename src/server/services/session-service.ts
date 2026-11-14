@@ -64,6 +64,19 @@ export class SessionService {
     return request as AuthenticatedRequest;
   }
 
+  async requireAdmin(request: FastifyRequest, reply: FastifyReply): Promise<AuthenticatedRequest | null> {
+    const authenticatedRequest = await this.requireAuth(request, reply);
+    if (!authenticatedRequest) return null;
+
+    const user = this.users.findById(authenticatedRequest.currentUser.id);
+    if (!user?.isBootstrapAdmin) {
+      reply.code(403).send({ message: 'Administrator access required.' });
+      return null;
+    }
+
+    return authenticatedRequest;
+  }
+
   listSessions(userId: string, currentSessionId: string): UserSession[] {
     return this.sessions.listForUser(userId).map((session) => ({
       ...session,

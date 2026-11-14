@@ -50,6 +50,11 @@ const tabs = [
     icon: 'boards'
   },
   {
+    name: 'navigation.serviceSections',
+    path: '/app/service-sections',
+    icon: 'serviceSections'
+  },
+  {
     name: 'navigation.analytics',
     path: '/app/analytics',
     icon: 'analytics'
@@ -235,6 +240,7 @@ onBeforeUnmount(() => {
                     <path d="M6 2.75A2.75 2.75 0 0 0 3.25 5.5v13A2.75 2.75 0 0 0 6 21.25h12a2.75 2.75 0 0 0 2.75-2.75v-13A2.75 2.75 0 0 0 18 2.75zm1.25 4.5h9.5v1.5h-9.5zm0 4h9.5v1.5h-9.5zm0 4h6.5v1.5h-6.5z" />
                   </svg>
                   <svg v-else-if="tab.icon === 'boards'" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="h-5 w-5"><path d="M4 3a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm1 3h6v5H5zm8 0h6v8h-6zM5 13h6v5H5zm8 3h6v2h-6z"/></svg>
+                  <svg v-else-if="tab.icon === 'serviceSections'" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="h-5 w-5"><path d="M6 2.75A2.75 2.75 0 0 0 3.25 5.5v13A2.75 2.75 0 0 0 6 21.25h12a2.75 2.75 0 0 0 2.75-2.75v-13A2.75 2.75 0 0 0 18 2.75zm1.25 4h9.5v1.5h-9.5zm0 4h9.5v1.5h-9.5zm0 4h6.25v1.5H7.25z"/></svg>
                   <svg v-else-if="tab.icon === 'analytics'" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="h-5 w-5">
                     <path d="M3 22V8h4v14zm7 0V2h4v20zm7 0v-8h4v8z" />
                   </svg>

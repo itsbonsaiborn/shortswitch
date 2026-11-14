@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue';
 import type { PublicBoardCard } from '@/shared/board-types';
+import RichTextContent from './RichTextContent.vue';
+import { stripRichText } from '@/shared/rich-text';
 
 const props = defineProps<{
   card: PublicBoardCard;
@@ -21,7 +23,7 @@ watch(() => props.card.imageUrl, () => { imageFailed.value = false; });
       <img
         v-if="!imageFailed"
         :src="card.imageUrl"
-        :alt="card.title || imageFallbackLabel"
+        :alt="stripRichText(card.title) || imageFallbackLabel"
         class="h-full w-full object-cover"
         loading="lazy"
         decoding="async"
@@ -35,10 +37,10 @@ watch(() => props.card.imageUrl, () => { imageFailed.value = false; });
     </div>
     <div class="board-card-content min-w-0">
       <div class="flex min-w-0 items-start justify-between gap-3">
-        <h2 v-if="card.title" class="min-w-0 font-semibold">{{ card.title }}</h2>
+        <h2 v-if="card.title" class="min-w-0 font-semibold"><RichTextContent :value="card.title" inline /></h2>
         <slot name="menu" />
       </div>
-      <p class="board-card-body whitespace-pre-wrap text-[var(--ui-text-muted)]">{{ card.body }}</p>
+      <RichTextContent :value="card.body" class="board-card-body whitespace-pre-wrap text-[var(--ui-text-muted)]" />
       <slot name="meta" />
       <footer class="board-card-footer mt-auto border-t border-[var(--ui-border)]">
         <slot name="footer" />

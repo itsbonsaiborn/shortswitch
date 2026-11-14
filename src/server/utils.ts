@@ -117,25 +117,37 @@ export const isSafeRouteSlug = (rawSlug: string) =>
     maxLength: config.defaults.maxSlugLength
   }).ok;
 
-const isPrivateIpv4 = (hostname: string) => {
-  const [first, second] = hostname.split('.').map(Number);
-  if (first === 10) return true;
-  if (first === 127) return true;
-  if (first === 169 && second === 254) return true;
-  if (first === 172 && second >= 16 && second <= 31) return true;
-  if (first === 192 && second === 168) return true;
+const blockedTargetAddresses = new net.BlockList();
+for (const [address, prefix] of [
+  ['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8], ['169.254.0.0', 16],
+  ['172.16.0.0', 12], ['192.0.0.0', 24], ['192.0.2.0', 24], ['192.88.99.0', 24], ['192.168.0.0', 16],
+  ['198.18.0.0', 15], ['198.51.100.0', 24], ['203.0.113.0', 24], ['224.0.0.0', 4], ['240.0.0.0', 4]
+] as Array<[string, number]>) blockedTargetAddresses.addSubnet(address, prefix, 'ipv4');
+for (const [address, prefix] of [
+  ['::', 128], ['::1', 128], ['fc00::', 7], ['fe80::', 10], ['ff00::', 8], ['2001:db8::', 32]
+] as Array<[string, number]>) blockedTargetAddresses.addSubnet(address, prefix, 'ipv6');
+
+const trustedProxyAddresses = new net.BlockList();
+for (const [address, prefix] of [
+  ['10.0.0.0', 8], ['127.0.0.0', 8], ['169.254.0.0', 16], ['172.16.0.0', 12], ['192.168.0.0', 16]
+] as Array<[string, number]>) trustedProxyAddresses.addSubnet(address, prefix, 'ipv4');
+for (const [address, prefix] of [
+  ['::1', 128], ['fc00::', 7], ['fe80::', 10]
+] as Array<[string, number]>) trustedProxyAddresses.addSubnet(address, prefix, 'ipv6');
+
+const isPrivateIpAddress = (hostname: string) => {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  const ipType = net.isIP(normalized);
+  if (ipType === 4) return blockedTargetAddresses.check(normalized, 'ipv4');
+  if (ipType === 6) return blockedTargetAddresses.check(normalized, 'ipv6');
   return false;
 };
 
-const isPrivateIpv6 = (hostname: string) => {
-  const normalized = hostname.toLowerCase();
-  return normalized === '::1' || normalized.startsWith('fc') || normalized.startsWith('fd') || normalized.startsWith('fe80:');
-};
-
-const isPrivateIpAddress = (hostname: string) => {
-  const ipType = net.isIP(hostname);
-  if (ipType === 4) return isPrivateIpv4(hostname);
-  if (ipType === 6) return isPrivateIpv6(hostname);
+export const isTrustedLocalProxyAddress = (address: string): boolean => {
+  const normalized = address.toLowerCase().replace(/^\[|\]$/g, '');
+  const ipType = net.isIP(normalized);
+  if (ipType === 4) return trustedProxyAddresses.check(normalized, 'ipv4');
+  if (ipType === 6) return trustedProxyAddresses.check(normalized, 'ipv6');
   return false;
 };
 
@@ -162,6 +174,10 @@ export const validateTargetUrl = (rawTargetUrl: string) => {
 
   if (!parsed.hostname) {
     throw new Error('Target URL must include a hostname.');
+  }
+
+  if (parsed.username || parsed.password) {
+    throw new Error('URLs containing embedded credentials are not allowed.');
   }
 
   const hostname = parsed.hostname.toLowerCase();

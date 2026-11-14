@@ -7,12 +7,14 @@ import StatCard from '../components/StatCard.vue';
 import CreateLinkModal from '../components/CreateLinkModal.vue';
 import type { LinkRecord } from '@/shared/types';
 import { useI18n } from 'vue-i18n';
+import { useRoute } from 'vue-router';
 
 const links = ref<LinkRecord[]>([]);
 const loading = ref(true);
 const editingLink = ref<LinkRecord | null>(null);
 const editOpen = ref(false);
-const search = ref('');
+const route = useRoute();
+const search = ref(typeof route.query.search === 'string' ? route.query.search : '');
 const sort = ref<'newest' | 'oldest' | 'slug' | 'clicks'>('newest');
 const { pushToast } = useToast();
 const { t } = useI18n();

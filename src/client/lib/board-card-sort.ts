@@ -1,4 +1,5 @@
 import type { PublicBoardCard } from '@/shared/board-types';
+import { stripRichText } from '@/shared/rich-text';
 
 export type BoardCardSortMode = 'newest' | 'oldest' | 'title_asc' | 'title_desc' | 'popular';
 
@@ -23,7 +24,7 @@ export const sortBoardCards = (
       if (difference !== 0) return mode === 'newest' ? -difference : difference;
       return stableIdOrder(left, right);
     }
-    const titleOrder = collator.compare(left.title.trim(), right.title.trim());
+    const titleOrder = collator.compare(stripRichText(left.title), stripRichText(right.title));
     if (titleOrder !== 0) return mode === 'title_asc' ? titleOrder : -titleOrder;
     return stableIdOrder(left, right);
   });

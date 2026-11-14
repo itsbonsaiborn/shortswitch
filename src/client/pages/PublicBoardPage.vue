@@ -8,6 +8,7 @@ import { sortBoardCards, type BoardCardSortMode } from '../lib/board-card-sort';
 import { boardSurfaceClasses, boardSurfaceStyle } from '../lib/board-theme';
 import { applyBoardRealtimeDelta } from '../lib/board-realtime';
 import BoardCardView from '../components/BoardCardView.vue';
+import RichTextEditor from '../components/RichTextEditor.vue';
 
 const route = useRoute();
 const { t, locale } = useI18n();
@@ -306,8 +307,8 @@ onBeforeUnmount(() => {
           <h2 class="text-xl font-semibold">{{ selectedCard ? t('boards.editCard') : t('boards.addCard') }}</h2>
           <form class="mt-5 space-y-4" @submit.prevent="saveCard">
             <label class="block text-sm font-medium">{{ t('boards.cardLayout') }}<select v-model="form.layout" class="board-input mt-2"><option value="text">{{ t('boards.layoutText') }}</option><option value="image_text">{{ t('boards.layoutImageText') }}</option></select></label>
-            <label class="block text-sm font-medium">{{ t('boards.cardTitle') }}<input v-model="form.title" class="board-input mt-2" :required="board?.settings.requireCardTitle" :maxlength="board?.settings.maxTitleLength" /></label>
-            <label class="block text-sm font-medium">{{ t('boards.cardBody') }}<textarea v-model="form.body" class="board-input mt-2 min-h-36" required :maxlength="board?.settings.maxBodyLength"></textarea></label>
+            <label class="block text-sm font-medium">{{ t('boards.cardTitle') }}<input v-model="form.title" class="board-input mt-2" type="text" :maxlength="board?.settings.maxTitleLength ?? 160" /></label>
+            <div class="block text-sm font-medium"><span>{{ t('boards.cardBody') }}</span><RichTextEditor v-model="form.body" class="mt-2" :max-length="board?.settings.maxBodyLength ?? 5000" min-height-class="min-h-36" :aria-label="t('boards.cardBody')" /></div>
             <label v-if="board?.settings.allowImageUrls && form.layout === 'image_text'" class="block text-sm font-medium">{{ t('boards.imageUrl') }}<input v-model="form.imageUrl" type="url" inputmode="url" class="board-input mt-2" placeholder="https://…" required /></label>
             <label class="block text-sm font-medium">{{ t('boards.displayName') }}<input v-model="form.authorDisplayName" class="board-input mt-2" maxlength="120" :required="board?.settings.requireParticipantName" /></label>
             <div class="flex justify-end gap-2"><button type="button" class="board-secondary" @click="closeDialog">{{ t('common.close') }}</button><button class="board-primary" :disabled="busy">{{ busy ? t('common.saving') : t('common.save') }}</button></div>
