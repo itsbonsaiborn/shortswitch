@@ -2014,7 +2014,7 @@ describe.sequential('server security hardening', () => {
       expect(confirmation.headers.location).toBeUndefined();
       expect(confirmation.headers['cache-control']).toContain('no-store');
       expect(confirmation.body).toContain('<html lang="lv">');
-      expect(confirmation.body).toContain('Saites atvēršana...');
+      expect(confirmation.body).toContain('Nospied pogu, lai atvērtu saiti');
       expect(confirmation.body).toContain('outside.example');
       expect(confirmation.body).toContain('src="https://outside.example/favicon.ico"');
       expect(confirmation.body).toContain('name="viewport"');

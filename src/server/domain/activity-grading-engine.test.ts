@@ -55,6 +55,41 @@ describe('unified Activity grading engine', () => {
     }
   });
 
+  it('treats duplicate Matching labels as interchangeable visible answers', () => {
+    const matching = grade('matching', {
+      questionType: 'matching',
+      prompt: 'Classify the IP address',
+      leftItems: [
+        { id: 'l1', label: '192.168.1.5' },
+        { id: 'l2', label: '8.8.8.8' },
+        { id: 'l3', label: '10.0.0.20' }
+      ],
+      rightItems: [
+        { id: 'r1', label: 'Privātā' },
+        { id: 'r2', label: 'Publiskā' },
+        { id: 'r3', label: 'Privātā' }
+      ],
+      shuffleLeftItems: false,
+      shuffleRightItems: true,
+      gradingMode: 'partial'
+    }, {
+      questionType: 'matching',
+      pairs: [
+        { leftId: 'l1', rightId: 'r3' },
+        { leftId: 'l2', rightId: 'r2' },
+        { leftId: 'l3', rightId: 'r1' }
+      ]
+    }, {
+      pairs: [
+        { leftId: 'l1', rightId: 'r1' },
+        { leftId: 'l2', rightId: 'r2' },
+        { leftId: 'l3', rightId: 'r3' }
+      ]
+    }, 3);
+
+    expect(matching).toMatchObject({ awardedUnits: 3000, correct: true });
+  });
+
   it('routes pending moderation to manual review and rejected moderation to zero', () => {
     const config = { questionType: 'word_cloud', prompt: 'Q', instructions: '', maximumLength: 50, allowMultipleResponses: false, maximumResponses: 1, moderationMode: 'filter_only', showResults: false, showParticipantNames: false, gradingMode: 'participation' } as const;
     const answer = { questionType: 'word_cloud', responses: ['text'] } as const;

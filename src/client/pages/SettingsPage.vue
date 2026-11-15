@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import QRCode from 'qrcode';
 import { UAParser } from 'ua-parser-js';
 import { api } from '../lib/api';
@@ -34,6 +34,45 @@ const twoFactorEnrollment = ref<TwoFactorEnrollment | null>(null);
 const twoFactorQr = ref('');
 const recoveryCodes = ref<string[]>([]);
 const twoFactorBusy = ref(false);
+const twoFactorDialogStage = ref<'enrollment' | 'recovery' | null>(null);
+const recoveryCloseSeconds = ref(0);
+let recoveryCloseTimer: number | undefined;
+
+const recoveryCloseBlocked = computed(() =>
+  twoFactorDialogStage.value === 'recovery' && recoveryCloseSeconds.value > 0
+);
+
+const clearRecoveryCloseTimer = () => {
+  if (recoveryCloseTimer !== undefined) {
+    window.clearInterval(recoveryCloseTimer);
+    recoveryCloseTimer = undefined;
+  }
+};
+
+const startRecoveryCloseCountdown = () => {
+  clearRecoveryCloseTimer();
+  recoveryCloseSeconds.value = 5;
+  recoveryCloseTimer = window.setInterval(() => {
+    recoveryCloseSeconds.value = Math.max(0, recoveryCloseSeconds.value - 1);
+    if (recoveryCloseSeconds.value === 0) clearRecoveryCloseTimer();
+  }, 1_000);
+};
+
+const closeTwoFactorDialog = () => {
+  if (recoveryCloseBlocked.value || twoFactorBusy.value) return;
+  clearRecoveryCloseTimer();
+  twoFactorDialogStage.value = null;
+  twoFactorEnrollment.value = null;
+  twoFactorQr.value = '';
+  recoveryCodes.value = [];
+  twoFactorCode.value = '';
+};
+
+const closeTwoFactorDialogOnEscape = (event: KeyboardEvent) => {
+  if (event.key !== 'Escape' || !twoFactorDialogStage.value) return;
+  event.preventDefault();
+  closeTwoFactorDialog();
+};
 
 const publicDisplayBusy = ref(false);
 
@@ -110,6 +149,7 @@ const startTwoFactorEnrollment = async () => {
     });
     twoFactorQr.value = await QRCode.toDataURL(twoFactorEnrollment.value.otpauthUri, { width: 280, margin: 1 });
     twoFactorCode.value = '';
+    twoFactorDialogStage.value = 'enrollment';
   } catch (error) {
     pushToast({ tone: 'error', title: t('twoFactor.setupFailed'), description: (error as Error).message });
   } finally { twoFactorBusy.value = false; }
@@ -127,6 +167,8 @@ const confirmTwoFactorEnrollment = async () => {
     twoFactorQr.value = '';
     twoFactorPassword.value = '';
     twoFactorCode.value = '';
+    twoFactorDialogStage.value = 'recovery';
+    startRecoveryCloseCountdown();
     pushToast({ tone: 'success', title: t('twoFactor.enabled') });
   } catch (error) {
     pushToast({ tone: 'error', title: t('twoFactor.setupFailed'), description: (error as Error).message });
@@ -221,7 +263,15 @@ const clearAnalytics = async () => {
   }
 };
 
-onMounted(load);
+onMounted(() => {
+  document.addEventListener('keydown', closeTwoFactorDialogOnEscape);
+  void load();
+});
+
+onBeforeUnmount(() => {
+  document.removeEventListener('keydown', closeTwoFactorDialogOnEscape);
+  clearRecoveryCloseTimer();
+});
 </script>
 
 <template>
@@ -296,29 +346,7 @@ onMounted(load);
           {{ t('twoFactor.keyMissing') }}
         </div>
 
-        <div v-if="recoveryCodes.length" class="mt-5 rounded-[1.75rem] border border-amber-500/25 bg-amber-500/10 p-5">
-          <h3 class="font-semibold">{{ t('twoFactor.saveRecoveryCodes') }}</h3>
-          <p class="mt-2 text-sm text-[var(--ui-text-muted)]">{{ t('twoFactor.recoveryCodesOnce') }}</p>
-          <div class="mt-4 grid gap-2 font-mono text-sm sm:grid-cols-2">
-            <code v-for="item in recoveryCodes" :key="item" class="rounded-xl bg-[var(--ui-panel)] px-3 py-2">{{ item }}</code>
-          </div>
-          <button type="button" class="btn-secondary mt-4" @click="copyRecoveryCodes">{{ t('twoFactor.copyCodes') }}</button>
-        </div>
-
-        <div v-else-if="twoFactorEnrollment" class="mt-5 grid gap-5 md:grid-cols-[280px_minmax(0,1fr)] md:items-center">
-          <img :src="twoFactorQr" class="mx-auto w-full max-w-[280px] rounded-2xl bg-white p-3" :alt="t('twoFactor.qrAlt')" />
-          <div class="min-w-0">
-            <p class="text-sm text-[var(--ui-text-muted)]">{{ t('twoFactor.scanHelp') }}</p>
-            <p class="mt-3 break-all rounded-2xl bg-[var(--ui-panel-muted)] p-3 font-mono text-xs">{{ twoFactorEnrollment.manualKey }}</p>
-            <label class="mt-4 block">
-              <span class="mb-2 block text-sm font-medium">{{ t('twoFactor.verificationCode') }}</span>
-              <input v-model="twoFactorCode" class="input" inputmode="numeric" autocomplete="one-time-code" maxlength="6" />
-            </label>
-            <button type="button" class="btn-primary mt-4" :disabled="twoFactorBusy || twoFactorCode.length !== 6" @click="confirmTwoFactorEnrollment">{{ t('twoFactor.confirm') }}</button>
-          </div>
-        </div>
-
-        <div v-else-if="twoFactorStatus" class="mt-5 grid max-w-3xl gap-4 sm:grid-cols-2">
+        <div v-if="twoFactorStatus" class="mt-5 grid max-w-3xl gap-4 sm:grid-cols-2">
           <label class="block">
             <span class="mb-2 block text-sm font-medium">{{ t('twoFactor.currentPassword') }}</span>
             <input v-model="twoFactorPassword" class="input" type="password" autocomplete="current-password" maxlength="256" />
@@ -406,4 +434,75 @@ onMounted(load);
       </div>
     </section>
   </div>
+
+  <Teleport to="body">
+    <Transition
+      enter-active-class="transition duration-300 ease-out"
+      enter-from-class="opacity-0"
+      enter-to-class="opacity-100"
+      leave-active-class="transition duration-200 ease-in"
+      leave-from-class="opacity-100"
+      leave-to-class="opacity-0"
+    >
+      <div
+        v-if="twoFactorDialogStage"
+        class="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur"
+        role="presentation"
+      >
+        <section
+          class="panel app-scrollbar max-h-[calc(100dvh-2rem)] w-full max-w-3xl overflow-y-auto p-5 sm:p-7"
+          role="dialog"
+          aria-modal="true"
+          :aria-labelledby="twoFactorDialogStage === 'recovery' ? 'two-factor-recovery-title' : 'two-factor-setup-title'"
+          @click.stop
+        >
+          <div v-if="twoFactorDialogStage === 'enrollment' && twoFactorEnrollment" class="min-w-0">
+            <div class="flex items-start justify-between gap-4">
+              <div>
+                <p class="text-sm font-semibold uppercase tracking-[0.2em] text-accent-600 dark:text-accent-300">{{ t('twoFactor.title') }}</p>
+                <h2 id="two-factor-setup-title" class="mt-1 text-2xl font-semibold">{{ t('twoFactor.start') }}</h2>
+              </div>
+              <button type="button" class="btn-secondary shrink-0" :disabled="twoFactorBusy" @click="closeTwoFactorDialog">{{ t('common.close') }}</button>
+            </div>
+
+            <div class="mt-6 grid gap-6 md:grid-cols-[280px_minmax(0,1fr)] md:items-center">
+              <img :src="twoFactorQr" class="mx-auto w-full max-w-[280px] rounded-2xl bg-white p-3" :alt="t('twoFactor.qrAlt')" />
+              <div class="min-w-0">
+                <p class="text-sm leading-6 text-[var(--ui-text-muted)]">{{ t('twoFactor.scanHelp') }}</p>
+                <p class="mt-3 break-all rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-panel-muted)] p-3 font-mono text-xs">{{ twoFactorEnrollment.manualKey }}</p>
+                <label class="mt-5 block">
+                  <span class="mb-2 block text-sm font-medium">{{ t('twoFactor.verificationCode') }}</span>
+                  <input v-model="twoFactorCode" class="input" inputmode="numeric" autocomplete="one-time-code" maxlength="6" autofocus />
+                </label>
+                <button type="button" class="btn-primary mt-4 w-full sm:w-auto" :disabled="twoFactorBusy || twoFactorCode.length !== 6" @click="confirmTwoFactorEnrollment">{{ t('twoFactor.confirm') }}</button>
+              </div>
+            </div>
+          </div>
+
+          <div v-else-if="twoFactorDialogStage === 'recovery'" class="min-w-0">
+            <div>
+              <p class="text-sm font-semibold uppercase tracking-[0.2em] text-accent-600 dark:text-accent-300">{{ t('twoFactor.title') }}</p>
+              <h2 id="two-factor-recovery-title" class="mt-1 text-2xl font-semibold">{{ t('twoFactor.saveRecoveryCodes') }}</h2>
+              <p class="mt-3 text-sm leading-6 text-[var(--ui-text-muted)]">{{ t('twoFactor.recoveryCodesOnce') }}</p>
+            </div>
+            <div class="mt-5 grid gap-2 font-mono text-sm sm:grid-cols-2">
+              <code v-for="item in recoveryCodes" :key="item" class="rounded-xl border border-[var(--ui-border)] bg-[var(--ui-panel-muted)] px-3 py-2">{{ item }}</code>
+            </div>
+            <div class="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <button type="button" class="btn-secondary w-full sm:w-auto" @click="copyRecoveryCodes">{{ t('twoFactor.copyCodes') }}</button>
+              <button
+                type="button"
+                class="btn-primary w-full min-w-32 transition disabled:cursor-not-allowed disabled:opacity-45 sm:w-auto"
+                :disabled="recoveryCloseBlocked"
+                :aria-disabled="recoveryCloseBlocked"
+                @click="closeTwoFactorDialog"
+              >
+                <span aria-live="polite">{{ t('common.close') }}<template v-if="recoveryCloseBlocked"> ({{ recoveryCloseSeconds }})</template></span>
+              </button>
+            </div>
+          </div>
+        </section>
+      </div>
+    </Transition>
+  </Teleport>
 </template>

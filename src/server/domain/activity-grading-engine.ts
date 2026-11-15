@@ -94,6 +94,26 @@ const optionLabels = (config: ActivityQuestionPublicConfig, ids: string[]) => {
 
 const commonFeedback = (key: Record<string, unknown>) => typeof key.feedback === 'string' ? key.feedback : '';
 
+// Matching options keep stable IDs for autosave and shuffling, but two labels
+// that render identically must be interchangeable for grading. Otherwise a
+// participant can make a visually correct choice and lose points solely
+// because it belonged to another duplicate option ID.
+const matchingLabelKey = (label: string) => label.normalize('NFC').trim().replace(/\s+/gu, ' ');
+
+const matchingRightIdsEquivalent = (
+  submittedRightId: string | undefined,
+  correctRightId: string,
+  rightLabels: ReadonlyMap<string, string>
+) => {
+  if (!submittedRightId) return false;
+  if (submittedRightId === correctRightId) return true;
+  const submittedLabel = rightLabels.get(submittedRightId);
+  const correctLabel = rightLabels.get(correctRightId);
+  return submittedLabel !== undefined
+    && correctLabel !== undefined
+    && matchingLabelKey(submittedLabel) === matchingLabelKey(correctLabel);
+};
+
 export const ActivityQuestionPluginRegistry: Record<ActivityQuestionType, ActivityQuestionPlugin> = {
   single_choice: {
     configurationSchema: QuestionTypeRegistry.single_choice,
@@ -189,7 +209,12 @@ export const ActivityQuestionPluginRegistry: Record<ActivityQuestionType, Activi
       if (config.questionType !== 'matching' || answer.questionType !== 'matching') return exactGrade(false, maximumUnits, 'all_or_nothing');
       const correctPairs = Array.isArray(key.pairs) ? key.pairs as Array<{ leftId: string; rightId: string }> : [];
       const submitted = new Map(answer.pairs.map((pair) => [pair.leftId, pair.rightId]));
-      const correctCount = correctPairs.filter((pair) => submitted.get(pair.leftId) === pair.rightId).length;
+      const rightLabels = new Map(config.rightItems.map((item) => [item.id, item.label]));
+      const correctCount = correctPairs.filter((pair) => matchingRightIdsEquivalent(
+        submitted.get(pair.leftId),
+        pair.rightId,
+        rightLabels
+      )).length;
       const correct = correctPairs.length > 0 && correctCount === correctPairs.length;
       const awardedUnits = config.gradingMode === 'all_or_nothing' ? (correct ? maximumUnits : 0) : ratioUnits(maximumUnits, correctCount, correctPairs.length);
       return { status: 'graded', awardedUnits, correct, details: { automaticallyGraded: true, gradingMode: config.gradingMode, correct, correctCount, totalCount: correctPairs.length, fraction: maximumUnits ? awardedUnits / maximumUnits : 0 } };
