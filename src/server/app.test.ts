@@ -334,7 +334,10 @@ describe.sequential('server security hardening', () => {
     });
     expect(externalPage).toContain('Atvērt saiti');
     expect(externalPage).toContain('src="https://example.com/favicon.ico"');
+    expect(externalPage).toContain('https://example.com/favicon.png');
+    expect(externalPage).toContain('src="/app/external-link-favicon.js"');
     expect(externalPage).toContain('referrerpolicy="no-referrer"');
+    expect(externalPage).not.toContain('target="_blank"');
   });
 
   test('manages service page drafts and publishes safe localized content with essential fallbacks', async () => {
@@ -1948,7 +1951,8 @@ describe.sequential('server security hardening', () => {
     expect(confirmation.headers.location).toBeUndefined();
     expect(confirmation.body).toContain('example.com');
     expect(confirmation.body).toContain('https://example.com/protected');
-    expect(confirmation.body).toContain('rel="noopener noreferrer external"');
+    expect(confirmation.body).toContain('rel="noreferrer external"');
+    expect(confirmation.body).not.toContain('target="_blank"');
     expect(confirmation.body).toContain('referrerpolicy="no-referrer"');
     expect(confirmation.body).not.toContain('http-equiv="refresh"');
 
@@ -2019,13 +2023,16 @@ describe.sequential('server security hardening', () => {
       expect(confirmation.body).toContain('src="https://outside.example/favicon.ico"');
       expect(confirmation.body).toContain('name="viewport"');
       expect(confirmation.body).toContain('@media (max-width: 520px)');
-      expect(confirmation.body).toContain('target="_blank"');
+      expect(confirmation.body).not.toContain('target="_blank"');
+      expect(confirmation.body).toContain('rel="noreferrer external"');
+      expect(confirmation.body).toContain('https://outside.example/favicon.png');
+      expect(confirmation.body).toContain('src="/app/external-link-favicon.js"');
       expect(confirmation.body).toContain('/service/security');
       expect(confirmation.body).toContain('/service/report-abuse');
       expect(confirmation.body).toContain('data-service-page-footer');
       expect(confirmation.body).not.toContain('<script>');
       expect(confirmation.body).not.toContain('http-equiv="refresh"');
-      expect(confirmation.body).not.toMatch(/<script\b/i);
+      expect(confirmation.body).not.toMatch(/<script(?![^>]+src="\/app\/external-link-favicon\.js")/i);
     }
 
     await app.close();

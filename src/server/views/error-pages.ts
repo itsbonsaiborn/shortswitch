@@ -451,7 +451,9 @@ export const renderExternalLinkConfirmationPage = (options: {
   locale?: Locale;
   appearance?: 'system' | 'light' | 'dark';
 }) => {
-  const faviconUrl = getLinkFaviconCandidates(options.targetUrl)[0] ?? null;
+  const faviconCandidates = getLinkFaviconCandidates(options.targetUrl);
+  const faviconUrl = faviconCandidates[0] ?? null;
+  const faviconCandidatesJson = escapeHtml(JSON.stringify(faviconCandidates));
   return `<!doctype html>
 <html lang="${options.locale ?? 'en'}">
   <head>
@@ -464,6 +466,7 @@ ${renderCommonHead(
   config.appName,
   options.locale ?? 'en'
 )}
+    <script src="/app/external-link-favicon.js" defer></script>
     <style>
       :root {
         color-scheme: light dark;
@@ -626,7 +629,7 @@ ${renderCommonHead(
       <div class="destination">
         <div class="destination-label">${escapeHtml(externalLinkText(options.locale ?? 'en', 'destination'))}</div>
         <div class="destination-site">
-          ${faviconUrl ? `<img class="destination-favicon" src="${escapeHtml(faviconUrl)}" alt="" referrerpolicy="no-referrer" />` : ''}
+          ${faviconUrl ? `<img class="destination-favicon" src="${escapeHtml(faviconUrl)}" data-favicon-candidates="${faviconCandidatesJson}" alt="" referrerpolicy="no-referrer" />` : ''}
           <div class="hostname">${escapeHtml(options.targetHostname)}</div>
         </div>
         <span class="url">${escapeHtml(options.targetUrl)}</span>
@@ -634,8 +637,7 @@ ${renderCommonHead(
       <a
         class="open-link"
         href="${escapeHtml(options.targetUrl)}"
-        target="_blank"
-        rel="noopener noreferrer external"
+        rel="noreferrer external"
         referrerpolicy="no-referrer"
       >${escapeHtml(externalLinkText(options.locale ?? 'en', 'openDestination'))}</a>
       ${SERVICE_FOOTER_MARKER}
