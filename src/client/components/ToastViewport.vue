@@ -11,7 +11,7 @@ const toastClass = (tone: 'success' | 'error') =>
 
 <template>
   <Teleport to="body">
-    <div class="pointer-events-none fixed inset-x-0 top-4 z-[90] flex justify-center px-4">
+    <div class="pointer-events-none fixed inset-x-0 top-4 z-[140] flex justify-center px-4">
       <div class="flex w-full max-w-[22rem] flex-col items-center gap-3">
         <TransitionGroup
           enter-active-class="transition duration-300 ease-out"

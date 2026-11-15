@@ -37,10 +37,17 @@ import { ServiceSubmissionService } from './services/service-submission-service.
 import { registerServiceSectionRoutes } from './service-section-routes.js';
 import { SERVICE_FOOTER_MARKER, renderExternalLinkConfirmationPage, renderInvalidLinkDestinationPage, renderLinkDisabledPage, renderLinkExpiredPage, renderLinkNotFoundPage, renderProtectedLinkPage, renderPublicServiceUnavailablePage, renderServiceFooterHtml } from './views/error-pages.js';
 import { isSafeRouteSlug, isTrustedCorsOrigin, isTrustedLocalProxyAddress, validateTargetUrl } from './utils.js';
-import { resolvePublicLocale } from '../shared/public-locale.js';
+import { resolveRequestAppearance, resolveRequestLocale } from './request-locale.js';
 import { publicText } from './public-i18n.js';
 import { serviceSectionDefinitions } from '../shared/service-section-types.js';
 import type { ServiceFooterLink } from '../shared/types.js';
+import { analyticsSelectionFromQuery, resolveAnalyticsDateRange } from '../shared/analytics-date-range.js';
+import {
+  PUBLIC_APPEARANCE_PREFERENCE_COOKIE,
+  PUBLIC_LANGUAGE_PREFERENCE_COOKIE,
+  isAppearancePreference,
+  isLanguagePreference
+} from '../shared/display-preferences.js';
 
 export const buildApp = async () => {
   const app = Fastify({
@@ -88,7 +95,7 @@ export const buildApp = async () => {
   };
   app.addHook('onSend', async (request, _reply, payload) => {
     if (typeof payload !== 'string' || !payload.includes(SERVICE_FOOTER_MARKER)) return payload;
-    const locale = resolvePublicLocale(request.headers['accept-language']);
+    const locale = resolveRequestLocale(request);
     let footerLinks: ServiceFooterLink[];
     try {
       footerLinks = serviceSections.getFooterLinks(locale);
@@ -268,6 +275,16 @@ export const buildApp = async () => {
     reply: any,
     payloads = getClientIndexPayloads()
   ) => {
+    const publicDisplayPreferences = settingsRepository.getPublicDisplayPreferences();
+    const publicPreferenceCookieOptions = {
+      path: '/',
+      httpOnly: false,
+      secure: config.cookieSecure,
+      sameSite: config.cookieSameSite,
+      maxAge: 365 * 24 * 60 * 60
+    } as const;
+    reply.setCookie(PUBLIC_LANGUAGE_PREFERENCE_COOKIE, publicDisplayPreferences.language, publicPreferenceCookieOptions);
+    reply.setCookie(PUBLIC_APPEARANCE_PREFERENCE_COOKIE, publicDisplayPreferences.appearance, publicPreferenceCookieOptions);
     const acceptEncoding = request.headers['accept-encoding'];
     const brQuality = acceptedEncodingQuality(acceptEncoding, 'br');
     const gzipQuality = acceptedEncodingQuality(acceptEncoding, 'gzip');
@@ -283,7 +300,9 @@ export const buildApp = async () => {
   const isInvalidSlugRequest = (slug: string) => !isSafeRouteSlug(slug);
 
   await auth.bootstrapAdmin();
+  auth.twoFactor.validateConfiguration();
   sessions.cleanup();
+  auth.twoFactor.cleanup();
   links.cleanupAnalytics();
   pages.cleanupAnalytics();
   live.cleanupAnalytics();
@@ -439,7 +458,8 @@ export const buildApp = async () => {
 
   app.get('/api/public/config', async () => ({
     appName: config.appName,
-    appDescription: config.appDescription
+    appDescription: config.appDescription,
+    publicDisplayPreferences: settingsRepository.getPublicDisplayPreferences()
   }));
 
   app.get('/robots.txt', async (_request, reply) => {
@@ -545,9 +565,26 @@ export const buildApp = async () => {
     }
   );
 
+  app.post('/api/auth/two-factor', { onRequest: app.csrfProtection }, async (request, reply) => {
+    const body = (request.body ?? {}) as { code?: unknown };
+    const code = String(body.code ?? '').trim();
+    const challengeId = request.cookies[config.pendingAuthCookieName] ?? 'missing';
+    const allowed = rateLimiter.consume('auth-two-factor', `${request.ip ?? 'unknown'}:${challengeId}`, {
+      maxAttempts: 5,
+      windowMinutes: 10,
+      blockMinutes: 15
+    });
+    if (!allowed) return reply.code(429).send({ message: 'Too many attempts. Please try again later.' });
+    if (!code || code.length > 32) return reply.code(400).send({ message: 'Invalid verification code.' });
+    const user = await auth.completeTwoFactor(request, reply, code);
+    if (!user) return reply.code(401).send({ message: 'Invalid or expired verification code.' });
+    rateLimiter.reset('auth-two-factor', `${request.ip ?? 'unknown'}:${challengeId}`);
+    return user;
+  });
+
   app.post('/api/auth/logout', { onRequest: app.csrfProtection }, async (request, reply) => {
     const sessionId = request.cookies[config.sessionCookieName];
-    auth.logout(reply, sessionId);
+    auth.logout(reply, sessionId, request.cookies[config.pendingAuthCookieName]);
     return { ok: true };
   });
 
@@ -615,12 +652,96 @@ export const buildApp = async () => {
     });
   });
 
+  app.get('/api/settings/public-display', async (request, reply) => {
+    const authenticated = await sessions.requireAdmin(request, reply);
+    if (!authenticated) return;
+    return settingsRepository.getPublicDisplayPreferences();
+  });
+
+  app.patch('/api/settings/public-display', { onRequest: app.csrfProtection }, async (request, reply) => {
+    const authenticated = await sessions.requireAdmin(request, reply);
+    if (!authenticated) return;
+    const body = (request.body ?? {}) as { language?: unknown; appearance?: unknown };
+    if (!isLanguagePreference(body.language) || !isAppearancePreference(body.appearance)) {
+      return reply.code(400).send({ message: 'Invalid public display preferences.' });
+    }
+    return settingsRepository.updatePublicDisplayPreferences({
+      language: body.language,
+      appearance: body.appearance
+    });
+  });
+
   app.post('/api/settings/password', { onRequest: app.csrfProtection }, async (request, reply) => {
     const authenticated = await sessions.requireAuth(request, reply);
     if (!authenticated) return;
     const body = request.body as { password: string };
     try {
       await auth.changePassword(authenticated.currentUser.id, authenticated.sessionId, body.password);
+      return { ok: true };
+    } catch (error) {
+      return reply.code(400).send({ message: (error as Error).message });
+    }
+  });
+
+  app.get('/api/settings/two-factor', async (request, reply) => {
+    const authenticated = await sessions.requireAdmin(request, reply);
+    if (!authenticated) return;
+    return auth.twoFactor.status(authenticated.currentUser.id);
+  });
+
+  app.post('/api/settings/two-factor/enrollment', { onRequest: app.csrfProtection }, async (request, reply) => {
+    const authenticated = await sessions.requireAdmin(request, reply);
+    if (!authenticated) return;
+    reply.header('Cache-Control', 'no-store');
+    const allowed = rateLimiter.consume('two-factor-settings', `${request.ip ?? 'unknown'}:${authenticated.currentUser.id}`, {
+      maxAttempts: 5, windowMinutes: 10, blockMinutes: 15
+    });
+    if (!allowed) return reply.code(429).send({ message: 'Too many attempts. Please try again later.' });
+    const password = String(((request.body ?? {}) as { password?: unknown }).password ?? '');
+    try {
+      return await auth.twoFactor.startEnrollment(authenticated.currentUser.id, password);
+    } catch (error) {
+      return reply.code(400).send({ message: (error as Error).message });
+    }
+  });
+
+  app.post('/api/settings/two-factor/enrollment/confirm', { onRequest: app.csrfProtection }, async (request, reply) => {
+    const authenticated = await sessions.requireAdmin(request, reply);
+    if (!authenticated) return;
+    reply.header('Cache-Control', 'no-store');
+    const limitKey = `${request.ip ?? 'unknown'}:${authenticated.currentUser.id}`;
+    const allowed = rateLimiter.consume('two-factor-enrollment', limitKey, {
+      maxAttempts: 5, windowMinutes: 10, blockMinutes: 15
+    });
+    if (!allowed) return reply.code(429).send({ message: 'Too many attempts. Please try again later.' });
+    const code = String(((request.body ?? {}) as { code?: unknown }).code ?? '');
+    try {
+      const recoveryCodes = await auth.twoFactor.confirmEnrollment(authenticated.currentUser.id, code);
+      rateLimiter.reset('two-factor-enrollment', limitKey);
+      auth.invalidateOtherSessionsAfterSensitiveChange(authenticated.currentUser.id, authenticated.sessionId);
+      return { enabled: true, recoveryCodes };
+    } catch (error) {
+      return reply.code(400).send({ message: (error as Error).message });
+    }
+  });
+
+  app.post('/api/settings/two-factor/disable', { onRequest: app.csrfProtection }, async (request, reply) => {
+    const authenticated = await sessions.requireAdmin(request, reply);
+    if (!authenticated) return;
+    const limitKey = `${request.ip ?? 'unknown'}:${authenticated.currentUser.id}`;
+    const allowed = rateLimiter.consume('two-factor-disable', limitKey, {
+      maxAttempts: 5, windowMinutes: 10, blockMinutes: 15
+    });
+    if (!allowed) return reply.code(429).send({ message: 'Too many attempts. Please try again later.' });
+    const body = (request.body ?? {}) as { password?: unknown; code?: unknown };
+    try {
+      await auth.twoFactor.disable(
+        authenticated.currentUser.id,
+        String(body.password ?? ''),
+        String(body.code ?? '')
+      );
+      auth.invalidateOtherSessionsAfterSensitiveChange(authenticated.currentUser.id, authenticated.sessionId);
+      rateLimiter.reset('two-factor-disable', limitKey);
       return { ok: true };
     } catch (error) {
       return reply.code(400).send({ message: (error as Error).message });
@@ -727,14 +848,19 @@ export const buildApp = async () => {
   app.get('/api/links/:id/analytics', async (request, reply) => {
     const authenticated = await sessions.requireAuth(request, reply);
     if (!authenticated) return;
-    const query = request.query as { range?: 'day' | 'week' | 'month'; limit?: string; timezoneOffsetMinutes?: string };
+    const query = request.query as Record<string, unknown> & { limit?: string };
+    let frame;
+    try {
+      frame = resolveAnalyticsDateRange(analyticsSelectionFromQuery(query));
+    } catch (error) {
+      return reply.code(400).send({ message: (error as Error).message });
+    }
     try {
       return links.getLinkDetails(
         authenticated.currentUser.id,
         (request.params as any).id,
-        query.range ?? 'week',
-        Number(query.limit ?? 10),
-        Number(query.timezoneOffsetMinutes ?? 0)
+        frame,
+        Number(query.limit ?? 10)
       );
     } catch (error) {
       return reply.code(404).send({ message: (error as Error).message });
@@ -744,61 +870,69 @@ export const buildApp = async () => {
   app.get('/api/analytics/global', async (request, reply) => {
     const authenticated = await sessions.requireAuth(request, reply);
     if (!authenticated) return;
-    const query = request.query as { range?: string; timezoneOffsetMinutes?: string };
-    const range = query.range === 'day' || query.range === 'week' || query.range === 'month' ? query.range : 'month';
-    return links.getGlobalAnalytics(authenticated.currentUser.id, range, Number(query.timezoneOffsetMinutes ?? 0));
+    try {
+      const frame = resolveAnalyticsDateRange(analyticsSelectionFromQuery(request.query as Record<string, unknown>));
+      return links.getGlobalAnalytics(authenticated.currentUser.id, frame);
+    } catch (error) {
+      return reply.code(400).send({ message: (error as Error).message });
+    }
   });
 
   app.get('/api/analytics/global/activity-over-time', async (request, reply) => {
     const authenticated = await sessions.requireAuth(request, reply);
     if (!authenticated) return;
-    const query = request.query as { range?: string; timezoneOffsetMinutes?: string };
-    const range = query.range === 'day' || query.range === 'week' || query.range === 'month' ? query.range : 'month';
-    return links.getGlobalActivityOverTime(authenticated.currentUser.id, range, Number(query.timezoneOffsetMinutes ?? 0));
+    try {
+      const frame = resolveAnalyticsDateRange(analyticsSelectionFromQuery(request.query as Record<string, unknown>));
+      return links.getGlobalActivityOverTime(authenticated.currentUser.id, frame);
+    } catch (error) {
+      return reply.code(400).send({ message: (error as Error).message });
+    }
   });
 
   app.get('/access/:slug', async (request, reply) => {
-    const locale = resolvePublicLocale(request.headers['accept-language']);
+    const locale = resolveRequestLocale(request);
+    const appearance = resolveRequestAppearance(request);
     const slug = (request.params as { slug: string }).slug;
     if (isInvalidSlugRequest(slug)) {
-      return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage(locale));
+      return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage(locale, appearance));
     }
     const link = links.getLinkBySlug(slug);
-    if (!link) return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage(locale));
+    if (!link) return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage(locale, appearance));
     if (!link.enabled) {
       logger.info({ slug }, 'disabled link access');
-      return applyNoStore(reply).code(403).type('text/html').send(renderLinkDisabledPage(locale));
+      return applyNoStore(reply).code(403).type('text/html').send(renderLinkDisabledPage(locale, 'link', appearance));
     }
     if (links.isExpired(link.expiresAt)) {
       logger.info({ slug }, 'expired link access');
-      return applyNoStore(reply).code(410).type('text/html').send(renderLinkExpiredPage(locale));
+      return applyNoStore(reply).code(410).type('text/html').send(renderLinkExpiredPage(locale, 'link', appearance));
     }
     if (!link.passwordHash) {
       return applyNoStore(reply).redirect(`/${encodeURIComponent(slug)}`);
     }
 
     return applyNoStore(reply).type('text/html').send(renderProtectedLinkPage({
-      locale
+      locale, appearance
     }));
   });
 
   app.post(
     '/access/:slug',
     async (request, reply) => {
-      const locale = resolvePublicLocale(request.headers['accept-language']);
+      const locale = resolveRequestLocale(request);
+      const appearance = resolveRequestAppearance(request);
       const slug = (request.params as { slug: string }).slug;
       if (isInvalidSlugRequest(slug)) {
-        return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage(locale));
+        return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage(locale, appearance));
       }
       const link = links.getLinkBySlug(slug);
-      if (!link) return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage(locale));
+      if (!link) return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage(locale, appearance));
       if (!link.enabled) {
         logger.info({ slug }, 'disabled link access');
-        return applyNoStore(reply).code(403).type('text/html').send(renderLinkDisabledPage(locale));
+        return applyNoStore(reply).code(403).type('text/html').send(renderLinkDisabledPage(locale, 'link', appearance));
       }
       if (links.isExpired(link.expiresAt)) {
         logger.info({ slug }, 'expired link access');
-        return applyNoStore(reply).code(410).type('text/html').send(renderLinkExpiredPage(locale));
+        return applyNoStore(reply).code(410).type('text/html').send(renderLinkExpiredPage(locale, 'link', appearance));
       }
       if (!link.passwordHash) {
         return applyNoStore(reply).redirect(`/${encodeURIComponent(slug)}`);
@@ -818,7 +952,7 @@ export const buildApp = async () => {
       if (!allowed) {
         return applyNoStore(reply).code(429).type('text/html').send(renderProtectedLinkPage({
           error: publicText(locale, 'tooManyAttempts'),
-          locale
+          locale, appearance
         }));
       }
 
@@ -837,14 +971,14 @@ export const buildApp = async () => {
         });
         return applyNoStore(reply).code(401).type('text/html').send(renderProtectedLinkPage({
           error: publicText(locale, 'invalidPassword'),
-          locale
+          locale, appearance
         }));
       }
 
       logger.info({ slug, ip: getRequestIpForLogs(request.ip) }, 'password protected link access');
       const destination = resolveStoredLinkDestination(link.targetUrl);
       if (!destination) {
-        return applyNoStore(reply).code(400).type('text/html').send(renderInvalidLinkDestinationPage(locale));
+        return applyNoStore(reply).code(400).type('text/html').send(renderInvalidLinkDestinationPage(locale, appearance));
       }
       links.queueAnalytics(link.id, link.slug, {
         userAgent: request.headers['user-agent'],
@@ -861,7 +995,7 @@ export const buildApp = async () => {
       return applyNoStore(reply).code(200).type('text/html').send(renderExternalLinkConfirmationPage({
         targetUrl: destination.targetUrl,
         targetHostname: destination.targetHostname,
-        locale
+        locale, appearance
       }));
     }
   );
@@ -871,84 +1005,87 @@ export const buildApp = async () => {
   });
 
   app.get('/present/:slug', async (request, reply) => {
-    const locale = resolvePublicLocale(request.headers['accept-language']);
+    const locale = resolveRequestLocale(request);
+    const appearance = resolveRequestAppearance(request);
     const slug = (request.params as { slug: string }).slug;
     const liveActivity = isInvalidSlugRequest(slug) ? undefined : live.findBySlug(slug);
     if (!liveActivity) {
-      return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage(locale));
+      return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage(locale, appearance));
     }
     if (live.isExpired(liveActivity.expiresAt)) {
-      return applyNoStore(reply).code(410).type('text/html').send(renderLinkExpiredPage(locale, 'live'));
+      return applyNoStore(reply).code(410).type('text/html').send(renderLinkExpiredPage(locale, 'live', appearance));
     }
     if (!fs.existsSync(clientIndexPath)) {
-      return applyNoStore(reply).code(503).type('text/html').send(renderPublicServiceUnavailablePage(locale));
+      return applyNoStore(reply).code(503).type('text/html').send(renderPublicServiceUnavailablePage(locale, appearance));
     }
     return sendClientIndex(request, reply);
   });
 
   app.get('/boards/:slug/presentation', async (request, reply) => {
-    const locale = resolvePublicLocale(request.headers['accept-language']);
+    const locale = resolveRequestLocale(request);
+    const appearance = resolveRequestAppearance(request);
     const status = boards.publicStatus((request.params as { slug: string }).slug);
-    if (status.state === 'not_found') return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage(locale));
-    if (status.state === 'disabled') return applyNoStore(reply).code(403).type('text/html').send(renderLinkDisabledPage(locale, 'board'));
-    if (status.state === 'expired') return applyNoStore(reply).code(410).type('text/html').send(renderLinkExpiredPage(locale, 'board'));
-    if (!fs.existsSync(clientIndexPath)) return applyNoStore(reply).code(503).type('text/html').send(renderPublicServiceUnavailablePage(locale));
+    if (status.state === 'not_found') return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage(locale, appearance));
+    if (status.state === 'disabled') return applyNoStore(reply).code(403).type('text/html').send(renderLinkDisabledPage(locale, 'board', appearance));
+    if (status.state === 'expired') return applyNoStore(reply).code(410).type('text/html').send(renderLinkExpiredPage(locale, 'board', appearance));
+    if (!fs.existsSync(clientIndexPath)) return applyNoStore(reply).code(503).type('text/html').send(renderPublicServiceUnavailablePage(locale, appearance));
     return sendClientIndex(request, reply, getBoardIndexPayloads(status.board));
   });
 
   app.get('/:slug', async (request, reply) => {
-    const locale = resolvePublicLocale(request.headers['accept-language']);
+    const locale = resolveRequestLocale(request);
+    const appearance = resolveRequestAppearance(request);
     const slug = (request.params as { slug: string }).slug;
     if (config.reservedSlugs.has(slug.toLowerCase())) return applyNoStore(reply).redirect('/app/links');
     if (isInvalidSlugRequest(slug)) {
-      return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage(locale));
+      return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage(locale, appearance));
     }
     const slideActivity = activityAttempts.getLanding(slug);
     if (slideActivity) {
       if (!fs.existsSync(clientIndexPath)) {
-        return applyNoStore(reply).code(503).type('text/html').send(renderPublicServiceUnavailablePage(locale));
+        return applyNoStore(reply).code(503).type('text/html').send(renderPublicServiceUnavailablePage(locale, appearance));
       }
       return sendClientIndex(request, reply, getActivityIndexPayloads(slideActivity));
     }
     const liveActivity = live.findBySlug(slug);
     if (liveActivity) {
       if (live.isExpired(liveActivity.expiresAt)) {
-        return applyNoStore(reply).code(410).type('text/html').send(renderLinkExpiredPage(locale, 'live'));
+        return applyNoStore(reply).code(410).type('text/html').send(renderLinkExpiredPage(locale, 'live', appearance));
       }
       if (!fs.existsSync(clientIndexPath)) {
-        return applyNoStore(reply).code(503).type('text/html').send(renderPublicServiceUnavailablePage(locale));
+        return applyNoStore(reply).code(503).type('text/html').send(renderPublicServiceUnavailablePage(locale, appearance));
       }
       return sendClientIndex(request, reply, getLiveIndexPayloads());
     }
     const page = pages.findPublicRoute(slug);
     if (page) {
       if (page.status === 'draft') {
-        return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage(locale));
+        return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage(locale, appearance));
       }
       if (page.status === 'disabled') {
-        return applyNoStore(reply).code(403).type('text/html').send(renderLinkDisabledPage(locale, 'page'));
+        return applyNoStore(reply).code(403).type('text/html').send(renderLinkDisabledPage(locale, 'page', appearance));
       }
       if (!fs.existsSync(clientIndexPath)) {
-        return applyNoStore(reply).code(503).type('text/html').send(renderPublicServiceUnavailablePage(locale));
+        return applyNoStore(reply).code(503).type('text/html').send(renderPublicServiceUnavailablePage(locale, appearance));
       }
       return sendClientIndex(request, reply, getPageIndexPayloads(page));
     }
     const board = boards.publicStatus(slug);
-    if (board.state === 'disabled') return applyNoStore(reply).code(403).type('text/html').send(renderLinkDisabledPage(locale, 'board'));
-    if (board.state === 'expired') return applyNoStore(reply).code(410).type('text/html').send(renderLinkExpiredPage(locale, 'board'));
+    if (board.state === 'disabled') return applyNoStore(reply).code(403).type('text/html').send(renderLinkDisabledPage(locale, 'board', appearance));
+    if (board.state === 'expired') return applyNoStore(reply).code(410).type('text/html').send(renderLinkExpiredPage(locale, 'board', appearance));
     if (board.state === 'available') {
-      if (!fs.existsSync(clientIndexPath)) return applyNoStore(reply).code(503).type('text/html').send(renderPublicServiceUnavailablePage(locale));
+      if (!fs.existsSync(clientIndexPath)) return applyNoStore(reply).code(503).type('text/html').send(renderPublicServiceUnavailablePage(locale, appearance));
       return sendClientIndex(request, reply, getBoardIndexPayloads(board.board));
     }
     const link = links.getLinkBySlug(slug);
-    if (!link) return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage(locale));
+    if (!link) return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage(locale, appearance));
     if (!link.enabled) {
       logger.info({ slug }, 'disabled link access');
-      return applyNoStore(reply).code(403).type('text/html').send(renderLinkDisabledPage(locale));
+      return applyNoStore(reply).code(403).type('text/html').send(renderLinkDisabledPage(locale, 'link', appearance));
     }
     if (links.isExpired(link.expiresAt)) {
       logger.info({ slug }, 'expired link access');
-      return applyNoStore(reply).code(410).type('text/html').send(renderLinkExpiredPage(locale));
+      return applyNoStore(reply).code(410).type('text/html').send(renderLinkExpiredPage(locale, 'link', appearance));
     }
     if (config.defaults.redirectRateLimitEnabled) {
       const allowed = rateLimiter.consume(
@@ -969,7 +1106,7 @@ export const buildApp = async () => {
 
     const destination = resolveStoredLinkDestination(link.targetUrl);
     if (!destination) {
-      return applyNoStore(reply).code(400).type('text/html').send(renderInvalidLinkDestinationPage(locale));
+      return applyNoStore(reply).code(400).type('text/html').send(renderInvalidLinkDestinationPage(locale, appearance));
     }
 
     links.queueAnalytics(link.id, link.slug, {
@@ -986,7 +1123,7 @@ export const buildApp = async () => {
     return applyNoStore(reply).code(200).type('text/html').send(renderExternalLinkConfirmationPage({
       targetUrl: destination.targetUrl,
       targetHostname: destination.targetHostname,
-      locale
+      locale, appearance
     }));
   });
 
@@ -1016,8 +1153,9 @@ export const buildApp = async () => {
         }
         return sendClientIndex(request, reply);
       }
-      const locale = resolvePublicLocale(request.headers['accept-language']);
-      return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage(locale));
+      const locale = resolveRequestLocale(request);
+      const appearance = resolveRequestAppearance(request);
+      return applyNoStore(reply).code(404).type('text/html').send(renderLinkNotFoundPage(locale, appearance));
     });
   }
 

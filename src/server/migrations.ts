@@ -975,6 +975,66 @@ const migrations: Migration[] = [
         ) VALUES (1, '[]', NULL, 365, ?)
       `).run(nowIso());
     }
+  },
+  {
+    version: 26,
+    name: 'service_submission_availability',
+    up(db) {
+      db.exec(`
+        ALTER TABLE service_submission_settings
+          ADD COLUMN contact_form_enabled INTEGER NOT NULL DEFAULT 1
+          CHECK (contact_form_enabled IN (0, 1));
+        ALTER TABLE service_submission_settings
+          ADD COLUMN report_abuse_form_enabled INTEGER NOT NULL DEFAULT 1
+          CHECK (report_abuse_form_enabled IN (0, 1));
+      `);
+    }
+  },
+  {
+    version: 27,
+    name: 'administrator_totp_two_factor',
+    up(db) {
+      db.exec(`
+        CREATE TABLE user_totp_settings (
+          user_id TEXT PRIMARY KEY,
+          secret_encrypted TEXT NOT NULL,
+          last_used_counter INTEGER,
+          enabled_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE user_totp_enrollments (
+          user_id TEXT PRIMARY KEY,
+          secret_encrypted TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          expires_at TEXT NOT NULL,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE user_totp_recovery_codes (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          code_hash TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          used_at TEXT,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_user_totp_recovery_codes_user_unused
+          ON user_totp_recovery_codes(user_id, used_at);
+
+        CREATE TABLE pending_auth_challenges (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          expires_at TEXT NOT NULL,
+          failed_attempts INTEGER NOT NULL DEFAULT 0,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_pending_auth_challenges_expiry
+          ON pending_auth_challenges(expires_at);
+      `);
+    }
   }
 ];
 

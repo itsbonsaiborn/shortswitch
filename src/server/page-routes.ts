@@ -3,6 +3,7 @@ import type { PageInput, PageStatus } from '@/shared/types.js';
 import type { SessionService } from './services/session-service.js';
 import { PageService } from './services/page-service.js';
 import type { RateLimiterService } from './services/rate-limiter-service.js';
+import { analyticsSelectionFromQuery, resolveAnalyticsDateRange } from '../shared/analytics-date-range.js';
 
 const PUBLIC_CLICK_PAGE_LIMIT = { maxAttempts: 3_000, windowMinutes: 1, blockMinutes: 1 } as const;
 const PUBLIC_CLICK_IP_LIMIT = { maxAttempts: 600, windowMinutes: 1, blockMinutes: 1 } as const;
@@ -98,14 +99,18 @@ export const registerPageRoutes = async (
   app.get('/api/pages/:id/analytics', async (request, reply) => {
     const authenticated = await requireAdmin(request, reply);
     if (!authenticated) return;
+    const query = request.query as Record<string, unknown> & { limit?: string };
+    let frame;
     try {
-      const query = request.query as { range?: 'day' | 'week' | 'month'; timezoneOffsetMinutes?: string; limit?: string };
-      const range = ['day', 'week', 'month'].includes(String(query.range)) ? query.range! : 'month';
+      frame = resolveAnalyticsDateRange(analyticsSelectionFromQuery(query));
+    } catch (error) {
+      return reply.code(400).send({ message: (error as Error).message });
+    }
+    try {
       return pages.analytics(
         authenticated.currentUser.id,
         (request.params as { id: string }).id,
-        range,
-        Number(query.timezoneOffsetMinutes ?? 0),
+        frame,
         Number(query.limit ?? 10)
       );
     } catch (error) {

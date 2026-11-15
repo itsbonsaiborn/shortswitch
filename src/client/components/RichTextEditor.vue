@@ -9,7 +9,8 @@ const props = withDefaults(defineProps<{
   minHeightClass?: string;
   ariaLabel?: string;
   placeholder?: string;
-}>(), { maxLength: 4000, minHeightClass: 'min-h-32', ariaLabel: '', placeholder: '' });
+  required?: boolean;
+}>(), { maxLength: 4000, minHeightClass: 'min-h-32', ariaLabel: '', placeholder: '', required: false });
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>();
 const { t } = useI18n();
 const editor = ref<HTMLElement | null>(null);
@@ -43,9 +44,24 @@ const serialize = () => editor.value
   ? [...editor.value.childNodes].map(serializeNode).join('').replace(/\n+$/, '')
   : '';
 
+const normalizeNestedScripts = () => {
+  if (!editor.value) return;
+  ['sup sup', 'sub sub'].forEach((selector) => {
+    [...editor.value!.querySelectorAll(selector)].reverse().forEach((wrapper) => wrapper.replaceWith(...wrapper.childNodes));
+  });
+};
+
+const removeEmptyScriptWrappers = () => {
+  if (!editor.value) return;
+  editor.value.querySelectorAll('sup, sub').forEach((wrapper) => {
+    if (!(wrapper.textContent ?? '') && !wrapper.querySelector('br')) wrapper.remove();
+  });
+};
+
 const sync = (value: string) => {
   if (!editor.value) return;
   editor.value.innerHTML = renderRichTextHtml(value);
+  normalizeNestedScripts();
 };
 
 const onInput = () => {
@@ -68,19 +84,86 @@ const editorRange = () => {
   return container && editor.value.contains(container) ? { selection, range } : null;
 };
 
-const formatWrapperForRange = (name: FormatCommand, range: Range) => {
+const formatWrapperForNode = (name: FormatCommand, node: Node, outermost = false) => {
   const tag = commandTags[name].toUpperCase();
-  const closest = (node: Node) => {
-    let element = node.nodeType === Node.ELEMENT_NODE ? node as Element : node.parentElement;
-    while (element && element !== editor.value) {
-      if (element.tagName === tag || name === 'bold' && element.tagName === 'B' || name === 'italic' && element.tagName === 'I' || name === 'strikeThrough' && element.tagName === 'STRIKE') return element as HTMLElement;
-      element = element.parentElement;
+  let element = node.nodeType === Node.ELEMENT_NODE ? node as Element : node.parentElement;
+  let match: HTMLElement | null = null;
+  while (element && element !== editor.value) {
+    if (element.tagName === tag || name === 'bold' && element.tagName === 'B' || name === 'italic' && element.tagName === 'I' || name === 'strikeThrough' && element.tagName === 'STRIKE') {
+      match = element as HTMLElement;
+      if (!outermost) break;
     }
-    return null;
-  };
-  const start = closest(range.startContainer);
-  const end = closest(range.endContainer);
+    element = element.parentElement;
+  }
+  return match;
+};
+
+const formatWrapperForRange = (name: FormatCommand, range: Range) => {
+  const start = formatWrapperForNode(name, range.startContainer);
+  const end = formatWrapperForNode(name, range.endContainer);
   return start && start === end ? start : null;
+};
+
+const rangeContainsFormat = (name: FormatCommand, range: Range) => {
+  if (formatWrapperForNode(name, range.startContainer) || formatWrapperForNode(name, range.endContainer)) return true;
+  return Boolean(range.cloneContents().querySelector(commandTags[name]));
+};
+
+const restoreSelectionBetween = (start: HTMLElement, end: HTMLElement, selection: Selection) => {
+  const range = document.createRange();
+  range.setStartAfter(start);
+  range.setEndBefore(end);
+  selection.removeAllRanges();
+  selection.addRange(range);
+  start.remove();
+  end.remove();
+};
+
+const removeFormatFromRange = (name: FormatCommand, active: NonNullable<ReturnType<typeof editorRange>>) => {
+  const startWrapper = formatWrapperForNode(name, active.range.startContainer, true);
+  const fragment = active.range.extractContents();
+  [...fragment.querySelectorAll(commandTags[name])].reverse().forEach((wrapper) => wrapper.replaceWith(...wrapper.childNodes));
+
+  const selectionStart = document.createElement('span');
+  const selectionEnd = document.createElement('span');
+  selectionStart.hidden = true;
+  selectionEnd.hidden = true;
+  const payload = document.createDocumentFragment();
+  payload.append(selectionStart, fragment, selectionEnd);
+
+  if (startWrapper?.isConnected) {
+    const splitMarker = document.createElement('span');
+    active.range.insertNode(splitMarker);
+    const trailingWrapper = startWrapper.cloneNode(false) as HTMLElement;
+    let trailingNode = splitMarker.nextSibling;
+    while (trailingNode) {
+      const next = trailingNode.nextSibling;
+      trailingWrapper.append(trailingNode);
+      trailingNode = next;
+    }
+    splitMarker.remove();
+    const parent = startWrapper.parentNode;
+    if (!parent) return;
+    const reference = startWrapper.nextSibling;
+    parent.insertBefore(payload, reference);
+    if ((trailingWrapper.textContent ?? '') || trailingWrapper.querySelector('br')) parent.insertBefore(trailingWrapper, reference);
+    if (!(startWrapper.textContent ?? '') && !startWrapper.querySelector('br')) startWrapper.remove();
+  } else {
+    active.range.insertNode(payload);
+  }
+
+  restoreSelectionBetween(selectionStart, selectionEnd, active.selection);
+  removeEmptyScriptWrappers();
+};
+
+const wrapRange = (name: FormatCommand, active: NonNullable<ReturnType<typeof editorRange>>) => {
+  const wrapper = document.createElement(commandTags[name]);
+  wrapper.append(active.range.extractContents());
+  active.range.insertNode(wrapper);
+  const selected = document.createRange();
+  selected.selectNodeContents(wrapper);
+  active.selection.removeAllRanges();
+  active.selection.addRange(selected);
 };
 
 const updateCommandState = () => {
@@ -90,20 +173,35 @@ const updateCommandState = () => {
       commandState.value[name] = false;
       return;
     }
+    const wrapperActive = Boolean(formatWrapperForRange(name, active.range));
+    if (name === 'superscript' || name === 'subscript') {
+      commandState.value[name] = rangeContainsFormat(name, active.range);
+      return;
+    }
     try {
       commandState.value[name] = (typeof document.queryCommandState === 'function' && document.queryCommandState(name))
-        || Boolean(formatWrapperForRange(name, active.range));
+        || wrapperActive;
     } catch {
-      commandState.value[name] = Boolean(formatWrapperForRange(name, active.range));
+      commandState.value[name] = wrapperActive;
     }
   });
 };
 
-const command = (name: FormatCommand) => {
-  const active = editorRange();
-  if (!active || active.range.collapsed) return;
-  if (typeof document.execCommand === 'function') {
-    document.execCommand(name, false);
+const applyDomCommand = (name: FormatCommand, active: NonNullable<ReturnType<typeof editorRange>>) => {
+  if (name === 'superscript' || name === 'subscript') {
+    if (rangeContainsFormat(name, active.range)) {
+      removeFormatFromRange(name, active);
+    } else {
+      const oppositeName: FormatCommand = name === 'superscript' ? 'subscript' : 'superscript';
+      if (rangeContainsFormat(oppositeName, active.range)) {
+        removeFormatFromRange(oppositeName, active);
+        const restored = editorRange();
+        if (!restored || restored.range.collapsed) return;
+        wrapRange(name, restored);
+      } else {
+        wrapRange(name, active);
+      }
+    }
     onInput();
     updateCommandState();
     return;
@@ -120,13 +218,25 @@ const command = (name: FormatCommand) => {
     selected.setStartBefore(first);
     selected.setEndAfter(last);
   } else {
-    const wrapper = document.createElement(commandTags[name]);
-    wrapper.append(active.range.extractContents());
-    active.range.insertNode(wrapper);
-    selected.selectNodeContents(wrapper);
+    wrapRange(name, active);
+    onInput();
+    updateCommandState();
+    return;
   }
   active.selection.removeAllRanges();
   active.selection.addRange(selected);
+  onInput();
+  updateCommandState();
+};
+
+const command = (name: FormatCommand) => {
+  const active = editorRange();
+  if (!active || active.range.collapsed) return;
+  if (name === 'superscript' || name === 'subscript' || typeof document.execCommand !== 'function') {
+    applyDomCommand(name, active);
+    return;
+  }
+  document.execCommand(name, false);
   onInput();
   updateCommandState();
 };
@@ -200,6 +310,7 @@ onBeforeUnmount(() => document.removeEventListener('selectionchange', updateComm
       role="textbox"
       aria-multiline="true"
       :aria-label="ariaLabel"
+      :aria-required="required"
       :data-placeholder="placeholder"
       @input="onInput"
       @keydown="onKeydown"

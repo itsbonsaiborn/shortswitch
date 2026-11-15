@@ -22,6 +22,12 @@ export class ServiceSubmissionValidationError extends Error {
   }
 }
 
+export class ServiceSubmissionUnavailableError extends Error {
+  constructor(public readonly type: ServiceSubmissionType) {
+    super('Public submissions are temporarily unavailable.');
+  }
+}
+
 const emailPattern = /^[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?(?:\.[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?)+$/i;
 const safeIdentifier = /^[A-Za-z0-9._~!$&'()*+,;=:@-]{1,128}$/;
 const clean = (value: unknown, maximum: number, requiredCode: SubmissionValidationCode) => {
@@ -81,6 +87,7 @@ export class ServiceSubmissionService {
   private repository = new ServiceSubmissionRepository();
 
   submitContact(input: ContactSubmissionInput, sessionId: string) {
+    this.ensureFormEnabled('contact');
     if (typeof input?.website === 'string' && input.website.trim()) return { accepted: true, ignored: true, duplicate: false };
     const email = optionalEmail(input?.email, true);
     this.ensureAllowedSender(email);
@@ -90,10 +97,12 @@ export class ServiceSubmissionService {
       type: 'contact', email, subject, message,
       duplicateKey: duplicateKey('contact', sessionId, [email, subject, message])
     });
+    if (result.unavailable) throw new ServiceSubmissionUnavailableError('contact');
     return { accepted: true, ignored: false, duplicate: result.duplicate };
   }
 
   submitAbuse(input: AbuseSubmissionInput, sessionId: string) {
+    this.ensureFormEnabled('report_abuse');
     if (typeof input?.website === 'string' && input.website.trim()) return { accepted: true, ignored: true, duplicate: false };
     const linkIdentifier = normalizeLinkIdentifier(input?.link);
     const reason = typeof input?.reason === 'string' && abuseReasons.includes(input.reason as AbuseReason)
@@ -108,6 +117,7 @@ export class ServiceSubmissionService {
       ...(reporterEmail ? { reporterEmail } : {}),
       duplicateKey: duplicateKey('report_abuse', sessionId, [linkIdentifier, reason, description, reporterEmail])
     });
+    if (result.unavailable) throw new ServiceSubmissionUnavailableError('report_abuse');
     return { accepted: true, ignored: false, duplicate: result.duplicate };
   }
 
@@ -144,6 +154,14 @@ export class ServiceSubmissionService {
   updateSettings(input: ServiceSubmissionSettingsUpdate | undefined) {
     if (!input || typeof input !== 'object') throw new Error('Invalid settings.');
     const current = this.repository.getSettings();
+    if (input.contactFormEnabled !== undefined && typeof input.contactFormEnabled !== 'boolean') {
+      throw new Error('Invalid Contact Form availability.');
+    }
+    if (input.reportAbuseFormEnabled !== undefined && typeof input.reportAbuseFormEnabled !== 'boolean') {
+      throw new Error('Invalid Report Abuse availability.');
+    }
+    const contactFormEnabled = input.contactFormEnabled ?? current.contactFormEnabled;
+    const reportAbuseFormEnabled = input.reportAbuseFormEnabled ?? current.reportAbuseFormEnabled;
     if (input.allowedEmailDomains !== undefined && !Array.isArray(input.allowedEmailDomains)) throw new Error('Invalid email domains.');
     const allowedEmailDomains = input.allowedEmailDomains === undefined
       ? current.allowedEmailDomains
@@ -158,7 +176,13 @@ export class ServiceSubmissionService {
     if (!Number.isInteger(retentionDays) || retentionDays < 1 || retentionDays > 3650) {
       throw new Error('Retention must be between 1 and 3650 days.');
     }
-    return this.repository.updateSettings({ allowedEmailDomains, publicContactEmail, retentionDays });
+    return this.repository.updateSettings({
+      contactFormEnabled,
+      reportAbuseFormEnabled,
+      allowedEmailDomains,
+      publicContactEmail,
+      retentionDays
+    });
   }
 
   cleanupExpired() {
@@ -170,6 +194,14 @@ export class ServiceSubmissionService {
     const allowed = this.repository.getSettings().allowedEmailDomains;
     if (allowed.length > 0 && !allowed.includes(emailDomain(email))) {
       throw new ServiceSubmissionValidationError('email_domain_not_allowed');
+    }
+  }
+
+  private ensureFormEnabled(type: ServiceSubmissionType) {
+    const settings = this.repository.getSettings();
+    if ((type === 'contact' && !settings.contactFormEnabled) ||
+        (type === 'report_abuse' && !settings.reportAbuseFormEnabled)) {
+      throw new ServiceSubmissionUnavailableError(type);
     }
   }
 }

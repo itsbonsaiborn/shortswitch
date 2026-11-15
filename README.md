@@ -233,6 +233,7 @@ Important environment values:
 - `RESET_ADMIN`
 - `STORE_RAW_IP`
 - `IP_HASH_SECRET`
+- `TOTP_ENCRYPTION_KEY` (32 random bytes encoded as base64 or hex; required before enabling 2FA)
 - `ENABLE_CSP`
 
 ### Admin bootstrap
@@ -255,6 +256,7 @@ Before deploying to a real VPS, update the Docker config:
 - Set `COOKIE_SECURE=true`
 - Set an explicit, non-default `ADMIN_PASSWORD` with at least 12 characters
 - Set a long random `IP_HASH_SECRET`
+- Generate and persist `TOTP_ENCRYPTION_KEY` (for example, `openssl rand -base64 32`) before enabling administrator 2FA; changing or losing it makes existing TOTP enrollment unusable
 - Prefer `STORE_RAW_IP=false`
 - Keep `ENABLE_CSP=true`
 - Keep `RESET_ADMIN=false` for normal operation

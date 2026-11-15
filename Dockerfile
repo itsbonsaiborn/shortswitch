@@ -6,7 +6,8 @@ COPY . .
 RUN npm run build
 
 FROM node:22-bookworm-slim AS runtime
-ENV NODE_ENV=production
+ENV NODE_ENV=production \
+    TZ=Europe/Riga
 WORKDIR /app
 RUN apt-get update \
     && apt-get install --only-upgrade -y --no-install-recommends perl-base \

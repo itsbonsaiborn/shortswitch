@@ -11,12 +11,15 @@ import { useTheme } from '../composables/useTheme';
 import AnalyticsBreakdownGrid from '../components/AnalyticsBreakdownGrid.vue';
 import AnalyticsVisitTable from '../components/AnalyticsVisitTable.vue';
 import StatCard from '../components/StatCard.vue';
+import AnalyticsDateRangeSelector from '../components/AnalyticsDateRangeSelector.vue';
+import { useAnalyticsDateRange } from '../composables/useAnalyticsDateRange';
 
 const route = useRoute();
 const router = useRouter();
 const { width } = useWindowSize();
 const { resolvedTheme } = useTheme();
 const { t } = useI18n();
+const { query: analyticsDateQuery, resolved: analyticsDateRange } = useAnalyticsDateRange();
 const page = ref<PageDetail | null>(null);
 const analytics = ref<PageAnalytics | null>(null);
 const loading = ref(true);
@@ -25,39 +28,31 @@ const failedFavicons = ref(new Set<string>());
 const trendChartContainer = ref<HTMLElement | null>(null);
 const { width: trendChartWidth } = useElementSize(trendChartContainer);
 const displayUrl = (url: string) => url.replace(/^https?:\/\//i, '');
-const readRange = () => {
-  if (typeof document === 'undefined') return 'day' as const;
-  const value = document.cookie.split('; ').find((item) => item.startsWith('ss_page_analytics_range='))?.split('=')[1];
-  return value === 'week' || value === 'month' ? value : 'day';
-};
-const range = ref<'day' | 'week' | 'month'>(readRange());
 const readLimit = () => {
   if (typeof document === 'undefined') return 10 as const;
   const value = Number(document.cookie.split('; ').find((item) => item.startsWith('ss_page_analytics_limit='))?.split('=')[1]);
   return (value === 20 || value === 50 ? value : 10) as 10 | 20 | 50;
 };
 const limit = ref<10 | 20 | 50>(readLimit());
-const setRange = (next: 'day' | 'week' | 'month') => {
-  range.value = next;
-  document.cookie = `ss_page_analytics_range=${next}; path=/; SameSite=Lax`;
-};
 const setLimit = (next: 10 | 20 | 50) => {
   limit.value = next;
   document.cookie = `ss_page_analytics_limit=${next}; path=/; SameSite=Lax`;
 };
-const rangeLabel = computed(() => t(range.value === 'month' ? 'pageAnalytics.monthTrend' : range.value === 'week' ? 'pageAnalytics.weeklyTrend' : 'pageAnalytics.dailyTrend'));
-const buttonClass = (active: boolean) => active
-  ? 'border-transparent bg-[var(--ui-accent-soft)] text-[var(--ui-accent)]'
-  : 'border-[var(--ui-border)] bg-[var(--ui-panel)] text-[var(--ui-text-muted)]';
+const rangeLabel = computed(() => t('analytics.selectedRangeTrend'));
 
 const chartCategories = computed(() => analytics.value?.viewsOverTime.map((point) => point.label) ?? []);
 const chartLabelStride = computed(() => {
   const categoryCount = chartCategories.value.length;
   if (categoryCount <= 1) return 1;
   const availableWidth = trendChartWidth.value || width.value;
-  const labelWidth = range.value === 'week' ? 72 : range.value === 'day' ? 52 : 58;
+  const labelWidth = {
+    hour: 52,
+    day: 64,
+    week: 112,
+    month: 82
+  }[analyticsDateRange.value.granularity];
   const visibleLabels = Math.max(2, Math.floor(availableWidth / labelWidth));
-  const minimumStride = range.value === 'week' ? 1 : 2;
+  const minimumStride = analyticsDateRange.value.granularity === 'hour' ? 2 : 1;
   return Math.max(minimumStride, Math.ceil(categoryCount / visibleLabels));
 });
 const chartSeries = computed(() => [
@@ -111,8 +106,7 @@ const load = async (initial = page.value === null || analytics.value === null) =
   if (initial) loading.value = true;
   error.value = '';
   try {
-    const timezoneOffsetMinutes = -new Date().getTimezoneOffset();
-    const analyticsRequest = api<PageAnalytics>(`/api/pages/${route.params.id}/analytics?range=${range.value}&limit=${limit.value}&timezoneOffsetMinutes=${timezoneOffsetMinutes}`);
+    const analyticsRequest = api<PageAnalytics>(`/api/pages/${route.params.id}/analytics?${analyticsDateQuery.value}&limit=${limit.value}`);
     if (initial) {
       [page.value, analytics.value] = await Promise.all([
         api<PageDetail>(`/api/pages/${route.params.id}`),
@@ -132,11 +126,13 @@ const load = async (initial = page.value === null || analytics.value === null) =
   }
 };
 
-watch([range, limit], () => void load(false));
+watch([analyticsDateQuery, limit], () => void load(false));
 onMounted(() => void load(true));
 </script>
 
 <template>
+  <div class="space-y-4 sm:space-y-6">
+  <AnalyticsDateRangeSelector />
   <div v-if="loading" class="panel py-20 text-center text-[var(--ui-text-muted)]">{{ t('common.loading') }}</div>
   <div v-else-if="error" class="panel px-6 py-16 text-center">
     <h2 class="text-xl font-semibold">{{ t('pageAnalytics.unavailable') }}</h2>
@@ -159,22 +155,6 @@ onMounted(() => void load(true));
     <section class="panel p-5 sm:p-6">
       <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div><h3 class="text-xl font-semibold">{{ rangeLabel }}</h3><p class="mt-1 text-sm text-[var(--ui-text-muted)]">{{ t('pageAnalytics.periodDescription') }}</p></div>
-        <div class="grid w-full gap-2 sm:flex sm:w-auto">
-          <button
-            v-for="option in [
-              { label: t('pageAnalytics.monthTrend'), value: 'month' },
-              { label: t('pageAnalytics.weeklyTrend'), value: 'week' },
-              { label: t('pageAnalytics.dailyTrend'), value: 'day' }
-            ]"
-            :key="option.value"
-            type="button"
-            class="rounded-2xl border px-4 py-2 text-sm font-medium transition-all duration-200"
-            :class="buttonClass(range === option.value)"
-            @click="setRange(option.value as 'day' | 'week' | 'month')"
-          >
-            {{ option.label }}
-          </button>
-        </div>
       </div>
       <div class="app-scrollbar mt-6 rounded-[2rem] border border-[var(--ui-border)] bg-[var(--ui-panel-muted)] p-3 sm:p-4" :class="isMobileChart ? 'overflow-x-auto overflow-y-hidden' : 'overflow-hidden'">
         <div ref="trendChartContainer" :class="isMobileChart ? 'min-w-[720px]' : 'min-w-0'">
@@ -214,5 +194,6 @@ onMounted(() => void load(true));
       :context-label="t('pageAnalytics.block')"
       @update:limit="setLimit"
     />
+  </div>
   </div>
 </template>

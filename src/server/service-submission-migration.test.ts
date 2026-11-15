@@ -45,8 +45,14 @@ describe('Service submission Inbox migration', () => {
       { id: 'abuse-1', status: 'rejected', duplicate_key: 'duplicate-2' },
       { id: 'contact-1', status: 'in_progress', duplicate_key: 'duplicate-1' }
     ]);
-    expect(database.prepare('SELECT allowed_email_domains_json, public_contact_email, retention_days FROM service_submission_settings').get())
-      .toEqual({ allowed_email_domains_json: '[]', public_contact_email: null, retention_days: 365 });
+    expect(database.prepare('SELECT allowed_email_domains_json, public_contact_email, retention_days, contact_form_enabled, report_abuse_form_enabled FROM service_submission_settings').get())
+      .toEqual({
+        allowed_email_domains_json: '[]',
+        public_contact_email: null,
+        retention_days: 365,
+        contact_form_enabled: 1,
+        report_abuse_form_enabled: 1
+      });
     expect(database.prepare('PRAGMA quick_check').get()).toEqual({ quick_check: 'ok' });
     database.close();
   });

@@ -1,4 +1,5 @@
 import type { PageBackgroundPattern, PageBlockConfig, PageBlockType, PageInput, PageLayout, PageNestedBlockType, PageStatus, PageTheme, PublicPage } from '@/shared/types.js';
+import type { ResolvedAnalyticsDateRange } from '../../shared/analytics-date-range.js';
 import { UAParser } from 'ua-parser-js';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
@@ -382,10 +383,10 @@ export class PageService {
     });
   }
 
-  analytics(userId: string, pageId: string, range: 'day' | 'week' | 'month', timezoneOffsetMinutes = 0, limit = 10) {
+  analytics(userId: string, pageId: string, frame: ResolvedAnalyticsDateRange, limit = 10) {
     this.ensureOwner(userId, pageId);
     const safeLimit = [10, 20, 50].includes(limit) ? limit : 10;
-    return this.pages.analytics(pageId, range, timezoneOffsetMinutes, safeLimit);
+    return this.pages.analytics(pageId, frame, safeLimit);
   }
 
   clearAnalytics(userId: string, pageId: string) {

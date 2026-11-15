@@ -3,6 +3,7 @@ import { flushPromises, mount } from '@vue/test-utils';
 import { ref } from 'vue';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import GlobalAnalyticsPage from './GlobalAnalyticsPage.vue';
+import { resetAnalyticsDateRangeForTests, useAnalyticsDateRange } from '../composables/useAnalyticsDateRange';
 
 const { apiMock } = vi.hoisted(() => ({ apiMock: vi.fn() }));
 
@@ -56,7 +57,9 @@ const analytics = {
 describe('GlobalAnalyticsPage', () => {
   beforeEach(() => {
     apiMock.mockReset();
-    document.cookie = 'ss_global_analytics_range=month; path=/';
+    sessionStorage.clear();
+    resetAnalyticsDateRangeForTests();
+    useAnalyticsDateRange().selectPreset('current_month');
     apiMock.mockImplementation((url: string) => Promise.resolve(
       url.includes('/activity-over-time')
         ? [{ date: '2026-10-14T12:00', label: '12:00', clicks: 1, views: 2, uniqueVisitors: 2 }]
@@ -64,23 +67,24 @@ describe('GlobalAnalyticsPage', () => {
     ));
   });
 
-  test('loads only the trend when the selected range changes and uses local referrer icons', async () => {
+  test('reloads the consistently filtered dashboard when the shared range changes and uses local referrer icons', async () => {
     const wrapper = mount(GlobalAnalyticsPage);
     await flushPromises();
 
     expect(apiMock).toHaveBeenCalledTimes(1);
-    expect(apiMock.mock.calls[0][0]).toContain('/api/analytics/global?range=month');
+    expect(apiMock.mock.calls[0][0]).toContain('/api/analytics/global?datePreset=current_month');
     expect(wrapper.text()).toContain('school.example');
     expect(wrapper.find('img[src^="http"]').exists()).toBe(false);
 
-    const dailyButton = wrapper.findAll('button').find((button) => button.text() === 'Daily');
-    expect(dailyButton).toBeDefined();
-    await dailyButton!.trigger('click');
+    const selector = wrapper.find('select[aria-label="Date range"]');
+    expect(selector.exists()).toBe(true);
+    await selector.setValue('today');
     await flushPromises();
 
     expect(apiMock).toHaveBeenCalledTimes(2);
-    expect(apiMock.mock.calls[1][0]).toContain('/api/analytics/global/activity-over-time?range=day');
+    expect(apiMock.mock.calls[1][0]).toContain('/api/analytics/global?datePreset=today');
     expect(wrapper.text()).toContain('school.example');
+    expect(wrapper.findAll('[tabindex="0"]')).toHaveLength(12);
     expect(wrapper.findAllComponents({ name: 'VueApexCharts' })).toHaveLength(6);
     wrapper.unmount();
   });

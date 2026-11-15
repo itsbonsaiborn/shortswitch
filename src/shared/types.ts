@@ -141,6 +141,22 @@ export interface CurrentUser {
   preferencesInitialized: boolean;
 }
 
+export interface TwoFactorLoginRequired {
+  requiresTwoFactor: true;
+}
+
+export interface TwoFactorStatus {
+  enabled: boolean;
+  enabledAt: string | null;
+  recoveryCodesRemaining: number;
+  enrollmentAvailable: boolean;
+}
+
+export interface TwoFactorEnrollment {
+  otpauthUri: string;
+  manualKey: string;
+}
+
 export type Locale = 'en' | 'lv';
 
 export interface UserPreferences {
@@ -153,6 +169,7 @@ export interface UserPreferences {
 export interface PublicAppConfig {
   appName: string;
   appDescription: string;
+  publicDisplayPreferences: import('./display-preferences.js').PublicDisplayPreferences;
 }
 
 export type LiveActivityType = 'open_answer' | 'word_cloud' | 'multiple_choice' | 'scale';

@@ -93,6 +93,10 @@ export class UserRepository {
       this.db.exec('BEGIN');
       try {
         this.db.prepare('DELETE FROM sessions').run();
+        this.db.prepare('DELETE FROM pending_auth_challenges WHERE user_id = ?').run(canonicalUser.id);
+        this.db.prepare('DELETE FROM user_totp_recovery_codes WHERE user_id = ?').run(canonicalUser.id);
+        this.db.prepare('DELETE FROM user_totp_enrollments WHERE user_id = ?').run(canonicalUser.id);
+        this.db.prepare('DELETE FROM user_totp_settings WHERE user_id = ?').run(canonicalUser.id);
         this.db.prepare('UPDATE links SET user_id = ? WHERE user_id != ?').run(canonicalUser.id, canonicalUser.id);
         this.db.prepare('UPDATE live_activities SET user_id = ? WHERE user_id != ?').run(canonicalUser.id, canonicalUser.id);
         this.db.prepare('UPDATE moderation_rules SET user_id = ? WHERE user_id != ?').run(canonicalUser.id, canonicalUser.id);
@@ -150,5 +154,12 @@ export class UserRepository {
         'UPDATE users SET password_hash = ?, session_version = session_version + 1, updated_at = ? WHERE id = ?'
       )
       .run(passwordHash, nowIso(), id);
+  }
+
+  incrementSessionVersion(id: string) {
+    this.db.prepare(
+      'UPDATE users SET session_version = session_version + 1, updated_at = ? WHERE id = ?'
+    ).run(nowIso(), id);
+    return this.findById(id);
   }
 }

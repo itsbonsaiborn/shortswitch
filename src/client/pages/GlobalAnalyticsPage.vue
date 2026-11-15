@@ -4,28 +4,18 @@ import { useElementSize, useMediaQuery, useWindowSize } from '@vueuse/core';
 import type { ApexOptions } from 'apexcharts';
 import VueApexCharts from 'vue3-apexcharts';
 import AnalyticsBreakdownGrid from '../components/AnalyticsBreakdownGrid.vue';
+import AnalyticsDateRangeSelector from '../components/AnalyticsDateRangeSelector.vue';
 import StatCard from '../components/StatCard.vue';
 import { useTheme } from '../composables/useTheme';
+import { useAnalyticsDateRange } from '../composables/useAnalyticsDateRange';
 import { api } from '../lib/api';
 import { createDonutTooltip } from '../lib/chart-tooltip';
 import { chartCategoryColors, chartDonutDividerColor } from '../lib/chart-colors';
 import { useI18n } from 'vue-i18n';
 import type { GlobalAnalytics, GlobalAnalyticsModuleFilter } from '@/shared/types';
+import { formatRigaWeekday } from '../../shared/analytics-date-range';
 
-type AnalyticsRange = 'day' | 'week' | 'month';
 type ModuleMetric = 'clicks' | 'views' | 'uniqueVisitors';
-
-const readRange = (): AnalyticsRange => {
-  if (typeof document === 'undefined') return 'month';
-  const value = document.cookie
-    .split('; ')
-    .find((item) => item.startsWith('ss_global_analytics_range='))
-    ?.split('=')
-    .slice(1)
-    .join('=');
-  const decoded = value ? decodeURIComponent(value) : '';
-  return decoded === 'day' || decoded === 'week' || decoded === 'month' ? decoded : 'month';
-};
 
 const { width } = useWindowSize();
 const isCoarsePointer = useMediaQuery('(hover: none), (pointer: coarse)');
@@ -33,12 +23,12 @@ const isMobileLayout = useMediaQuery('(max-width: 767px)');
 const allowDonutSelection = computed(() => isCoarsePointer.value && isMobileLayout.value);
 const { resolvedTheme } = useTheme();
 const { t, locale } = useI18n();
+const { query: analyticsDateQuery, resolved: analyticsDateRange } = useAnalyticsDateRange();
 const activityChartContainer = ref<HTMLElement | null>(null);
 const { width: activityChartWidth } = useElementSize(activityChartContainer);
 const data = ref<GlobalAnalytics | null>(null);
 const loading = ref(true);
 const errorMessage = ref('');
-const range = ref<AnalyticsRange>(readRange());
 const moduleMetric = ref<ModuleMetric>('clicks');
 const selectedModuleIndex = ref<number | null>(null);
 const blockDesktopDonutInteraction = (event: Event) => {
@@ -58,9 +48,8 @@ const load = async () => {
   loading.value = isInitialLoad;
   if (isInitialLoad) errorMessage.value = '';
   try {
-    const timezoneOffsetMinutes = -new Date().getTimezoneOffset();
     const nextData = await api<GlobalAnalytics>(
-      `/api/analytics/global?range=${range.value}&timezoneOffsetMinutes=${timezoneOffsetMinutes}`
+      `/api/analytics/global?${analyticsDateQuery.value}`
     );
     if (requestId !== loadRequestId) return;
     data.value = nextData;
@@ -77,31 +66,6 @@ const load = async () => {
   }
 };
 
-const loadActivityOverTime = async () => {
-  if (!data.value) {
-    await load();
-    return;
-  }
-  const requestId = ++loadRequestId;
-  try {
-    const timezoneOffsetMinutes = -new Date().getTimezoneOffset();
-    const nextActivity = await api<GlobalAnalytics['activityOverTime']>(
-      `/api/analytics/global/activity-over-time?range=${range.value}&timezoneOffsetMinutes=${timezoneOffsetMinutes}`
-    );
-    if (requestId !== loadRequestId || !data.value) return;
-    data.value.activityOverTime = nextActivity;
-  } catch {
-    // Keep the last successful chart visible; a later range change can retry.
-  }
-};
-
-const setRange = (next: AnalyticsRange) => {
-  range.value = next;
-  if (typeof document !== 'undefined') {
-    document.cookie = `ss_global_analytics_range=${next}; path=/; SameSite=Lax`;
-  }
-};
-
 const isDark = computed(() => resolvedTheme.value === 'dark');
 const isMobileChart = computed(() => width.value < 640);
 const activityCategories = computed(() => data.value?.activityOverTime.map((point) => point.label) ?? []);
@@ -109,9 +73,14 @@ const activityLabelStride = computed(() => {
   const categoryCount = activityCategories.value.length;
   if (categoryCount <= 1) return 1;
   const availableWidth = activityChartWidth.value || width.value;
-  const labelWidth = range.value === 'week' ? 72 : 58;
+  const labelWidth = {
+    hour: 52,
+    day: 64,
+    week: 112,
+    month: 82
+  }[analyticsDateRange.value.granularity];
   const visibleLabels = Math.max(2, Math.floor(availableWidth / labelWidth));
-  const minimumStride = range.value === 'week' ? 1 : 2;
+  const minimumStride = analyticsDateRange.value.granularity === 'hour' ? 2 : 1;
   return Math.max(minimumStride, Math.ceil(categoryCount / visibleLabels));
 });
 const activitySeries = computed(() => [
@@ -252,15 +221,21 @@ const moduleChartOptions = computed<ApexOptions>(() => ({
 
 const weekdays = computed(() => Array.from({ length: 7 }, (_, index) =>
   new Intl.DateTimeFormat(locale.value, { weekday: 'short' }).format(new Date(Date.UTC(2024, 0, index + 1)))));
+const heatmapDays = computed(() => {
+  const allDays = weekdays.value.map((label, index) => ({ label, day: index + 1 }));
+  if (analyticsDateRange.value.startDate !== analyticsDateRange.value.endDate) return allDays;
+  const selectedDay = formatRigaWeekday(`${analyticsDateRange.value.startDate}T12:00:00.000Z`);
+  return allDays.filter((item) => item.day === selectedDay);
+});
 const heatmapHours = Array.from({ length: 12 }, (_, index) => index * 2);
 const heatmapMatrix = computed(() => {
   const valueMap = new Map(
     (data.value?.activityByTime ?? []).map((cell) => [`${cell.day}-${cell.hour}`, cell[heatmapMetric.value]])
   );
-  return weekdays.value.map((label, dayIndex) => ({
+  return heatmapDays.value.map(({ label, day }) => ({
     label,
-    day: dayIndex + 1,
-    cells: heatmapHours.map((hour) => ({ hour, value: valueMap.get(`${dayIndex + 1}-${hour}`) ?? 0 }))
+    day,
+    cells: heatmapHours.map((hour) => ({ hour, value: valueMap.get(`${day}-${hour}`) ?? 0 }))
   }));
 });
 const heatmapMaximum = computed(() =>
@@ -354,12 +329,13 @@ const buttonClass = (active: boolean) =>
     : 'border-[var(--ui-border)] bg-[var(--ui-panel)] text-[var(--ui-text-muted)]';
 
 onMounted(load);
-watch(range, loadActivityOverTime);
+watch(analyticsDateQuery, load);
 watch(moduleMetric, () => { selectedModuleIndex.value = null; });
 </script>
 
 <template>
   <div class="analytics-page min-w-0 space-y-6">
+    <AnalyticsDateRangeSelector />
     <section v-if="loading" class="panel p-8 text-center text-[var(--ui-text-muted)]">
       {{ t('common.loading') }}
     </section>
@@ -383,22 +359,6 @@ watch(moduleMetric, () => { selectedModuleIndex.value = null; });
             <div>
               <h2 class="text-xl font-semibold">{{ t('analytics.activityOverTime') }}</h2>
               <p class="mt-1 text-sm text-[var(--ui-text-muted)]">{{ t('analytics.allModulesDescription') }}</p>
-            </div>
-            <div class="grid w-full grid-cols-3 gap-2 sm:flex sm:w-auto">
-              <button
-                v-for="option in [
-                  { label: t('analytics.daily'), value: 'day' },
-                  { label: t('analytics.weekly'), value: 'week' },
-                  { label: t('analytics.monthly'), value: 'month' }
-                ]"
-                :key="option.value"
-                type="button"
-                class="rounded-2xl border px-3 py-2 text-sm font-medium transition-all duration-200"
-                :class="buttonClass(range === option.value)"
-                @click="setRange(option.value as AnalyticsRange)"
-              >
-                {{ option.label }}
-              </button>
             </div>
           </div>
 
@@ -494,7 +454,7 @@ watch(moduleMetric, () => { selectedModuleIndex.value = null; });
           <div class="flex flex-col gap-4">
             <div>
               <h2 class="text-xl font-semibold">{{ t('analytics.activityByTime') }}</h2>
-              <p class="mt-1 text-sm text-[var(--ui-text-muted)]">{{ t('analytics.twoHourDescription') }}</p>
+              <p class="mt-1 text-sm text-[var(--ui-text-muted)]">{{ t('analytics.twoHourDescriptionSelected') }}</p>
             </div>
             <div class="grid w-full min-w-0 grid-cols-3 gap-2">
               <button

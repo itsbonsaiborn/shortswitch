@@ -5,6 +5,13 @@ import { config } from './config.js';
 import { runMigrations } from './migrations.js';
 import { migrateLegacyLiveActivities } from './legacy-live-migration.js';
 import { logger } from './logger.js';
+import {
+  formatRigaDateKey,
+  formatRigaHour,
+  formatRigaMonthKey,
+  formatRigaWeekKey,
+  formatRigaWeekday
+} from '../shared/analytics-date-range.js';
 
 let dbInstance: DatabaseSync | null = null;
 
@@ -33,6 +40,11 @@ export const getDb = () => {
   if (!dbInstance) {
     fs.mkdirSync(path.dirname(config.databasePath), { recursive: true });
     dbInstance = new DatabaseSync(config.databasePath);
+    dbInstance.function('analytics_riga_date', { deterministic: true }, (value) => formatRigaDateKey(String(value ?? '')));
+    dbInstance.function('analytics_riga_hour', { deterministic: true }, (value) => formatRigaHour(String(value ?? '')));
+    dbInstance.function('analytics_riga_week', { deterministic: true }, (value) => formatRigaWeekKey(String(value ?? '')));
+    dbInstance.function('analytics_riga_month', { deterministic: true }, (value) => formatRigaMonthKey(String(value ?? '')));
+    dbInstance.function('analytics_riga_weekday', { deterministic: true }, (value) => formatRigaWeekday(String(value ?? '')));
     backupBeforeLegacyMigration(dbInstance);
     dbInstance.exec(`
       PRAGMA journal_mode = WAL;

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { isPublicClientPath, resolvePublicLocale } from './public-locale';
+import { isPublicClientPath, resolvePreferredPublicLocale, resolvePublicLocale } from './public-locale';
 
 describe('public locale resolution', () => {
   test.each([
@@ -20,6 +20,13 @@ describe('public locale resolution', () => {
   test('uses only the first Accept-Language entry', () => {
     expect(resolvePublicLocale('ru-RU,lv-LV;q=0.9,en;q=0.8')).toBe('en');
     expect(resolvePublicLocale('lv-LV;q=0.7,en-US;q=1')).toBe('lv');
+  });
+
+  test('explicit preferences override the browser while auto preserves detection', () => {
+    expect(resolvePreferredPublicLocale('lv', 'en-US')).toBe('lv');
+    expect(resolvePreferredPublicLocale('en', 'lv-LV')).toBe('en');
+    expect(resolvePreferredPublicLocale('auto', 'lv-LV')).toBe('lv');
+    expect(resolvePreferredPublicLocale('invalid', 'ru-RU')).toBe('en');
   });
 
   test('recognizes only Vue public routes', () => {

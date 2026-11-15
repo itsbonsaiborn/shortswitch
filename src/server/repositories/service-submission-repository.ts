@@ -26,6 +26,8 @@ interface SubmissionRow {
 }
 
 interface SettingsRow {
+  contactFormEnabled: number;
+  reportAbuseFormEnabled: number;
   allowedEmailDomainsJson: string;
   publicContactEmail: string | null;
   retentionDays: number;
@@ -72,11 +74,13 @@ export class ServiceSubmissionRepository {
   create(input: StoredSubmissionInput) {
     const timestamp = nowIso();
     const id = createId();
+    const enabledColumn = input.type === 'contact' ? 'contact_form_enabled' : 'report_abuse_form_enabled';
     const result = this.db.prepare(`
       INSERT OR IGNORE INTO service_submissions (
         id, submission_type, status, email, subject, message, link_identifier, reason,
         description, reporter_email, duplicate_key, created_at, updated_at
-      ) VALUES (?, ?, 'new', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) SELECT ?, ?, 'new', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      WHERE (SELECT ${enabledColumn} FROM service_submission_settings WHERE id = 1) = 1
     `).run(
       id,
       input.type,
@@ -91,7 +95,13 @@ export class ServiceSubmissionRepository {
       timestamp,
       timestamp
     );
-    return { id: result.changes > 0 ? id : undefined, duplicate: result.changes === 0 };
+    const enabled = this.db.prepare(`SELECT ${enabledColumn} AS enabled FROM service_submission_settings WHERE id = 1`)
+      .get() as { enabled: number };
+    return {
+      id: result.changes > 0 ? id : undefined,
+      duplicate: result.changes === 0 && enabled.enabled === 1,
+      unavailable: enabled.enabled !== 1
+    };
   }
 
   list(filters: { type?: ServiceSubmissionType; status?: ServiceSubmissionStatus; search?: string; limit: number }) {
@@ -152,7 +162,10 @@ export class ServiceSubmissionRepository {
   getSettings(): ServiceSubmissionSettings {
     const row = this.db.prepare(`
       SELECT allowed_email_domains_json AS allowedEmailDomainsJson,
-        public_contact_email AS publicContactEmail, retention_days AS retentionDays, updated_at AS updatedAt
+        public_contact_email AS publicContactEmail, retention_days AS retentionDays,
+        contact_form_enabled AS contactFormEnabled,
+        report_abuse_form_enabled AS reportAbuseFormEnabled,
+        updated_at AS updatedAt
       FROM service_submission_settings WHERE id = 1
     `).get() as unknown as SettingsRow;
     let allowedEmailDomains: string[] = [];
@@ -162,16 +175,31 @@ export class ServiceSubmissionRepository {
     } catch {
       // Invalid persisted settings fail closed to the documented allow-all default.
     }
-    return { allowedEmailDomains, publicContactEmail: row.publicContactEmail, retentionDays: Number(row.retentionDays), updatedAt: row.updatedAt };
+    return {
+      contactFormEnabled: row.contactFormEnabled === 1,
+      reportAbuseFormEnabled: row.reportAbuseFormEnabled === 1,
+      allowedEmailDomains,
+      publicContactEmail: row.publicContactEmail,
+      retentionDays: Number(row.retentionDays),
+      updatedAt: row.updatedAt
+    };
   }
 
-  updateSettings(input: Pick<ServiceSubmissionSettings, 'allowedEmailDomains' | 'publicContactEmail' | 'retentionDays'>) {
+  updateSettings(input: Pick<ServiceSubmissionSettings, 'contactFormEnabled' | 'reportAbuseFormEnabled' | 'allowedEmailDomains' | 'publicContactEmail' | 'retentionDays'>) {
     const updatedAt = nowIso();
     this.db.prepare(`
       UPDATE service_submission_settings
-      SET allowed_email_domains_json = ?, public_contact_email = ?, retention_days = ?, updated_at = ?
+      SET contact_form_enabled = ?, report_abuse_form_enabled = ?,
+        allowed_email_domains_json = ?, public_contact_email = ?, retention_days = ?, updated_at = ?
       WHERE id = 1
-    `).run(JSON.stringify(input.allowedEmailDomains), input.publicContactEmail, input.retentionDays, updatedAt);
+    `).run(
+      input.contactFormEnabled ? 1 : 0,
+      input.reportAbuseFormEnabled ? 1 : 0,
+      JSON.stringify(input.allowedEmailDomains),
+      input.publicContactEmail,
+      input.retentionDays,
+      updatedAt
+    );
     return this.getSettings();
   }
 

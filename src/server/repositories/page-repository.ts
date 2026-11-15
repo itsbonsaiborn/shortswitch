@@ -16,6 +16,7 @@ import type {
 import { getDb } from '../db.js';
 import { buildShortUrl, createId, nowIso } from '../utils.js';
 import { buildAnalyticsBreakdowns, type AnalyticsBreakdownRow } from './analytics-breakdowns.js';
+import type { ResolvedAnalyticsDateRange } from '../../shared/analytics-date-range.js';
 
 interface PageRow {
   id: string;
@@ -77,76 +78,11 @@ const publicPageSelect = `
 export class PageRepository {
   private db = getDb();
 
-  private analyticsFrame(range: 'day' | 'week' | 'month', timezoneOffsetMinutes: number) {
-    const offset = Number.isFinite(timezoneOffsetMinutes)
-      ? Math.max(-840, Math.min(840, Math.trunc(timezoneOffsetMinutes)))
-      : 0;
-    const toLocalWall = (date: Date) => new Date(date.getTime() + offset * 60_000);
-    const toUtcInstant = (date: Date) => new Date(date.getTime() - offset * 60_000);
-    const key = (date: Date, includeHour = false) => {
-      const dateKey = `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`;
-      return includeHour ? `${dateKey} ${String(date.getUTCHours()).padStart(2, '0')}:00` : dateKey;
-    };
-    const monthLabel = (date: Date) => `${date.getUTCDate()} ${date.toLocaleString('en-US', { month: 'short', timeZone: 'UTC' })}`;
-    const sqliteOffset = `${offset >= 0 ? '+' : ''}${offset} minutes`;
-    const localNow = toLocalWall(new Date());
-
-    if (range === 'day') {
-      const localEnd = new Date(localNow);
-      localEnd.setUTCMinutes(0, 0, 0);
-      localEnd.setUTCHours(localEnd.getUTCHours() + 1);
-      const localStart = new Date(localEnd);
-      localStart.setUTCHours(localStart.getUTCHours() - 24);
-      const buckets = Array.from({ length: 24 }, (_, index) => {
-        const date = new Date(localStart);
-        date.setUTCHours(date.getUTCHours() + index);
-        return { key: key(date, true), label: `${String(date.getUTCHours()).padStart(2, '0')}:00` };
-      });
-      return {
-        start: toUtcInstant(localStart),
-        end: toUtcInstant(localEnd),
-        bucketSql: `strftime('%Y-%m-%d %H:00', timestamp, '${sqliteOffset}')`,
-        buckets
-      };
-    }
-
-    if (range === 'week') {
-      const localStart = new Date(localNow);
-      const day = localStart.getUTCDay();
-      localStart.setUTCDate(localStart.getUTCDate() + (day === 0 ? -6 : 1 - day));
-      localStart.setUTCHours(0, 0, 0, 0);
-      const localEnd = new Date(localStart);
-      localEnd.setUTCDate(localEnd.getUTCDate() + 7);
-      const labels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-      const buckets = labels.map((label, index) => {
-        const date = new Date(localStart);
-        date.setUTCDate(date.getUTCDate() + index);
-        return { key: key(date), label };
-      });
-      return {
-        start: toUtcInstant(localStart),
-        end: toUtcInstant(localEnd),
-        bucketSql: `strftime('%Y-%m-%d', timestamp, '${sqliteOffset}')`,
-        buckets
-      };
-    }
-
-    const localEnd = new Date(localNow);
-    localEnd.setUTCHours(0, 0, 0, 0);
-    localEnd.setUTCDate(localEnd.getUTCDate() + 1);
-    const localStart = new Date(localEnd);
-    localStart.setUTCDate(localStart.getUTCDate() - 30);
-    const buckets = Array.from({ length: 30 }, (_, index) => {
-      const date = new Date(localStart);
-      date.setUTCDate(date.getUTCDate() + index);
-      return { key: key(date), label: monthLabel(date) };
-    });
-    return {
-      start: toUtcInstant(localStart),
-      end: toUtcInstant(localEnd),
-      bucketSql: `strftime('%Y-%m-%d', timestamp, '${sqliteOffset}')`,
-      buckets
-    };
+  private analyticsBucketSql(frame: ResolvedAnalyticsDateRange, column = 'timestamp') {
+    if (frame.granularity === 'hour') return `strftime('%Y-%m-%dT%H:00:00.000Z', ${column})`;
+    if (frame.granularity === 'week') return `analytics_riga_week(${column})`;
+    if (frame.granularity === 'month') return `analytics_riga_month(${column})`;
+    return `analytics_riga_date(${column})`;
   }
 
   private toSummary(row: PageRow): PageSummary {
@@ -459,22 +395,25 @@ export class PageRepository {
       .get(pageId, blockId) as { type: PageBlockType; configJson: string } | undefined;
   }
 
-  analytics(pageId: string, range: 'day' | 'week' | 'month', timezoneOffsetMinutes = 0, limit = 10): PageAnalytics {
+  analytics(pageId: string, frame: ResolvedAnalyticsDateRange, limit = 10): PageAnalytics {
     const totals = this.db
       .prepare(
         `SELECT
-          (SELECT COUNT(*) FROM page_views WHERE page_id = ?) as totalViews,
-          (SELECT COUNT(DISTINCT visitor_hash) FROM page_views WHERE page_id = ?) as uniqueVisitors,
-          (SELECT COUNT(*) FROM page_block_clicks WHERE page_id = ?) as totalLinkClicks`
+          (SELECT COUNT(*) FROM page_views WHERE page_id = ? AND timestamp >= ? AND timestamp < ?) as totalViews,
+          (SELECT COUNT(DISTINCT visitor_hash) FROM page_views WHERE page_id = ? AND timestamp >= ? AND timestamp < ?) as uniqueVisitors,
+          (SELECT COUNT(*) FROM page_block_clicks WHERE page_id = ? AND timestamp >= ? AND timestamp < ?) as totalLinkClicks`
       )
-      .get(pageId, pageId, pageId) as { totalViews: number; uniqueVisitors: number; totalLinkClicks: number };
-    const frame = this.analyticsFrame(range, timezoneOffsetMinutes);
+      .get(
+        pageId, frame.startAt, frame.endAt,
+        pageId, frame.startAt, frame.endAt,
+        pageId, frame.startAt, frame.endAt
+      ) as { totalViews: number; uniqueVisitors: number; totalLinkClicks: number };
     const rows = this.db
       .prepare(
-        `SELECT ${frame.bucketSql} as bucket, COUNT(*) as views, COUNT(DISTINCT visitor_hash) as uniqueVisitors
+        `SELECT ${this.analyticsBucketSql(frame)} as bucket, COUNT(*) as views, COUNT(DISTINCT visitor_hash) as uniqueVisitors
          FROM page_views WHERE page_id = ? AND timestamp >= ? AND timestamp < ? GROUP BY bucket ORDER BY bucket ASC`
       )
-      .all(pageId, frame.start.toISOString(), frame.end.toISOString()) as Array<{ bucket: string; views: number; uniqueVisitors: number }>;
+      .all(pageId, frame.startAt, frame.endAt) as Array<{ bucket: string; views: number; uniqueVisitors: number }>;
     const rowMap = new Map(rows.map((row) => [row.bucket, row]));
     const viewsOverTime = frame.buckets.map((bucket) => ({
       date: bucket.key,
@@ -485,9 +424,9 @@ export class PageRepository {
     const clickRows = this.db
       .prepare(
         `SELECT block_id as blockId, MAX(block_label) as label, COUNT(*) as clicks
-         FROM page_block_clicks WHERE page_id = ? GROUP BY block_id ORDER BY clicks DESC`
+         FROM page_block_clicks WHERE page_id = ? AND timestamp >= ? AND timestamp < ? GROUP BY block_id ORDER BY clicks DESC`
       )
-      .all(pageId) as unknown as Array<{ blockId: string; label: string; clicks: number }>;
+      .all(pageId, frame.startAt, frame.endAt) as unknown as Array<{ blockId: string; label: string; clicks: number }>;
     const clickMap = new Map(clickRows.map((row) => [row.blockId, Number(row.clicks)]));
     const owner = this.db.prepare('SELECT user_id as userId FROM pages WHERE id = ?').get(pageId) as { userId: string } | undefined;
     const clickableBlocks = owner
@@ -524,19 +463,24 @@ export class PageRepository {
     const breakdownRows = this.db
       .prepare(
         `SELECT 'devices' as category, COALESCE(NULLIF(TRIM(device_type), ''), 'Unknown') as label, COUNT(*) as value
-         FROM page_views WHERE page_id = ? GROUP BY label
+         FROM page_views WHERE page_id = ? AND timestamp >= ? AND timestamp < ? GROUP BY label
          UNION ALL
          SELECT 'browsers', COALESCE(NULLIF(TRIM(browser), ''), 'Unknown'), COUNT(*)
-         FROM page_views WHERE page_id = ? GROUP BY COALESCE(NULLIF(TRIM(browser), ''), 'Unknown')
+         FROM page_views WHERE page_id = ? AND timestamp >= ? AND timestamp < ? GROUP BY COALESCE(NULLIF(TRIM(browser), ''), 'Unknown')
          UNION ALL
          SELECT 'operatingSystems', COALESCE(NULLIF(TRIM(os), ''), 'Unknown'), COUNT(*)
-         FROM page_views WHERE page_id = ? GROUP BY COALESCE(NULLIF(TRIM(os), ''), 'Unknown')
+         FROM page_views WHERE page_id = ? AND timestamp >= ? AND timestamp < ? GROUP BY COALESCE(NULLIF(TRIM(os), ''), 'Unknown')
          UNION ALL
          SELECT 'languages', COALESCE(NULLIF(TRIM(language), ''), 'Unknown'), COUNT(*)
-         FROM page_views WHERE page_id = ? GROUP BY COALESCE(NULLIF(TRIM(language), ''), 'Unknown')
+         FROM page_views WHERE page_id = ? AND timestamp >= ? AND timestamp < ? GROUP BY COALESCE(NULLIF(TRIM(language), ''), 'Unknown')
          ORDER BY category, value DESC, label ASC`
       )
-      .all(pageId, pageId, pageId, pageId) as unknown as AnalyticsBreakdownRow[];
+      .all(
+        pageId, frame.startAt, frame.endAt,
+        pageId, frame.startAt, frame.endAt,
+        pageId, frame.startAt, frame.endAt,
+        pageId, frame.startAt, frame.endAt
+      ) as unknown as AnalyticsBreakdownRow[];
     const recentClicks = this.db
       .prepare(
         `SELECT c.id, c.timestamp, c.block_label as context,
@@ -547,9 +491,9 @@ export class PageRepository {
                 c.referrer,
                 c.language
          FROM page_block_clicks c
-         WHERE c.page_id = ? ORDER BY c.timestamp DESC LIMIT ?`
+         WHERE c.page_id = ? AND c.timestamp >= ? AND c.timestamp < ? ORDER BY c.timestamp DESC LIMIT ?`
       )
-      .all(pageId, limit) as unknown as PageAnalytics['recentClicks'];
+      .all(pageId, frame.startAt, frame.endAt, limit) as unknown as PageAnalytics['recentClicks'];
     return {
       totalViews: Number(totals.totalViews),
       uniqueVisitors: Number(totals.uniqueVisitors),

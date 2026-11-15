@@ -1,6 +1,7 @@
 import argon2 from 'argon2';
 import { UAParser } from 'ua-parser-js';
 import type { LinkDetailsResponse, LinkFormInput, LinkRecord } from '@/shared/types.js';
+import type { ResolvedAnalyticsDateRange } from '../../shared/analytics-date-range.js';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import { AnalyticsRepository } from '../repositories/analytics-repository.js';
@@ -206,26 +207,25 @@ export class LinkService {
   getLinkDetails(
     userId: string,
     linkId: string,
-    range: 'day' | 'week' | 'month',
-    limit: number,
-    timezoneOffsetMinutes = 0
+    frame: ResolvedAnalyticsDateRange,
+    limit: number
   ): LinkDetailsResponse {
     const link = this.links.findById(linkId);
     if (!link || link.userId !== userId) throw new Error('Link not found.');
     return {
       link: this.toLinkRecord(link),
-      overview: this.analytics.getOverview(link.id, range, timezoneOffsetMinutes),
-      recentClicks: this.analytics.getRecentClicks(link.id, clamp(limit, 10, 50)),
-      breakdowns: this.analytics.getBreakdowns(link.id)
+      overview: this.analytics.getOverview(link.id, frame),
+      recentClicks: this.analytics.getRecentClicks(link.id, clamp(limit, 10, 50), frame),
+      breakdowns: this.analytics.getBreakdowns(link.id, frame)
     };
   }
 
-  getGlobalAnalytics(userId: string, range: 'day' | 'week' | 'month', timezoneOffsetMinutes = 0) {
-    return this.analytics.getGlobalAnalytics(userId, range, timezoneOffsetMinutes);
+  getGlobalAnalytics(userId: string, frame: ResolvedAnalyticsDateRange) {
+    return this.analytics.getGlobalAnalytics(userId, frame);
   }
 
-  getGlobalActivityOverTime(userId: string, range: 'day' | 'week' | 'month', timezoneOffsetMinutes = 0) {
-    return this.analytics.getGlobalActivityOverTime(userId, range, timezoneOffsetMinutes);
+  getGlobalActivityOverTime(userId: string, frame: ResolvedAnalyticsDateRange) {
+    return this.analytics.getGlobalActivityOverTime(userId, frame);
   }
 
   getLinkBySlug(slug: string) {

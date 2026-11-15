@@ -1,6 +1,6 @@
 import { computed, reactive } from 'vue';
 import { api } from '../lib/api';
-import type { CurrentUser } from '@/shared/types';
+import type { CurrentUser, TwoFactorLoginRequired } from '@/shared/types';
 import { usePreferences } from './usePreferences';
 
 const state = reactive<{
@@ -26,9 +26,20 @@ export const useAuth = () => {
   };
 
   const login = async (email: string, password: string) => {
-    state.user = await api<CurrentUser>('/api/auth/login', {
+    const result = await api<CurrentUser | TwoFactorLoginRequired>('/api/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, password })
+    });
+    if ('requiresTwoFactor' in result) return result;
+    state.user = result;
+    preferences.hydrateUser(state.user);
+    return state.user;
+  };
+
+  const verifyTwoFactor = async (code: string) => {
+    state.user = await api<CurrentUser>('/api/auth/two-factor', {
+      method: 'POST',
+      body: JSON.stringify({ code })
     });
     preferences.hydrateUser(state.user);
     return state.user;
@@ -46,6 +57,7 @@ export const useAuth = () => {
     initialized: computed(() => state.initialized),
     loadUser,
     login,
+    verifyTwoFactor,
     logout
   };
 };

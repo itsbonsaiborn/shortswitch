@@ -2,17 +2,21 @@
 import { computed, defineAsyncComponent, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useAuth } from './composables/useAuth';
-import { usePreferences } from './composables/usePreferences';
 import { setDocumentLocale } from './i18n';
 import type { LinkRecord } from '@/shared/types';
-import { resolvePublicLocale } from '@/shared/public-locale';
+import { useDisplayPreferences } from './composables/useDisplayPreferences';
+import { useTheme } from './composables/useTheme';
+import { usePreferences } from './composables/usePreferences';
+import { useAppConfig } from './composables/useAppConfig';
 
 const AppShell = defineAsyncComponent(() => import('./components/AppShell.vue'));
 const CreateLinkModal = defineAsyncComponent(() => import('./components/CreateLinkModal.vue'));
 const ToastViewport = defineAsyncComponent(() => import('./components/ToastViewport.vue'));
 
 const { initialized, loadUser, user } = useAuth();
-const { locale: preferenceLocale } = usePreferences();
+const { resolvedPublicLocale } = useDisplayPreferences();
+const { locale: accountLocale } = usePreferences();
+const { loadAppConfig } = useAppConfig();
 const route = useRoute();
 const router = useRouter();
 const createOpen = ref(false);
@@ -20,6 +24,8 @@ const createOpen = ref(false);
 const isLoginRoute = computed(() => route.path === '/login');
 const isPublicRoute = computed(() => route.meta.public === true);
 const isStandaloneRoute = computed(() => route.meta.standalone === true);
+const usesPublicDisplayPreferences = computed(() => isPublicRoute.value || isLoginRoute.value);
+useTheme(usesPublicDisplayPreferences);
 const authNavigationPending = computed(() => !isPublicRoute.value && (
   !initialized.value
   || Boolean(user.value && isLoginRoute.value)
@@ -49,16 +55,14 @@ watch(
 );
 
 watch(
-  [isPublicRoute, initialized, preferenceLocale],
-  ([publicRoute, ready, savedLocale]) => {
-    if (publicRoute) {
-      setDocumentLocale(resolvePublicLocale(window.navigator.language));
-    } else if (ready) {
-      setDocumentLocale(savedLocale);
-    }
+  [resolvedPublicLocale, accountLocale, isPublicRoute, isLoginRoute, user],
+  ([publicLocale, personalLocale, publicRoute, loginRoute, currentUser]) => {
+    setDocumentLocale(publicRoute || loginRoute || !currentUser ? publicLocale : personalLocale);
   },
   { immediate: true }
 );
+
+void loadAppConfig();
 
 const onCreated = async (link: LinkRecord) => {
   if (route.path === '/app/links') {

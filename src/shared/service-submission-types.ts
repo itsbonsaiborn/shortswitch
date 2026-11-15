@@ -46,6 +46,8 @@ export interface ServiceSubmissionListResponse {
 }
 
 export interface ServiceSubmissionSettings {
+  contactFormEnabled: boolean;
+  reportAbuseFormEnabled: boolean;
   allowedEmailDomains: string[];
   publicContactEmail: string | null;
   retentionDays: number;
@@ -53,6 +55,8 @@ export interface ServiceSubmissionSettings {
 }
 
 export interface ServiceSubmissionSettingsUpdate {
+  contactFormEnabled?: boolean;
+  reportAbuseFormEnabled?: boolean;
   allowedEmailDomains?: string[];
   publicContactEmail?: string | null;
   retentionDays?: number;

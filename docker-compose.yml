@@ -7,6 +7,7 @@ services:
       - "127.0.0.1:3000:3000"
     environment:
       NODE_ENV: production
+      TZ: ${TZ:-Europe/Riga}
       PORT: 3000
       PUBLIC_URL: http://localhost:3000
       CORS_ORIGIN: http://localhost:3000
@@ -15,6 +16,7 @@ services:
       DATABASE_PATH: /app/data/shortswitch.db
       APP_DATA_DIR: /app/data
       SESSION_COOKIE_NAME: shortswitch_session
+      PENDING_AUTH_COOKIE_NAME: shortswitch_pending_auth
       SESSION_TTL_HOURS: 720
       COOKIE_SECURE: "false"
       COOKIE_SAME_SITE: lax
@@ -50,6 +52,7 @@ services:
       BLOCK_PRIVATE_IPS: "false"
       STORE_RAW_IP: "false"
       IP_HASH_SECRET: $${IP_HASH_SECRET:?Set IP_HASH_SECRET in .env}
+      TOTP_ENCRYPTION_KEY: ${TOTP_ENCRYPTION_KEY:-}
       ANALYTICS_RETENTION_DAYS: 90
     volumes:
       - shortswitch-data:/app/data

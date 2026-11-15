@@ -7,8 +7,10 @@ import VueApexCharts from 'vue3-apexcharts';
 import { useI18n } from 'vue-i18n';
 import AnalyticsBreakdownGrid from '../components/AnalyticsBreakdownGrid.vue';
 import AnalyticsVisitTable from '../components/AnalyticsVisitTable.vue';
+import AnalyticsDateRangeSelector from '../components/AnalyticsDateRangeSelector.vue';
 import { api } from '../lib/api';
 import { useTheme } from '../composables/useTheme';
+import { useAnalyticsDateRange } from '../composables/useAnalyticsDateRange';
 import type { LinkDetailsResponse } from '@/shared/types';
 
 const readSessionCookie = <T extends string>(name: string, allowed: readonly T[], fallback: T): T => {
@@ -33,9 +35,7 @@ const route = useRoute();
 const { width } = useWindowSize();
 const { resolvedTheme } = useTheme();
 const { t } = useI18n();
-const range = ref<'day' | 'week' | 'month'>(
-  readSessionCookie('ss_link_analytics_range', ['day', 'week', 'month'] as const, 'day')
-);
+const { query: analyticsDateQuery, resolved: analyticsDateRange } = useAnalyticsDateRange();
 const limit = ref<10 | 20 | 50>(
   Number(readSessionCookie('ss_link_analytics_limit', ['10', '20', '50'] as const, '10')) as 10 | 20 | 50
 );
@@ -48,18 +48,12 @@ const { width: trendChartWidth } = useElementSize(trendChartContainer);
 const load = async (initial = data.value === null) => {
   if (initial) loading.value = true;
   try {
-    const timezoneOffsetMinutes = -new Date().getTimezoneOffset();
     data.value = await api<LinkDetailsResponse>(
-      `/api/links/${route.params.id}/analytics?range=${range.value}&limit=${limit.value}&timezoneOffsetMinutes=${timezoneOffsetMinutes}`
+      `/api/links/${route.params.id}/analytics?${analyticsDateQuery.value}&limit=${limit.value}`
     );
   } finally {
     if (initial) loading.value = false;
   }
-};
-
-const setRange = (next: 'day' | 'week' | 'month') => {
-  range.value = next;
-  writeSessionCookie('ss_link_analytics_range', next);
 };
 
 const setLimit = (next: 10 | 20 | 50) => {
@@ -67,11 +61,7 @@ const setLimit = (next: 10 | 20 | 50) => {
   writeSessionCookie('ss_link_analytics_limit', String(next));
 };
 
-const rangeLabel = computed(() => {
-  if (range.value === 'month') return t('pageAnalytics.monthTrend');
-  if (range.value === 'week') return t('pageAnalytics.weeklyTrend');
-  return t('pageAnalytics.dailyTrend');
-});
+const rangeLabel = computed(() => t('analytics.selectedRangeTrend'));
 
 const analyticsTargetHost = computed(() => {
   const targetUrl = data.value?.link.targetUrl;
@@ -145,9 +135,14 @@ const chartLabelStride = computed(() => {
   const categoryCount = chartCategories.value.length;
   if (categoryCount <= 1) return 1;
   const availableWidth = trendChartWidth.value || width.value;
-  const labelWidth = range.value === 'week' ? 72 : range.value === 'day' ? 52 : 58;
+  const labelWidth = {
+    hour: 52,
+    day: 64,
+    week: 112,
+    month: 82
+  }[analyticsDateRange.value.granularity];
   const visibleLabels = Math.max(2, Math.floor(availableWidth / labelWidth));
-  const minimumStride = range.value === 'week' ? 1 : 2;
+  const minimumStride = analyticsDateRange.value.granularity === 'hour' ? 2 : 1;
   return Math.max(minimumStride, Math.ceil(categoryCount / visibleLabels));
 });
 
@@ -259,13 +254,8 @@ const statCards = computed(() => {
   ];
 });
 
-const buttonClass = (active: boolean) =>
-  active
-    ? 'border-transparent bg-[var(--ui-accent-soft)] text-[var(--ui-accent)]'
-    : 'border-[var(--ui-border)] bg-[var(--ui-panel)] text-[var(--ui-text-muted)]';
-
 onMounted(() => void load(true));
-watch([range, limit], () => void load(false));
+watch([analyticsDateQuery, limit], () => void load(false));
 watch(
   () => data.value?.link.targetUrl,
   () => {
@@ -284,6 +274,7 @@ const handleAnalyticsFaviconError = () => {
 
 <template>
   <div class="space-y-6">
+    <AnalyticsDateRangeSelector />
     <section v-if="loading" class="panel p-8 text-center text-slate-500 dark:text-slate-400">
       {{ t('common.loading') }}
     </section>
@@ -386,22 +377,6 @@ const handleAnalyticsFaviconError = () => {
             </div>
           </div>
 
-          <div class="grid w-full gap-2 sm:flex sm:w-auto">
-            <button
-              v-for="option in [
-                { label: t('pageAnalytics.monthTrend'), value: 'month' },
-                { label: t('pageAnalytics.weeklyTrend'), value: 'week' },
-                { label: t('pageAnalytics.dailyTrend'), value: 'day' }
-              ]"
-              :key="option.value"
-              type="button"
-              class="rounded-2xl border px-4 py-2 text-sm font-medium transition-all duration-200"
-              :class="buttonClass(range === option.value)"
-              @click="setRange(option.value as 'day' | 'week' | 'month')"
-            >
-              {{ option.label }}
-            </button>
-          </div>
         </div>
 
         <div

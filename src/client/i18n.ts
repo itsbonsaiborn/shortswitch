@@ -2,16 +2,28 @@ import { createI18n } from 'vue-i18n';
 import en from './locales/en.json';
 import lv from './locales/lv.json';
 import type { Locale } from '@/shared/types';
-import { isPublicClientPath, resolvePublicLocale } from '@/shared/public-locale';
+import {
+  PUBLIC_LANGUAGE_PREFERENCE_COOKIE,
+  isLanguagePreference,
+  resolveDisplayLocale
+} from '@/shared/display-preferences';
+
+const cookieValue = (name: string) => {
+  const raw = document.cookie.split('; ').find((item) => item.startsWith(`${name}=`))?.slice(name.length + 1);
+  if (!raw) return null;
+  try { return decodeURIComponent(raw); } catch { return raw; }
+};
 
 const initialLocale = (): Locale => {
   if (typeof window === 'undefined') return 'en';
-  if (isPublicClientPath(window.location.pathname)) {
-    return resolvePublicLocale(window.navigator.language);
+  if (!window.location.pathname.startsWith('/app')) {
+    const publicPreference = cookieValue(PUBLIC_LANGUAGE_PREFERENCE_COOKIE);
+    return resolveDisplayLocale(isLanguagePreference(publicPreference) ? publicPreference : 'auto', window.navigator.language);
   }
   try {
-    const cached = JSON.parse(window.localStorage.getItem('ss_preferences_active') ?? 'null') as { locale?: unknown } | null;
-    return cached?.locale === 'lv' ? 'lv' : 'en';
+    const raw = window.localStorage.getItem('ss_preferences_active');
+    const preferences = raw ? JSON.parse(raw) as { locale?: unknown } : null;
+    return preferences?.locale === 'lv' ? 'lv' : 'en';
   } catch {
     return 'en';
   }

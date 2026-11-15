@@ -11,12 +11,13 @@ import type { ServiceSectionService } from './services/service-section-service.j
 import type { RateLimiterService } from './services/rate-limiter-service.js';
 import {
   ServiceSubmissionService,
+  ServiceSubmissionUnavailableError,
   ServiceSubmissionValidationError,
   type SubmissionValidationCode
 } from './services/service-submission-service.js';
 import { config } from './config.js';
 import { createId } from './utils.js';
-import { resolvePublicLocale } from '../shared/public-locale.js';
+import { resolveRequestAppearance, resolveRequestLocale } from './request-locale.js';
 import {
   renderReportAbusePage,
   renderServiceSectionPage,
@@ -166,59 +167,79 @@ export const registerServiceSectionRoutes = async (
   });
 
   app.get('/api/public/service-sections', async (request) => {
-    const locale = resolvePublicLocale(request.headers['accept-language']);
+    const locale = resolveRequestLocale(request);
     return { links: sections.getFooterLinks(locale) };
   });
 
   app.get('/service/report-abuse', async (request, reply) => {
-    const locale = resolvePublicLocale(request.headers['accept-language']);
+    const locale = resolveRequestLocale(request);
+    const appearance = resolveRequestAppearance(request);
     formSession(request, reply);
+    const settings = submissions.getSettings();
     reply.header('Cache-Control', 'no-store, no-cache, must-revalidate, private');
-    return reply.code(200).type('text/html').send(renderReportAbusePage({ locale, footerLinks: sections.getFooterLinks(locale) }));
+    return reply.code(200).type('text/html').send(renderReportAbusePage({
+      locale,
+      appearance,
+      footerLinks: sections.getFooterLinks(locale),
+      formEnabled: settings.reportAbuseFormEnabled,
+      publicContactEmail: settings.publicContactEmail
+    }));
   });
 
   app.post('/service/report-abuse/submit', async (request, reply) => {
-    const locale = resolvePublicLocale(request.headers['accept-language']);
+    const locale = resolveRequestLocale(request);
+    const appearance = resolveRequestAppearance(request);
     const body = (request.body ?? {}) as Record<string, unknown>;
     const values = publicValues(body, ['link', 'reason', 'description', 'reporterEmail']);
     const sessionId = formSession(request, reply);
+    const settings = submissions.getSettings();
     reply.header('Cache-Control', 'no-store, no-cache, must-revalidate, private');
-    if (!canSubmit(rateLimiter, 'report_abuse', request, sessionId)) {
-      return reply.code(429).type('text/html').send(renderReportAbusePage({
-        locale, footerLinks: sections.getFooterLinks(locale), state: { error: validationMessages[locale].rate_limited, values }
+    const render = (status: number, state?: PublicServiceFormState, enabled = settings.reportAbuseFormEnabled) =>
+      reply.code(status).type('text/html').send(renderReportAbusePage({
+        locale,
+        appearance,
+        footerLinks: sections.getFooterLinks(locale),
+        state,
+        formEnabled: enabled,
+        publicContactEmail: settings.publicContactEmail
       }));
+    if (!settings.reportAbuseFormEnabled) return render(503, undefined, false);
+    if (!canSubmit(rateLimiter, 'report_abuse', request, sessionId)) {
+      return render(429, { error: validationMessages[locale].rate_limited, values });
     }
     try {
       submissions.submitAbuse(body as unknown as AbuseSubmissionInput, sessionId);
-      return reply.code(200).type('text/html').send(renderReportAbusePage({
-        locale, footerLinks: sections.getFooterLinks(locale), state: { success: true }
-      }));
+      return render(200, { success: true });
     } catch (error) {
+      if (error instanceof ServiceSubmissionUnavailableError) return render(503, undefined, false);
       const status = error instanceof ServiceSubmissionValidationError ? 400 : 500;
-      return reply.code(status).type('text/html').send(renderReportAbusePage({
-        locale, footerLinks: sections.getFooterLinks(locale), state: { error: formError(error, locale), values }
-      }));
+      return render(status, { error: formError(error, locale), values });
     }
   });
 
   app.post('/service/contacts/submit', async (request, reply) => {
-    const locale = resolvePublicLocale(request.headers['accept-language']);
+    const locale = resolveRequestLocale(request);
+    const appearance = resolveRequestAppearance(request);
     const body = (request.body ?? {}) as Record<string, unknown>;
     const values = publicValues(body, ['email', 'subject', 'message']);
     const sessionId = formSession(request, reply);
     const section = sections.getPublic('contacts', locale);
+    const settings = submissions.getSettings();
     reply.header('Cache-Control', 'no-store, no-cache, must-revalidate, private');
-    const render = (state: PublicServiceFormState, status: number) => reply.code(status).type('text/html').send(
+    const render = (state: PublicServiceFormState, status: number, enabled = settings.contactFormEnabled) => reply.code(status).type('text/html').send(
       renderServiceSectionPage({
         locale,
+        appearance,
         title: section?.title ?? (locale === 'lv' ? 'Kontakti' : 'Contacts'),
         body: section?.body ?? '',
         contactConfig: section?.contactConfig,
-        publicContactEmail: submissions.getSettings().publicContactEmail,
+        publicContactEmail: settings.publicContactEmail,
         contactFormState: state,
+        contactFormEnabled: enabled,
         footerLinks: sections.getFooterLinks(locale)
       })
     );
+    if (!settings.contactFormEnabled) return render({}, 503, false);
     if (!canSubmit(rateLimiter, 'contact', request, sessionId)) {
       return render({ error: validationMessages[locale].rate_limited, values }, 429);
     }
@@ -226,29 +247,35 @@ export const registerServiceSectionRoutes = async (
       submissions.submitContact(body as unknown as ContactSubmissionInput, sessionId);
       return render({ success: true }, 200);
     } catch (error) {
+      if (error instanceof ServiceSubmissionUnavailableError) return render({}, 503, false);
       return render({ error: formError(error, locale), values }, error instanceof ServiceSubmissionValidationError ? 400 : 500);
     }
   });
 
   app.get('/service/:type', async (request, reply) => {
-    const locale = resolvePublicLocale(request.headers['accept-language']);
+    const locale = resolveRequestLocale(request);
+    const appearance = resolveRequestAppearance(request);
     reply.header('Cache-Control', 'no-store, no-cache, must-revalidate, private');
     try {
       const type = (request.params as { type: string }).type;
       const section = sections.getPublic(type, locale);
       if (!section) return reply.code(404).type('text/html').send(renderServiceSectionPage({
         locale,
+        appearance,
         title: locale === 'lv' ? 'Lapa nav pieejama' : 'Page unavailable',
         body: locale === 'lv' ? 'Šī izvēles informācijas lapa nav publicēta.' : 'This optional information page is not published.',
         footerLinks: sections.getFooterLinks(locale)
       }));
       if (type === 'contacts') formSession(request, reply);
+      const submissionSettings = type === 'contacts' ? submissions.getSettings() : null;
       return reply.code(200).type('text/html').send(renderServiceSectionPage({
         locale,
+        appearance,
         title: section.title,
         body: section.body,
         contactConfig: section.contactConfig,
-        publicContactEmail: type === 'contacts' ? submissions.getSettings().publicContactEmail : null,
+        publicContactEmail: submissionSettings?.publicContactEmail ?? null,
+        contactFormEnabled: submissionSettings?.contactFormEnabled ?? true,
         footerLinks: sections.getFooterLinks(locale)
       }));
     } catch {

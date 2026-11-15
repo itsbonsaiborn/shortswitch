@@ -1,17 +1,20 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useRoute } from 'vue-router';
 import type { BoardCardCreateResponse, BoardCardInput, BoardCardReactionState, BoardReactionType, BoardRealtimeDelta, PublicBoard, PublicBoardCard } from '@/shared/board-types';
+import { stripRichText } from '@/shared/rich-text';
 import { ApiError, api } from '../lib/api';
 import { sortBoardCards, type BoardCardSortMode } from '../lib/board-card-sort';
 import { boardSurfaceClasses, boardSurfaceStyle } from '../lib/board-theme';
 import { applyBoardRealtimeDelta } from '../lib/board-realtime';
+import { useToast } from '../composables/useToast';
 import BoardCardView from '../components/BoardCardView.vue';
 import RichTextEditor from '../components/RichTextEditor.vue';
 
 const route = useRoute();
 const { t, locale } = useI18n();
+const { pushToast } = useToast();
 const board = ref<PublicBoard | null>(null);
 const loading = ref(true);
 const error = ref('');
@@ -29,9 +32,14 @@ const realtimeMessage = ref('');
 const activeCardMenuId = ref('');
 const cardMenuAnchor = ref<HTMLElement | null>(null);
 const cardMenuStyle = ref<Record<string, string>>({});
+const boardGrid = ref<HTMLElement | null>(null);
+const masonryActive = ref(false);
+const masonrySpans = ref<Record<string, number>>({});
 let eventSource: EventSource | null = null;
 let recoveryPinCopiedTimer: number | undefined;
 let boardClockTimer: number | undefined;
+let masonryFrame: number | undefined;
+let masonryObserver: ResizeObserver | null = null;
 const boardClock = ref(Date.now());
 const slug = computed(() => String(route.params.slug || window.location.pathname.split('/').filter(Boolean).at(-1) || ''));
 const presentation = computed(() => route.path.startsWith('/boards/'));
@@ -50,9 +58,20 @@ const canCreate = computed(() => Boolean(
 ));
 const sortedCards = computed(() => sortBoardCards(board.value?.cards ?? [], sortMode.value, locale.value));
 const form = reactive<BoardCardInput>({ title: '', body: '', imageUrl: null, authorDisplayName: null, layout: 'text' });
-const publicError = (cause: unknown) => cause instanceof ApiError && cause.status === 429
-  ? t('boardSecurity.rateLimited')
-  : (cause as Error).message;
+const cardFormComplete = computed(() => Boolean(
+  stripRichText(form.body) &&
+  (!board.value?.settings.requireCardTitle || form.title.trim()) &&
+  (!board.value?.settings.requireParticipantName || form.authorDisplayName?.trim()) &&
+  (form.layout !== 'image_text' || form.imageUrl?.trim())
+));
+const publicError = (cause: unknown) => {
+  if (cause instanceof ApiError) {
+    if (cause.status === 429) return t('boardSecurity.rateLimited');
+    if (cause.message === 'Participant card limit reached.') return t('boardSecurity.participantLimitReached');
+    if (cause.message === 'Board card limit reached.') return t('boardSecurity.boardLimitReached');
+  }
+  return cause instanceof Error ? cause.message : t('errors.generic');
+};
 watch(() => form.layout, (layout) => { if (layout !== 'image_text') form.imageUrl = null; });
 
 const load = async () => {
@@ -97,13 +116,17 @@ const saveCard = async () => {
     if (selectedCard.value) {
       await api(`/api/boards/public/${encodeURIComponent(slug.value)}/cards/${selectedCard.value.id}`, { method: 'PATCH', body: JSON.stringify(form) });
       dialog.value = null;
+      pushToast({ title: t('boardCards.saved'), tone: 'success' });
     } else {
       const result = await api<BoardCardCreateResponse>(`/api/boards/public/${encodeURIComponent(slug.value)}/cards`, { method: 'POST', body: JSON.stringify(form) });
       recoveryPin.value = result.recoveryPin; dialog.value = 'pin';
+      pushToast({ title: t('boardCards.created'), tone: 'success' });
     }
     await load();
     connectRealtime();
-  } catch (cause) { error.value = publicError(cause); }
+  } catch (cause) {
+    pushToast({ title: publicError(cause), tone: 'error' });
+  }
   finally { busy.value = false; }
 };
 const openRecover = (card: PublicBoardCard) => { activeCardMenuId.value = ''; selectedCard.value = card; recoveryInput.value = ''; dialog.value = 'recover'; };
@@ -188,6 +211,45 @@ const syncCardMenu = () => {
   if (!activeCardMenuId.value) return;
   cardMenuStyle.value = buildCardMenuStyle(cardMenuAnchor.value, sortedCards.value.find((card) => card.id === activeCardMenuId.value));
 };
+const applyMasonryLayout = () => {
+  masonryFrame = undefined;
+  const grid = boardGrid.value;
+  if (!grid) return;
+  const cards = [...grid.querySelectorAll<HTMLElement>('.board-card-view')];
+  const desktop = typeof window.matchMedia === 'function'
+    ? window.matchMedia('(min-width: 64rem)').matches
+    : window.innerWidth >= 1024;
+  if (!desktop) {
+    masonryActive.value = false;
+    masonrySpans.value = {};
+    return;
+  }
+  const styles = window.getComputedStyle(grid);
+  const rowHeight = 8;
+  const rowGap = Number.parseFloat(styles.rowGap) || 16;
+  const nextSpans: Record<string, number> = {};
+  cards.forEach((card) => {
+    const cardId = card.dataset.boardCardId;
+    if (!cardId) return;
+    const height = card.getBoundingClientRect().height;
+    nextSpans[cardId] = Math.max(1, Math.ceil((height + rowGap) / (rowHeight + rowGap)));
+  });
+  masonryActive.value = true;
+  if (JSON.stringify(nextSpans) !== JSON.stringify(masonrySpans.value)) masonrySpans.value = nextSpans;
+};
+const scheduleMasonryLayout = () => {
+  if (masonryFrame !== undefined) window.cancelAnimationFrame(masonryFrame);
+  masonryFrame = window.requestAnimationFrame(applyMasonryLayout);
+};
+const refreshMasonryLayout = async () => {
+  await nextTick();
+  masonryObserver?.disconnect();
+  if (typeof ResizeObserver !== 'undefined') {
+    masonryObserver ??= new ResizeObserver(scheduleMasonryLayout);
+    boardGrid.value?.querySelectorAll<HTMLElement>('.board-card-view').forEach((card) => masonryObserver?.observe(card));
+  }
+  applyMasonryLayout();
+};
 const closeCardMenus = (event: MouseEvent) => {
   if ((event.target as HTMLElement | null)?.closest('[data-board-card-menu]')) return;
   activeCardMenuId.value = '';
@@ -195,11 +257,19 @@ const closeCardMenus = (event: MouseEvent) => {
 watch(sortMode, (value) => {
   if (typeof window !== 'undefined') window.sessionStorage.setItem(`ss_board_sort_${slug.value}`, value);
 });
+watch(
+  () => `${loading.value}:${sortedCards.value.map((card) => `${card.id}:${card.updatedAt}:${card.imageUrl ?? ''}`).join('|')}`,
+  () => {
+    if (!loading.value) void refreshMasonryLayout();
+  },
+  { flush: 'post' }
+);
 onMounted(() => {
   window.addEventListener('keydown', onKeydown);
   document.addEventListener('fullscreenchange', onFullscreenChange);
   document.addEventListener('click', closeCardMenus);
   window.addEventListener('resize', syncCardMenu);
+  window.addEventListener('resize', scheduleMasonryLayout);
   window.addEventListener('scroll', syncCardMenu, true);
   const saved = window.sessionStorage.getItem(`ss_board_sort_${slug.value}`);
   if (saved === 'newest' || saved === 'oldest' || saved === 'title_asc' || saved === 'title_desc' || saved === 'popular') sortMode.value = saved;
@@ -210,19 +280,23 @@ onMounted(() => {
 onBeforeUnmount(() => {
   if (recoveryPinCopiedTimer) window.clearTimeout(recoveryPinCopiedTimer);
   if (boardClockTimer) window.clearInterval(boardClockTimer);
+  if (masonryFrame !== undefined) window.cancelAnimationFrame(masonryFrame);
+  masonryObserver?.disconnect();
+  masonryObserver = null;
   eventSource?.close();
   eventSource = null;
   window.removeEventListener('keydown', onKeydown);
   document.removeEventListener('fullscreenchange', onFullscreenChange);
   document.removeEventListener('click', closeCardMenus);
   window.removeEventListener('resize', syncCardMenu);
+  window.removeEventListener('resize', scheduleMasonryLayout);
   window.removeEventListener('scroll', syncCardMenu, true);
 });
 </script>
 
 <template>
-  <main class="min-h-dvh px-4 py-6 sm:px-8" :class="[surfaceClasses, { 'board-presentation px-3 sm:px-5': presentation }]" :style="surfaceStyle">
-    <div class="mx-auto" :class="presentation ? 'max-w-none' : 'max-w-7xl'">
+  <main class="min-h-dvh overflow-x-clip px-4 py-6 sm:px-8" :class="[surfaceClasses, { 'board-presentation px-3 sm:px-5': presentation }]" :style="surfaceStyle">
+    <div class="mx-auto min-w-0 w-full max-w-[120rem]">
       <header class="board-header border p-5 sm:p-7">
         <div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div class="min-w-0">
@@ -253,8 +327,8 @@ onBeforeUnmount(() => {
             </select>
           </label>
         </div>
-      <section class="board-grid mt-4" :aria-label="t('boards.cards')">
-        <BoardCardView v-for="card in sortedCards" :key="card.id" :card="card" :image-fallback-label="t('boards.imageUnavailable')">
+      <section ref="boardGrid" class="board-grid mt-4 min-w-0 w-full" :class="{ 'board-grid-masonry': masonryActive }" :aria-label="t('boards.cards')">
+        <BoardCardView v-for="card in sortedCards" :key="card.id" :card="card" :data-board-card-id="card.id" :style="masonryActive ? { gridRowEnd: `span ${masonrySpans[card.id] ?? 1}` } : undefined" :image-fallback-label="t('boards.imageUnavailable')">
           <template #menu>
             <div v-if="hasCardMenu(card)" class="relative shrink-0" data-board-card-menu @click.stop>
               <button type="button" class="board-menu-button" :aria-label="t('boards.cardMenu')" :aria-expanded="activeCardMenuId === card.id" @click="toggleCardMenu($event, card)"><svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg></button>
@@ -270,7 +344,7 @@ onBeforeUnmount(() => {
             </div>
           </template>
           <template #meta>
-            <div class="mt-4 flex flex-wrap items-center justify-between gap-2"><p v-if="card.authorDisplayName" class="text-xs font-medium text-[var(--ui-text-muted)]">{{ card.authorDisplayName }}</p><span v-if="card.owned && card.moderationStatus !== 'approved'" class="rounded-full border border-[var(--ui-border)] px-2 py-1 text-xs">{{ t(`boards.${card.moderationStatus}`) }}</span></div>
+            <div class="mt-4 flex min-w-0 flex-wrap items-center justify-between gap-2"><p v-if="card.authorDisplayName" class="min-w-0 break-words text-xs font-medium text-[var(--ui-text-muted)]">{{ card.authorDisplayName }}</p><span v-if="card.owned && card.moderationStatus !== 'approved'" class="rounded-full border border-[var(--ui-border)] px-2 py-1 text-xs">{{ t(`boards.${card.moderationStatus}`) }}</span></div>
           </template>
           <template #footer>
             <div v-if="card.moderationStatus === 'approved'" class="flex items-center gap-2">
@@ -307,11 +381,12 @@ onBeforeUnmount(() => {
           <h2 class="text-xl font-semibold">{{ selectedCard ? t('boards.editCard') : t('boards.addCard') }}</h2>
           <form class="mt-5 space-y-4" @submit.prevent="saveCard">
             <label class="block text-sm font-medium">{{ t('boards.cardLayout') }}<select v-model="form.layout" class="board-input mt-2"><option value="text">{{ t('boards.layoutText') }}</option><option value="image_text">{{ t('boards.layoutImageText') }}</option></select></label>
-            <label class="block text-sm font-medium">{{ t('boards.cardTitle') }}<input v-model="form.title" class="board-input mt-2" type="text" :maxlength="board?.settings.maxTitleLength ?? 160" /></label>
-            <div class="block text-sm font-medium"><span>{{ t('boards.cardBody') }}</span><RichTextEditor v-model="form.body" class="mt-2" :max-length="board?.settings.maxBodyLength ?? 5000" min-height-class="min-h-36" :aria-label="t('boards.cardBody')" /></div>
-            <label v-if="board?.settings.allowImageUrls && form.layout === 'image_text'" class="block text-sm font-medium">{{ t('boards.imageUrl') }}<input v-model="form.imageUrl" type="url" inputmode="url" class="board-input mt-2" placeholder="https://…" required /></label>
-            <label class="block text-sm font-medium">{{ t('boards.displayName') }}<input v-model="form.authorDisplayName" class="board-input mt-2" maxlength="120" :required="board?.settings.requireParticipantName" /></label>
-            <div class="flex justify-end gap-2"><button type="button" class="board-secondary" @click="closeDialog">{{ t('common.close') }}</button><button class="board-primary" :disabled="busy">{{ busy ? t('common.saving') : t('common.save') }}</button></div>
+            <label class="block text-sm font-medium"><span>{{ t('boards.cardTitle') }} <span v-if="board?.settings.requireCardTitle" class="text-[var(--ui-accent)]" aria-hidden="true">*</span></span><input v-model="form.title" class="board-input mt-2" type="text" :maxlength="board?.settings.maxTitleLength ?? 160" :required="board?.settings.requireCardTitle" /></label>
+            <div class="block text-sm font-medium"><span>{{ t('boards.cardBody') }} <span class="text-[var(--ui-accent)]" aria-hidden="true">*</span></span><RichTextEditor v-model="form.body" class="mt-2" :max-length="board?.settings.maxBodyLength ?? 5000" min-height-class="min-h-36" :aria-label="t('boards.cardBody')" required /></div>
+            <label v-if="board?.settings.allowImageUrls && form.layout === 'image_text'" class="block text-sm font-medium"><span>{{ t('boards.imageUrl') }} <span class="text-[var(--ui-accent)]" aria-hidden="true">*</span></span><input v-model="form.imageUrl" type="url" inputmode="url" class="board-input mt-2" placeholder="https://…" required /></label>
+            <label class="block text-sm font-medium"><span>{{ t('boards.displayName') }} <span v-if="board?.settings.requireParticipantName" class="text-[var(--ui-accent)]" aria-hidden="true">*</span></span><input v-model="form.authorDisplayName" class="board-input mt-2" maxlength="120" :required="board?.settings.requireParticipantName" /></label>
+            <p v-if="!cardFormComplete" class="text-xs text-[var(--ui-text-muted)]">{{ t('boardCards.requiredFieldsHint') }}</p>
+            <div class="flex justify-end gap-2"><button type="button" class="board-secondary" @click="closeDialog">{{ t('common.close') }}</button><button type="submit" class="board-primary" :disabled="busy || !cardFormComplete">{{ busy ? t('common.saving') : t('common.save') }}</button></div>
           </form>
         </template>
         <template v-else-if="dialog === 'pin'"><h2 class="text-xl font-semibold">{{ t('boards.pinTitle') }}</h2><p class="mt-2 text-sm text-[var(--board-muted)]">{{ t('boards.pinDescription') }}</p><div class="mt-5 rounded-2xl border border-dashed border-[var(--board-border)] p-5 text-center"><strong class="font-mono text-3xl tracking-[.25em]">{{ recoveryPin }}</strong></div><div class="mt-5 flex justify-end gap-2"><button type="button" class="board-secondary min-w-[7.5rem] overflow-hidden" :aria-label="recoveryPinCopied ? t('common.copied') : t('common.copy')" @click="copyRecoveryPin"><Transition mode="out-in" enter-active-class="transition duration-200 ease-out" enter-from-class="scale-75 opacity-0" enter-to-class="scale-100 opacity-100" leave-active-class="transition duration-150 ease-in" leave-from-class="scale-100 opacity-100" leave-to-class="scale-75 opacity-0"><span :key="recoveryPinCopied ? 'copied' : 'copy'" class="inline-flex items-center gap-2"><svg v-if="!recoveryPinCopied" xmlns="http://www.w3.org/2000/svg" class="h-4.5 w-4.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><svg v-else xmlns="http://www.w3.org/2000/svg" class="h-4.5 w-4.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span>{{ recoveryPinCopied ? t('common.copied') : t('common.copy') }}</span></span></Transition></button><button type="button" class="board-primary" @click="closeDialog">{{ t('common.close') }}</button></div></template>
@@ -327,16 +402,19 @@ onBeforeUnmount(() => {
 <style scoped>
 .board-surface{color:var(--ui-text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 .board-header,.board-panel,.board-dialog{border-color:var(--ui-border);border-radius:var(--activity-radius,1.5rem);background:var(--ui-panel);box-shadow:var(--activity-shadow,none);color:var(--ui-text)}
-.board-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,18rem),1fr));align-items:start;gap:1rem}
-.board-presentation .board-grid{grid-template-columns:repeat(auto-fill,minmax(min(100%,20rem),1fr));gap:1.15rem}
+.board-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,19rem),1fr));align-items:start;gap:1rem}
+.board-presentation .board-grid{grid-template-columns:repeat(auto-fill,minmax(min(100%,19rem),1fr));gap:1rem}
 .board-sort-label{display:flex;align-items:center;gap:.65rem}.board-sort-select{min-width:11rem;border:1px solid var(--ui-border);border-radius:.8rem;background:var(--ui-panel);color:var(--ui-text);padding:.55rem 2.1rem .55rem .75rem}
 .board-reaction,.board-reaction-count{display:inline-flex;min-width:4rem;min-height:2.75rem;align-items:center;justify-content:center;gap:.45rem;border:1px solid var(--ui-border);border-radius:.8rem;color:var(--ui-text-muted);font-variant-numeric:tabular-nums}
 .board-reaction{transition:border-color .15s ease,background-color .15s ease,color .15s ease}.board-reaction svg,.board-reaction-count svg{width:1.15rem;height:1.15rem}.board-reaction:hover:not(:disabled){border-color:var(--ui-accent);color:var(--ui-accent)}.board-reaction-selected{border-color:var(--ui-accent);background:var(--ui-accent-soft);color:var(--ui-accent)}.board-reaction:focus-visible,.board-menu-button:focus-visible,.board-secondary:focus-visible,.board-primary:focus-visible{outline:2px solid var(--ui-accent);outline-offset:2px}.board-reaction:disabled{cursor:default;opacity:.72}
 .board-input{width:100%;border:1px solid var(--ui-border);border-radius:.9rem;background:var(--ui-input-bg);color:var(--ui-text);padding:.7rem .85rem}.board-input:focus{border-color:var(--ui-accent);outline:2px solid var(--ui-accent-soft);outline-offset:1px}
 .board-primary,.board-secondary{display:inline-flex;min-height:2.75rem;align-items:center;justify-content:center;gap:.5rem;border-radius:.8rem;padding:.65rem 1rem;font-weight:600}.board-primary{border:1px solid var(--ui-accent);background:var(--ui-accent);color:var(--ui-accent-contrast)}.board-secondary{border:1px solid var(--ui-border);background:var(--ui-panel);color:var(--ui-text)}.board-secondary:hover{border-color:var(--ui-accent);color:var(--ui-accent)}
+.board-primary:disabled{cursor:not-allowed;opacity:.55}
 .board-menu-button{display:flex;height:2.5rem;width:2.5rem;cursor:pointer;align-items:center;justify-content:center;border:1px solid var(--ui-border);border-radius:.75rem;color:var(--ui-text-muted);transition:border-color .2s ease,color .2s ease,background-color .2s ease}.board-menu-button:hover{border-color:var(--ui-accent);color:var(--ui-accent);background:var(--ui-accent-soft)}
 .board-card-menu-surface{background:var(--ui-dropdown-bg);color:var(--ui-text)}
 .board-add-card{box-shadow:0 10px 30px color-mix(in srgb,var(--ui-accent) 28%,transparent)}
 @media(max-width:480px){.board-sort-label{width:100%;align-items:flex-start;flex-direction:column}.board-sort-select{width:100%}}
+@media(min-width:64rem){.board-grid-masonry{grid-auto-flow:row dense;grid-auto-rows:8px}.board-grid-masonry>.board-card-view{align-self:start}}
+@media(min-width:110rem){.board-grid,.board-presentation .board-grid{grid-template-columns:repeat(5,minmax(0,1fr))}}
 @media(prefers-reduced-motion:reduce){.board-reaction,.board-secondary,.board-primary,.board-menu-button,.board-add-card{scroll-behavior:auto;transition:none}}
 </style>

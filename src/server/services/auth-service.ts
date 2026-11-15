@@ -6,16 +6,25 @@ import { config } from '../config.js';
 import { logger } from '../logger.js';
 import { SessionRepository } from '../repositories/session-repository.js';
 import { UserRepository } from '../repositories/user-repository.js';
+import { TwoFactorService } from './two-factor-service.js';
 
 export class AuthService {
   private users = new UserRepository();
   private sessions = new SessionRepository();
+  readonly twoFactor = new TwoFactorService();
   private sessionCookieOptions = {
     httpOnly: true as const,
     sameSite: config.cookieSameSite,
     secure: config.cookieSecure,
     path: '/',
     maxAge: config.sessionTtlHours * 3_600
+  };
+  private pendingCookieOptions = {
+    httpOnly: true as const,
+    sameSite: config.cookieSameSite,
+    secure: config.cookieSecure,
+    path: '/',
+    maxAge: 5 * 60
   };
 
   async bootstrapAdmin() {
@@ -43,7 +52,7 @@ export class AuthService {
     reply: FastifyReply,
     email: string,
     password: string
-  ): Promise<CurrentUser | null> {
+  ): Promise<CurrentUser | { requiresTwoFactor: true } | null> {
     const user = this.users.findByEmail(email);
     const valid = user ? await argon2.verify(user.passwordHash, password) : false;
 
@@ -52,6 +61,40 @@ export class AuthService {
       return null;
     }
 
+    if (this.twoFactor.isEnabled(user.id)) {
+      const challengeId = this.twoFactor.createPendingChallenge(user.id);
+      reply.setCookie(config.pendingAuthCookieName, challengeId, this.pendingCookieOptions);
+      reply.clearCookie(config.sessionCookieName, this.sessionCookieOptions);
+      logger.info({ userId: user.id }, 'password accepted; two-factor verification required');
+      return { requiresTwoFactor: true };
+    }
+
+    const currentUser = this.createSession(request, reply, user);
+    logger.info({ email: user.email, userId: user.id }, 'successful login');
+    return currentUser;
+  }
+
+  async completeTwoFactor(request: FastifyRequest, reply: FastifyReply, code: string) {
+    const challengeId = request.cookies[config.pendingAuthCookieName];
+    if (!challengeId) return null;
+    const challenge = this.twoFactor.getPendingChallenge(challengeId);
+    if (!challenge) {
+      reply.clearCookie(config.pendingAuthCookieName, this.pendingCookieOptions);
+      return null;
+    }
+    const user = this.users.findById(challenge.userId);
+    if (!user || !await this.twoFactor.verifyFactor(user, code)) {
+      this.twoFactor.recordPendingFailure(challengeId);
+      return null;
+    }
+    this.twoFactor.consumePendingChallenge(challengeId);
+    reply.clearCookie(config.pendingAuthCookieName, this.pendingCookieOptions);
+    const currentUser = this.createSession(request, reply, user);
+    logger.info({ userId: user.id }, 'successful two-factor login');
+    return currentUser;
+  }
+
+  private createSession(request: FastifyRequest, reply: FastifyReply, user: ReturnType<UserRepository['findById']> & {}) {
     const sessionId = this.sessions.create({
       userId: user.id,
       sessionVersion: user.sessionVersion,
@@ -64,9 +107,6 @@ export class AuthService {
     reply.setCookie(config.sessionCookieName, sessionId, {
       ...this.sessionCookieOptions
     });
-
-    logger.info({ email: user.email, userId: user.id }, 'successful login');
-
     return {
       id: user.id,
       email: user.email,
@@ -75,12 +115,14 @@ export class AuthService {
       sidebarCollapsed: user.sidebarCollapsed,
       locale: user.locale,
       preferencesInitialized: user.preferencesInitialized
-    };
+    } satisfies CurrentUser;
   }
 
-  logout(reply: FastifyReply, sessionId: string | undefined) {
+  logout(reply: FastifyReply, sessionId: string | undefined, pendingChallengeId?: string) {
     if (sessionId) this.sessions.delete(sessionId);
+    if (pendingChallengeId) this.twoFactor.consumePendingChallenge(pendingChallengeId);
     reply.clearCookie(config.sessionCookieName, this.sessionCookieOptions);
+    reply.clearCookie(config.pendingAuthCookieName, this.pendingCookieOptions);
   }
 
   async changePassword(userId: string, sessionId: string, nextPassword: string) {
@@ -99,5 +141,12 @@ export class AuthService {
     this.sessions.updateSessionVersion(sessionId, user.sessionVersion);
     this.sessions.deleteOthers(userId, sessionId);
     logger.info({ userId }, 'password changed and sessions invalidated');
+  }
+
+  invalidateOtherSessionsAfterSensitiveChange(userId: string, currentSessionId: string) {
+    const user = this.users.incrementSessionVersion(userId);
+    if (!user) return;
+    this.sessions.updateSessionVersion(currentSessionId, user.sessionVersion);
+    this.sessions.deleteOthers(userId, currentSessionId);
   }
 }

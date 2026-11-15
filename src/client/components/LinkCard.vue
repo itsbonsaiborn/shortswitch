@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n';
 import type { LinkRecord } from '@/shared/types';
 import QrCodePopover from './QrCodePopover.vue';
 import { formatCardDate } from '../lib/date-format';
+import { getLinkFaviconCandidates } from '@/shared/link-favicon';
 
 const props = defineProps<{ link: LinkRecord }>();
 const emit = defineEmits<{
@@ -33,33 +34,7 @@ const targetHost = computed(() => {
   }
 });
 
-const targetOrigin = computed(() => {
-  try {
-    return new URL(props.link.targetUrl).origin;
-  } catch {
-    return '';
-  }
-});
-
-const isSharePointHost = computed(() => /(^|\.)(sharepoint\.com)$/i.test(targetHost.value));
-
-const faviconCandidates = computed(() => {
-  if (!targetOrigin.value) return [];
-  if (isSharePointHost.value) {
-    return [
-      `${targetOrigin.value}/_layouts/15/images/odbfavicon.ico`,
-      `${targetOrigin.value}/favicon.ico`,
-      `${targetOrigin.value}/favicon.png`,
-      `${targetOrigin.value}/odbfavicon.ico`
-    ];
-  }
-  const candidates = [
-    `${targetOrigin.value}/favicon.ico`,
-    `${targetOrigin.value}/favicon.png`,
-    `${targetOrigin.value}/odbfavicon.ico`
-  ];
-  return candidates;
-});
+const faviconCandidates = computed(() => getLinkFaviconCandidates(props.link.targetUrl));
 
 const faviconSrc = computed(() => faviconCandidates.value[faviconIndex.value] ?? null);
 const faviconFailed = computed(() => !faviconSrc.value);

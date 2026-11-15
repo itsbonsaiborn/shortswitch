@@ -1,10 +1,13 @@
-import { computed, watch } from 'vue';
+import { computed, ref, watch, type Ref } from 'vue';
 import { usePreferredDark } from '@vueuse/core';
 import { usePreferences } from './usePreferences';
+import { useDisplayPreferences } from './useDisplayPreferences';
 
-export const useTheme = () => {
+export const useTheme = (usesPublicPreferences: Ref<boolean> = ref(false)) => {
   const preferredDark = usePreferredDark();
-  const { theme, setTheme } = usePreferences();
+  const preferences = usePreferences();
+  const { publicAppearancePreference } = useDisplayPreferences();
+  const theme = computed(() => usesPublicPreferences.value ? publicAppearancePreference.value : preferences.theme.value);
 
   const resolvedTheme = computed(() => {
     if (theme.value === 'light') return 'light';
@@ -14,11 +17,12 @@ export const useTheme = () => {
 
   watch(
     resolvedTheme,
-    (theme) => {
-      document.documentElement.classList.toggle('dark', theme === 'dark');
+    (resolved) => {
+      document.documentElement.classList.toggle('dark', resolved === 'dark');
+      document.documentElement.dataset.theme = theme.value;
     },
     { immediate: true }
   );
 
-  return { theme, resolvedTheme, setTheme };
+  return { theme, resolvedTheme, setTheme: preferences.setTheme };
 };

@@ -1,16 +1,24 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { ref, watch } from 'vue';
 import type { ServiceFooterLink } from '@/shared/types';
+import { useI18n } from 'vue-i18n';
 
-const isLatvian = typeof navigator !== 'undefined' && navigator.language.toLowerCase().startsWith('lv');
-const links = ref<ServiceFooterLink[]>([
-  { type: 'security', href: '/service/security', label: isLatvian ? 'Drošības politika' : 'Security Policy' },
-  { type: 'privacy', href: '/service/privacy', label: isLatvian ? 'Privātuma politika' : 'Privacy Policy' },
-  { type: 'contacts', href: '/service/contacts', label: isLatvian ? 'Kontakti' : 'Contacts' },
-  { type: 'report_abuse', href: '/service/report-abuse', label: isLatvian ? 'Ziņot par pārkāpumu' : 'Report Abuse' }
-]);
+const { locale } = useI18n();
+const fallbackLinks = (): ServiceFooterLink[] => locale.value === 'lv' ? [
+  { type: 'security', href: '/service/security', label: 'Drošības politika' },
+  { type: 'privacy', href: '/service/privacy', label: 'Privātuma politika' },
+  { type: 'contacts', href: '/service/contacts', label: 'Kontakti' },
+  { type: 'report_abuse', href: '/service/report-abuse', label: 'Ziņot par pārkāpumu' }
+] : [
+  { type: 'security', href: '/service/security', label: 'Security Policy' },
+  { type: 'privacy', href: '/service/privacy', label: 'Privacy Policy' },
+  { type: 'contacts', href: '/service/contacts', label: 'Contacts' },
+  { type: 'report_abuse', href: '/service/report-abuse', label: 'Report Abuse' }
+];
+const links = ref<ServiceFooterLink[]>(fallbackLinks());
 
-onMounted(async () => {
+const loadLinks = async () => {
+  links.value = fallbackLinks();
   try {
     const response = await fetch('/api/public/service-sections', { credentials: 'same-origin' });
     if (!response.ok) return;
@@ -19,7 +27,9 @@ onMounted(async () => {
   } catch {
     // Essential fallback links remain available when the API cannot be reached.
   }
-});
+};
+
+watch(locale, () => void loadLinks(), { immediate: true });
 </script>
 
 <template>

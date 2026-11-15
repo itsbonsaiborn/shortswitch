@@ -1,19 +1,33 @@
 try {
-  const value = JSON.parse(localStorage.getItem('ss_preferences_active') || 'null');
+  const parse = (key) => {
+    try { return JSON.parse(localStorage.getItem(key) || 'null'); } catch { return null; }
+  };
+  const cookie = (name) => {
+    const raw = document.cookie.split('; ').find((item) => item.startsWith(`${name}=`))?.slice(name.length + 1);
+    if (!raw) return null;
+    try { return decodeURIComponent(raw); } catch { return raw; }
+  };
+  const account = parse('ss_preferences_active');
+  const accountInterface = location.pathname.startsWith('/app');
   const legacyTheme = document.cookie
     .split('; ')
     .find((item) => item.startsWith('ss_theme='))
     ?.slice('ss_theme='.length);
-  const theme = value?.theme || legacyTheme || 'system';
+  const publicAppearance = cookie('ss_public_appearance_preference');
+  const theme = accountInterface
+    ? (account?.theme || legacyTheme || 'system')
+    : (['light', 'dark', 'system'].includes(publicAppearance) ? publicAppearance : 'system');
   const dark = theme === 'dark'
     || (theme === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
   document.documentElement.classList.toggle('dark', dark);
-  const pathname = location.pathname;
-  const publicPath = /^\/present\/[^/]+\/?$/i.test(pathname)
-    || (/^\/[^/]+\/?$/.test(pathname) && pathname !== '/' && pathname !== '/login');
+  document.documentElement.dataset.theme = theme;
   const primaryLanguage = String(navigator.language || '').toLowerCase();
-  const publicLocale = primaryLanguage === 'lv' || primaryLanguage.startsWith('lv-') ? 'lv' : 'en';
-  document.documentElement.lang = publicPath ? publicLocale : value?.locale === 'lv' ? 'lv' : 'en';
+  const browserLocale = primaryLanguage === 'lv' || primaryLanguage.startsWith('lv-') ? 'lv' : 'en';
+  const publicLanguage = cookie('ss_public_language_preference');
+  const language = accountInterface
+    ? (['en', 'lv'].includes(account?.locale) ? account.locale : 'en')
+    : (['auto', 'en', 'lv'].includes(publicLanguage) ? publicLanguage : 'auto');
+  document.documentElement.lang = language === 'auto' ? browserLocale : language;
 } catch {
   // Invalid local cache must never prevent the application from starting.
 }

@@ -3,6 +3,7 @@ import { boardPublicText, externalLinkText, publicText } from '../public-i18n.js
 import type { Locale } from '../../shared/types.js';
 import type { AbuseReason, ServiceContactBlock, ServiceContactConfig, ServiceFooterLink } from '../../shared/types.js';
 import { renderRichTextHtml, renderRichTextParagraphs } from '../../shared/rich-text.js';
+import { getLinkFaviconCandidates } from '../../shared/link-favicon.js';
 
 export const SERVICE_FOOTER_MARKER = '<!--SHORTSWITCH_SERVICE_FOOTER-->';
 
@@ -52,6 +53,11 @@ const publicFormText = {
     link: 'ShortSwitch link or identifier', reason: 'Reason', description: 'Description',
     reporterEmail: 'Reporter email (optional)', report: 'Submit report',
     reportSuccess: 'Thank you. Your report was received for review.',
+    contactUnavailable: 'The contact form is temporarily unavailable.',
+    contactUnavailableHelp: 'Public contact information remains available on this page.',
+    reportUnavailable: 'The report form is temporarily unavailable.',
+    urgentSecurityAlternative: 'For urgent security issues, use the public contact email below or the contact information available in the footer.',
+    publicContactEmail: 'Public contact email',
     selectReason: 'Select a reason',
     reasons: { phishing: 'Phishing', malware: 'Malware', spam: 'Spam', harassment: 'Harassment', copyright: 'Copyright', privacy: 'Privacy', other: 'Other' }
   },
@@ -63,6 +69,11 @@ const publicFormText = {
     link: 'ShortSwitch saite vai identifikators', reason: 'Iemesls', description: 'Apraksts',
     reporterEmail: 'Ziņotāja e-pasts (nav obligāts)', report: 'Nosūtīt ziņojumu',
     reportSuccess: 'Paldies. Jūsu ziņojums ir saņemts izskatīšanai.',
+    contactUnavailable: 'Saziņas forma pašlaik nav pieejama.',
+    contactUnavailableHelp: 'Publiskā kontaktinformācija joprojām ir pieejama šajā lapā.',
+    reportUnavailable: 'Pārkāpumu ziņošanas forma pašlaik nav pieejama.',
+    urgentSecurityAlternative: 'Steidzamu drošības jautājumu gadījumā izmantojiet tālāk norādīto publisko kontakta e-pastu vai kādu no kājenē pieejamajiem saziņas veidiem.',
+    publicContactEmail: 'Publiskais kontakta e-pasts',
     selectReason: 'Izvēlieties iemeslu',
     reasons: { phishing: 'Pikšķerēšana', malware: 'Ļaunprogrammatūra', spam: 'Mēstules', harassment: 'Uzmākšanās', copyright: 'Autortiesības', privacy: 'Privātums', other: 'Cits' }
   }
@@ -77,8 +88,22 @@ const renderFormStatus = (state?: PublicServiceFormState) => state?.error
   ? `<div class="form-status form-error" role="alert">${escapeHtml(state.error)}</div>`
   : '';
 
-const renderContactForm = (locale: Locale, state?: PublicServiceFormState) => {
+const renderUnavailableFormStatus = (
+  locale: Locale,
+  title: string,
+  description: string,
+  publicContactEmail?: string | null
+) => {
   const text = publicFormText[locale];
+  const email = publicContactEmail
+    ? `<p><strong>${escapeHtml(text.publicContactEmail)}:</strong> <a href="mailto:${escapeHtml(publicContactEmail)}">${escapeHtml(publicContactEmail)}</a></p>`
+    : '';
+  return `<div class="form-status form-unavailable" role="status"><strong>${escapeHtml(title)}</strong><p>${escapeHtml(description)}</p>${email}</div>`;
+};
+
+const renderContactForm = (locale: Locale, state?: PublicServiceFormState, enabled = true, publicContactEmail?: string | null) => {
+  const text = publicFormText[locale];
+  if (!enabled) return renderUnavailableFormStatus(locale, text.contactUnavailable, text.contactUnavailableHelp, publicContactEmail);
   if (state?.success) return `<div class="form-status form-success" role="status">${escapeHtml(text.contactSuccess)}</div>`;
   const values = state?.values ?? {};
   return `<form class="service-form" method="post" action="/service/contacts/submit" novalidate>
@@ -93,8 +118,9 @@ const renderContactForm = (locale: Locale, state?: PublicServiceFormState) => {
 
 const abuseReasonValues: AbuseReason[] = ['phishing', 'malware', 'spam', 'harassment', 'copyright', 'privacy', 'other'];
 
-const renderReportAbuseForm = (locale: Locale, state?: PublicServiceFormState) => {
+const renderReportAbuseForm = (locale: Locale, state?: PublicServiceFormState, enabled = true, publicContactEmail?: string | null) => {
   const text = publicFormText[locale];
+  if (!enabled) return renderUnavailableFormStatus(locale, text.reportUnavailable, text.urgentSecurityAlternative, publicContactEmail);
   if (state?.success) return `<div class="form-status form-success" role="status">${escapeHtml(text.reportSuccess)}</div>`;
   const values = state?.values ?? {};
   return `<form class="service-form" method="post" action="/service/report-abuse/submit" novalidate>
@@ -111,7 +137,13 @@ const renderReportAbuseForm = (locale: Locale, state?: PublicServiceFormState) =
   </form>`;
 };
 
-const renderServiceContactBlocks = (config: ServiceContactConfig, locale: Locale, formState?: PublicServiceFormState, publicContactEmail?: string | null) => config.blocks.map((block: ServiceContactBlock) => {
+const renderServiceContactBlocks = (
+  config: ServiceContactConfig,
+  locale: Locale,
+  formState?: PublicServiceFormState,
+  publicContactEmail?: string | null,
+  contactFormEnabled = true
+) => config.blocks.map((block: ServiceContactBlock) => {
   if (block.type === 'heading') return `<h2 class="page-heading-block">${renderRichTextHtml(locale === 'lv' ? block.titleLv : block.titleEn)}</h2>`;
   if (block.type === 'text') return `<div class="page-text-block">${renderRichTextHtml(locale === 'lv' ? block.bodyLv : block.bodyEn)}</div>`;
   if (block.type === 'divider') return '<div class="page-divider-block" aria-hidden="true"><span></span></div>';
@@ -128,12 +160,15 @@ const renderServiceContactBlocks = (config: ServiceContactConfig, locale: Locale
       : '<svg viewBox="0 0 24 24" width="18" height="18"><path d="M0 0h24v24H0z" fill="none"/><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M13.544 10.456a4.37 4.37 0 0 0-6.176 0l-3.089 3.088a4.367 4.367 0 1 0 6.177 6.177L12 18.177"/><path d="M10.456 13.544a4.37 4.37 0 0 0 6.176 0l3.089-3.088a4.367 4.367 0 1 0-6.177-6.177L12 5.823"/></g></svg>';
     return `<a class="page-action page-link-action" href="${escapeHtml(block.url)}" target="_blank" rel="noopener noreferrer external" referrerpolicy="no-referrer"><span class="page-link-icon" aria-hidden="true">${icon}</span><span class="page-link-copy"><span class="page-link-title">${renderRichTextHtml(title)}</span>${description ? `<span class="page-link-subtitle">${renderRichTextHtml(description)}</span>` : ''}</span><svg class="page-action-arrow" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M0 0h24v24H0z" fill="none"/><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 6L6 18M8 6h10v10"/></svg></a>`;
   }
+  if (!contactFormEnabled) {
+    return `<section class="contact-form-unavailable" data-contact-form-component>${renderContactForm(locale, formState, false, publicContactEmail)}</section>`;
+  }
   const title = locale === 'lv' ? block.titleLv : block.titleEn;
   const description = locale === 'lv' ? block.descriptionLv : block.descriptionEn;
   const publicEmail = publicContactEmail
     ? `<p class="contact-public-email">${locale === 'lv' ? 'Publiskais kontakta e-pasts' : 'Public contact email'}: <a href="mailto:${escapeHtml(publicContactEmail)}">${escapeHtml(publicContactEmail)}</a></p>`
     : '';
-  return `<section class="contact-form-component" data-contact-form-component><div class="contact-form-heading"><span class="page-link-icon page-email-icon" aria-hidden="true"><svg viewBox="0 0 32 32" width="20" height="20"><path d="M0 0h32v32H0z" fill="none"/><path fill="currentColor" d="M28 6H4a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h24a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2m-2.2 2L16 14.78L6.2 8ZM4 24V8.91l11.43 7.91a1 1 0 0 0 1.14 0L28 8.91V24Z"/></svg></span><div><strong>${renderRichTextHtml(title)}</strong>${description ? `<p>${renderRichTextHtml(description)}</p>` : ''}${publicEmail}</div></div>${renderContactForm(locale, formState)}</section>`;
+  return `<section class="contact-form-component" data-contact-form-component><div class="contact-form-heading"><span class="page-link-icon page-email-icon" aria-hidden="true"><svg viewBox="0 0 32 32" width="20" height="20"><path d="M0 0h32v32H0z" fill="none"/><path fill="currentColor" d="M28 6H4a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h24a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2m-2.2 2L16 14.78L6.2 8ZM4 24V8.91l11.43 7.91a1 1 0 0 0 1.14 0L28 8.91V24Z"/></svg></span><div><strong>${renderRichTextHtml(title)}</strong>${description ? `<p>${renderRichTextHtml(description)}</p>` : ''}${publicEmail}</div></div>${renderContactForm(locale, formState, true, publicContactEmail)}</section>`;
 }).join('');
 
 const renderCommonHead = (title: string, description: string, image = appOgImage, siteName = config.appName, locale: Locale = 'en') => `
@@ -158,9 +193,13 @@ const renderCommonHead = (title: string, description: string, image = appOgImage
     <link rel="manifest" href="/site.webmanifest" />
     <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png" />
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <style>
+      body[data-theme="light"] { color-scheme:light; --bg:#fffcf0; --bg-alt:#f2f0e5; --panel:rgba(255,252,240,.95); --panel-soft:rgba(242,240,229,.9); --card:#fffaf0; --border:#dad8ce; --text:#100f0f; --muted:#6f6e69; --accent:#24837b; --accent-hover:#2f968d; --danger-bg:#fce8db; --danger-text:#af3029; }
+      body[data-theme="dark"] { color-scheme:dark; --bg:#100f0f; --bg-alt:#1c1b1a; --panel:rgba(28,27,26,.95); --panel-soft:rgba(40,39,38,.92); --card:#242321; --border:#343331; --text:#cecdc3; --muted:#878580; --accent:#87d3c3; --accent-hover:#5abdac; --danger-bg:#321f1c; --danger-text:#f89a8a; }
+    </style>
 `;
 
-const pageShell = (locale: Locale, title: string, heading: string, body: string) => `<!doctype html>
+const pageShell = (locale: Locale, title: string, heading: string, body: string, appearance: 'system' | 'light' | 'dark' = 'system') => `<!doctype html>
 <html lang="${locale}">
   <head>
     <meta charset="utf-8" />
@@ -240,7 +279,7 @@ ${renderCommonHead(`${config.appName} - ${title}`, body, appOgImage, config.appN
       a:hover { text-decoration: underline; }
     </style>
   </head>
-  <body>
+  <body data-theme="${appearance}">
     <article>
       ${renderBrandLink()}
       <h1>${escapeHtml(heading)}</h1>
@@ -255,6 +294,7 @@ export const renderProtectedLinkPage = (options?: {
   title?: string;
   description?: string;
   locale?: Locale;
+  appearance?: 'system' | 'light' | 'dark';
 }) => `<!doctype html>
 <html lang="${options?.locale ?? 'en'}">
   <head>
@@ -387,7 +427,7 @@ ${renderCommonHead(
       }
     </style>
   </head>
-  <body>
+  <body data-theme="${options?.appearance ?? 'system'}">
     <article>
       ${renderBrandLink()}
       <h1>${escapeHtml(publicText(options?.locale ?? 'en', 'enterPassword'))}</h1>
@@ -409,7 +449,10 @@ export const renderExternalLinkConfirmationPage = (options: {
   targetUrl: string;
   targetHostname: string;
   locale?: Locale;
-}) => `<!doctype html>
+  appearance?: 'system' | 'light' | 'dark';
+}) => {
+  const faviconUrl = getLinkFaviconCandidates(options.targetUrl)[0] ?? null;
+  return `<!doctype html>
 <html lang="${options.locale ?? 'en'}">
   <head>
     <meta charset="utf-8" />
@@ -507,11 +550,28 @@ ${renderCommonHead(
         text-transform: uppercase;
       }
       .hostname {
-        margin-top: 6px;
         color: var(--text);
         font-size: 1.1rem;
         font-weight: 700;
         overflow-wrap: anywhere;
+      }
+      .destination-site {
+        display: flex;
+        min-width: 0;
+        align-items: center;
+        gap: 10px;
+        margin-top: 8px;
+      }
+      .destination-favicon {
+        display: block;
+        width: 28px;
+        height: 28px;
+        flex: 0 0 28px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.88);
+        object-fit: contain;
+        padding: 4px;
       }
       .url {
         display: block;
@@ -529,7 +589,7 @@ ${renderCommonHead(
         min-height: 50px;
         align-items: center;
         justify-content: center;
-        margin-top: 18px;
+        margin: 18px 0 24px;
         border: 1px solid var(--accent);
         border-radius: 18px;
         background: var(--accent);
@@ -558,14 +618,17 @@ ${renderCommonHead(
       }
     </style>
   </head>
-  <body>
+  <body data-theme="${options.appearance ?? 'system'}">
     <article>
       ${renderBrandLink()}
       <h1>${escapeHtml(externalLinkText(options.locale ?? 'en', 'title'))}</h1>
       <p>${escapeHtml(externalLinkText(options.locale ?? 'en', 'description'))}</p>
       <div class="destination">
         <div class="destination-label">${escapeHtml(externalLinkText(options.locale ?? 'en', 'destination'))}</div>
-        <div class="hostname">${escapeHtml(options.targetHostname)}</div>
+        <div class="destination-site">
+          ${faviconUrl ? `<img class="destination-favicon" src="${escapeHtml(faviconUrl)}" alt="" referrerpolicy="no-referrer" />` : ''}
+          <div class="hostname">${escapeHtml(options.targetHostname)}</div>
+        </div>
         <span class="url">${escapeHtml(options.targetUrl)}</span>
       </div>
       <a
@@ -579,6 +642,7 @@ ${renderCommonHead(
     </article>
   </body>
 </html>`;
+};
 
 export const renderServiceSectionPage = (options: {
   locale: Locale;
@@ -588,7 +652,9 @@ export const renderServiceSectionPage = (options: {
   contactConfig?: ServiceContactConfig;
   publicContactEmail?: string | null;
   contactFormState?: PublicServiceFormState;
+  contactFormEnabled?: boolean;
   systemContentHtml?: string;
+  appearance?: 'system' | 'light' | 'dark';
 }) => `<!doctype html>
 <html lang="${options.locale}">
   <head>
@@ -603,11 +669,11 @@ ${renderCommonHead(`${config.appName} - ${options.title}`, options.body.slice(0,
       main { display:flex; flex-direction:column; width:min(100%,820px); min-height:min(680px,calc(100dvh - 80px)); margin:40px auto; border:1px solid var(--border); border-radius:28px; background:var(--panel); padding:clamp(24px,5vw,48px); }
       .badge { display:inline-flex; border:1px solid color-mix(in srgb,var(--accent) 28%,transparent); border-radius:999px; padding:8px 12px; color:var(--accent); font-size:12px; font-weight:700; letter-spacing:.12em; text-transform:uppercase; }
       h1 { margin:20px 0 24px; font-size:clamp(2rem,5vw,3.2rem); line-height:1.05; }
-      .content { flex:1; color:var(--muted); }
+      .content { flex:1; padding-bottom:32px; color:var(--muted); }
       .content p { margin:0 0 1.15em; font-size:1rem; line-height:1.75; white-space:normal; overflow-wrap:anywhere; }
       .contact-blocks { display:grid; gap:12px; --page-text:var(--text); --page-muted:var(--muted); --page-accent:var(--accent); --page-border:var(--border); --page-card:var(--card); --page-radius:1rem; --page-shadow:0 5px 16px rgba(0,0,0,.045); color:var(--page-text); font-family:Inter,"Segoe UI",ui-sans-serif,system-ui,sans-serif; }
       .page-heading-block { margin:0; padding-top:16px; color:var(--page-text); font-size:1.5rem; font-weight:600; line-height:1.25; overflow-wrap:anywhere; }
-      .page-text-block { color:var(--page-text); font-size:.875rem; line-height:1.5rem; white-space:pre-line; overflow-wrap:anywhere; word-break:break-word; }
+      .page-text-block { color:var(--page-muted); font-size:1rem; line-height:1.75; white-space:pre-line; overflow-wrap:anywhere; word-break:break-word; }
       .page-divider-block { display:flex; height:28px; align-items:center; }
       .page-divider-block span { width:100%; border-top:1px solid var(--page-border); }
       .page-action { border:1px solid var(--page-border); border-radius:var(--page-radius); background:var(--page-card); color:var(--page-text); box-shadow:var(--page-shadow); transition:transform .18s ease,border-color .18s ease,box-shadow .18s ease; }
@@ -625,8 +691,10 @@ ${renderCommonHead(`${config.appName} - ${options.title}`, options.body.slice(0,
       .page-action:hover .page-action-arrow { transform:translate(.125rem,-.125rem); }
       .contact-form-component { padding:18px; border:0; border-radius:var(--page-radius); background:var(--page-card); box-shadow:var(--page-shadow); }
       .contact-form-heading { display:flex; gap:12px; align-items:flex-start; }
+      .contact-form-heading > div { min-width:0; flex:1; }
       .contact-form-heading strong { display:block; color:var(--text); }
-      .contact-form-heading p { margin:2px 0 0; color:var(--page-muted); font-size:.75rem; line-height:1.4; }
+      .contact-form-heading p { margin:.5rem 0 0; color:var(--page-muted); font-size:1rem; line-height:1.75; overflow-wrap:anywhere; }
+      .contact-public-email a { font-weight:600; }
       .service-form { position:relative; display:grid; gap:14px; margin-top:18px; }
       .service-form label { display:grid; gap:7px; color:var(--text); font-size:.88rem; font-weight:650; }
       .service-form input,.service-form textarea,.service-form select { width:100%; border:1px solid var(--border); border-radius:13px; background:var(--panel); color:var(--text); padding:11px 13px; font:inherit; font-weight:400; line-height:1.4; }
@@ -636,6 +704,9 @@ ${renderCommonHead(`${config.appName} - ${options.title}`, options.body.slice(0,
       .service-form button:hover { filter:brightness(1.06); }
       .service-form button:focus-visible { outline:3px solid color-mix(in srgb,var(--accent) 35%,transparent); outline-offset:3px; }
       .form-status { border:1px solid var(--border); border-radius:14px; padding:13px 14px; color:var(--text); font-size:.92rem; line-height:1.5; }
+      .form-status strong { display:block; color:var(--text); }
+      .form-status p strong { display:inline; }
+      .form-status p { margin:.45rem 0 0; color:var(--muted); font-size:.92rem; line-height:1.5; }
       .form-success { border-color:color-mix(in srgb,var(--accent) 45%,var(--border)); background:color-mix(in srgb,var(--accent) 12%,transparent); }
       .form-error { border-color:#c45b4d; background:color-mix(in srgb,#c45b4d 12%,transparent); }
       .form-honeypot { position:absolute!important; left:-10000px!important; width:1px!important; height:1px!important; overflow:hidden!important; }
@@ -645,11 +716,11 @@ ${renderCommonHead(`${config.appName} - ${options.title}`, options.body.slice(0,
       @media (max-width:520px) { body{padding:14px} main{margin:14px auto;border-radius:22px;padding:24px 20px} }
     </style>
   </head>
-  <body>
+  <body data-theme="${options.appearance ?? 'system'}">
     <main>
       ${renderBrandLink()}
       <h1>${escapeHtml(options.title)}</h1>
-      <div class="content">${options.systemContentHtml ?? (options.contactConfig ? `<div class="contact-blocks">${renderServiceContactBlocks(options.contactConfig, options.locale, options.contactFormState, options.publicContactEmail)}</div>` : renderTextContent(options.body))}</div>
+      <div class="content">${options.systemContentHtml ?? (options.contactConfig ? `<div class="contact-blocks">${renderServiceContactBlocks(options.contactConfig, options.locale, options.contactFormState, options.publicContactEmail, options.contactFormEnabled)}</div>` : renderTextContent(options.body))}</div>
       ${renderServiceFooterHtml(options.footerLinks)}
     </main>
   </body>
@@ -659,6 +730,9 @@ export const renderReportAbusePage = (options: {
   locale: Locale;
   footerLinks: ServiceFooterLink[];
   state?: PublicServiceFormState;
+  formEnabled?: boolean;
+  publicContactEmail?: string | null;
+  appearance?: 'system' | 'light' | 'dark';
 }) => {
   const text = publicFormText[options.locale];
   return renderServiceSectionPage({
@@ -666,44 +740,45 @@ export const renderReportAbusePage = (options: {
     title: text.reportTitle,
     body: text.reportDescription,
     footerLinks: options.footerLinks,
-    systemContentHtml: `${renderTextContent(text.reportDescription)}${renderReportAbuseForm(options.locale, options.state)}`
+    appearance: options.appearance,
+    systemContentHtml: `${renderTextContent(text.reportDescription)}${renderReportAbuseForm(options.locale, options.state, options.formEnabled, options.publicContactEmail)}`
   });
 };
 
-export const renderLinkExpiredPage = (locale: Locale = 'en', resource: 'link' | 'live' | 'board' = 'link') => {
-  if (resource === 'board') return pageShell(locale, boardPublicText(locale, 'expiredTitle'), boardPublicText(locale, 'expiredTitle'), boardPublicText(locale, 'expiredDescription'));
+export const renderLinkExpiredPage = (locale: Locale = 'en', resource: 'link' | 'live' | 'board' = 'link', appearance: 'system' | 'light' | 'dark' = 'system') => {
+  if (resource === 'board') return pageShell(locale, boardPublicText(locale, 'expiredTitle'), boardPublicText(locale, 'expiredTitle'), boardPublicText(locale, 'expiredDescription'), appearance);
   const titleKey = resource === 'link' ? 'linkExpiredTitle' : 'activityExpiredTitle';
   const descriptionKey = resource === 'link' ? 'linkExpiredDescription' : 'activityExpiredDescription';
-  return pageShell(locale, publicText(locale, titleKey), publicText(locale, titleKey), publicText(locale, descriptionKey));
+  return pageShell(locale, publicText(locale, titleKey), publicText(locale, titleKey), publicText(locale, descriptionKey), appearance);
 };
 
-export const renderLinkDisabledPage = (locale: Locale = 'en', resource: 'link' | 'page' | 'board' = 'link') => {
-  if (resource === 'board') return pageShell(locale, boardPublicText(locale, 'disabledTitle'), boardPublicText(locale, 'disabledTitle'), boardPublicText(locale, 'disabledDescription'));
+export const renderLinkDisabledPage = (locale: Locale = 'en', resource: 'link' | 'page' | 'board' = 'link', appearance: 'system' | 'light' | 'dark' = 'system') => {
+  if (resource === 'board') return pageShell(locale, boardPublicText(locale, 'disabledTitle'), boardPublicText(locale, 'disabledTitle'), boardPublicText(locale, 'disabledDescription'), appearance);
   const titleKey = resource === 'link' ? 'linkDisabledTitle' : 'pageDisabledTitle';
   const descriptionKey = resource === 'link' ? 'linkDisabledDescription' : 'pageDisabledDescription';
-  return pageShell(locale, publicText(locale, titleKey), publicText(locale, titleKey), publicText(locale, descriptionKey));
+  return pageShell(locale, publicText(locale, titleKey), publicText(locale, titleKey), publicText(locale, descriptionKey), appearance);
 };
 
-export const renderLinkNotFoundPage = (locale: Locale = 'en') =>
+export const renderLinkNotFoundPage = (locale: Locale = 'en', appearance: 'system' | 'light' | 'dark' = 'system') =>
   pageShell(
     locale,
     publicText(locale, 'addressNotFoundTitle'),
     publicText(locale, 'addressNotFoundTitle'),
-    publicText(locale, 'addressNotFoundDescription')
+    publicText(locale, 'addressNotFoundDescription'), appearance
   );
 
-export const renderInvalidLinkDestinationPage = (locale: Locale = 'en') =>
+export const renderInvalidLinkDestinationPage = (locale: Locale = 'en', appearance: 'system' | 'light' | 'dark' = 'system') =>
   pageShell(
     locale,
     externalLinkText(locale, 'invalidTitle'),
     externalLinkText(locale, 'invalidTitle'),
-    externalLinkText(locale, 'invalidDescription')
+    externalLinkText(locale, 'invalidDescription'), appearance
   );
 
-export const renderPublicServiceUnavailablePage = (locale: Locale = 'en') =>
+export const renderPublicServiceUnavailablePage = (locale: Locale = 'en', appearance: 'system' | 'light' | 'dark' = 'system') =>
   pageShell(
     locale,
     publicText(locale, 'serviceUnavailableTitle'),
     publicText(locale, 'serviceUnavailableTitle'),
-    publicText(locale, 'serviceUnavailableDescription')
+    publicText(locale, 'serviceUnavailableDescription'), appearance
   );

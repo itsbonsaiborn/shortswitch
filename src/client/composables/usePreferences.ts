@@ -1,7 +1,6 @@
 import { computed, reactive } from 'vue';
 import type { CurrentUser, Locale, ThemeMode, UserPreferences } from '@/shared/types';
 import { api } from '../lib/api';
-import { setDocumentLocale } from '../i18n';
 
 type EditablePreferences = Omit<UserPreferences, 'initialized'>;
 
@@ -53,7 +52,6 @@ const flush = async () => {
       if (pending.sidebarCollapsed === undefined) state.sidebarCollapsed = saved.sidebarCollapsed;
       if (pending.locale === undefined) {
         state.locale = saved.locale;
-        setDocumentLocale(saved.locale);
       }
       cache();
     }
@@ -77,7 +75,6 @@ const apply = (next: Partial<EditablePreferences>, persist = true) => {
   if (next.sidebarCollapsed !== undefined) state.sidebarCollapsed = next.sidebarCollapsed;
   if (next.locale !== undefined) {
     state.locale = next.locale;
-    setDocumentLocale(next.locale);
   }
   cache();
   if (persist && state.userId) {
@@ -116,7 +113,6 @@ const reset = () => {
   state.syncing = false;
   state.syncError = '';
   Object.assign(state, defaults);
-  setDocumentLocale('en');
   if (typeof window !== 'undefined') {
     try { window.localStorage.removeItem('ss_preferences_active'); } catch { /* Storage can be disabled. */ }
   }
@@ -131,8 +127,12 @@ export const usePreferences = () => ({
   syncError: computed(() => state.syncError),
   hydrateUser,
   reset,
-  setTheme: (theme: ThemeMode) => apply({ theme }),
+  setTheme: (theme: ThemeMode) => {
+    apply({ theme });
+  },
   setSidebarCollapsed: (sidebarCollapsed: boolean) => apply({ sidebarCollapsed }),
-  setLocale: (locale: Locale) => apply({ locale }),
+  setLocale: (locale: Locale) => {
+    apply({ locale });
+  },
   retry: () => { state.syncError = ''; void flush(); }
 });

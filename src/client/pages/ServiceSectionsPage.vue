@@ -94,6 +94,8 @@ const saveSubmissionSettings = async () => {
     submissionSettings.value = await api<ServiceSubmissionSettings>('/api/service-submission-settings', {
       method: 'PATCH',
       body: JSON.stringify({
+        contactFormEnabled: submissionSettings.value.contactFormEnabled,
+        reportAbuseFormEnabled: submissionSettings.value.reportAbuseFormEnabled,
         allowedEmailDomains,
         publicContactEmail: submissionSettings.value.publicContactEmail || null,
         retentionDays: submissionSettings.value.retentionDays
@@ -346,6 +348,16 @@ onBeforeUnmount(() => window.removeEventListener('keydown', keydown));
         <h2 class="text-xl font-semibold">{{ t('serviceSubmissions.settings') }}</h2>
         <p class="mt-2 text-sm text-[var(--ui-text-muted)]">{{ t('serviceSubmissions.settingsDescription') }}</p>
         <div v-if="submissionSettings" class="mt-6 space-y-6">
+          <div class="grid gap-3 sm:grid-cols-2">
+            <label class="panel-muted flex items-start gap-3 p-4">
+              <input v-model="submissionSettings.contactFormEnabled" class="mt-1 rounded" type="checkbox" />
+              <span><span class="block text-sm font-semibold">{{ t('serviceFormAvailability.contact') }}</span><span class="text-xs text-[var(--ui-text-muted)]">{{ t('serviceFormAvailability.contactHelp') }}</span></span>
+            </label>
+            <label class="panel-muted flex items-start gap-3 p-4">
+              <input v-model="submissionSettings.reportAbuseFormEnabled" class="mt-1 rounded" type="checkbox" />
+              <span><span class="block text-sm font-semibold">{{ t('serviceFormAvailability.reportAbuse') }}</span><span class="text-xs text-[var(--ui-text-muted)]">{{ t('serviceFormAvailability.reportAbuseHelp') }}</span></span>
+            </label>
+          </div>
           <label class="block"><span class="mb-2 block text-sm font-semibold">{{ t('serviceSubmissions.publicContactEmail') }}</span><input v-model="submissionSettings.publicContactEmail" class="input" type="email" maxlength="254" :placeholder="t('serviceSubmissions.optional')" /><span class="mt-2 block text-xs text-[var(--ui-text-muted)]">{{ t('serviceSubmissions.publicContactEmailHelp') }}</span></label>
           <div class="panel-muted p-4">
             <label class="flex items-start gap-3"><input v-model="restrictDomains" class="mt-1 rounded" type="checkbox" /><span><span class="block text-sm font-semibold">{{ t('serviceSubmissions.restrictDomains') }}</span><span class="text-xs text-[var(--ui-text-muted)]">{{ t('serviceSubmissions.restrictDomainsHelp') }}</span></span></label>

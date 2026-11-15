@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
+import QRCode from 'qrcode';
 import { UAParser } from 'ua-parser-js';
 import { api } from '../lib/api';
 import { useToast } from '../composables/useToast';
-import type { ModerationMatchMode, ModerationRule, UserSession } from '@/shared/types';
+import type { ModerationMatchMode, ModerationRule, TwoFactorEnrollment, TwoFactorStatus, UserSession } from '@/shared/types';
 import { useI18n } from 'vue-i18n';
 import { usePreferences } from '../composables/usePreferences';
+import { useDisplayPreferences } from '../composables/useDisplayPreferences';
+import { useTheme } from '../composables/useTheme';
+import type { AppearancePreference, LanguagePreference, PublicDisplayPreferences } from '@/shared/display-preferences';
 
 const sessions = ref<UserSession[]>([]);
 const password = ref('');
@@ -16,7 +20,53 @@ const ruleMode = ref<ModerationMatchMode>('whole_word');
 const editingRuleId = ref<string | null>(null);
 const { pushToast } = useToast();
 const { t, locale } = useI18n();
-const { locale: selectedLocale, setLocale, syncError, retry } = usePreferences();
+const { locale: accountLocale, setLocale, syncError, retry } = usePreferences();
+const {
+  publicLanguagePreference,
+  publicAppearancePreference,
+  setPublicDisplayPreferences
+} = useDisplayPreferences();
+const { theme: appearancePreference, setTheme } = useTheme();
+const twoFactorStatus = ref<TwoFactorStatus | null>(null);
+const twoFactorPassword = ref('');
+const twoFactorCode = ref('');
+const twoFactorEnrollment = ref<TwoFactorEnrollment | null>(null);
+const twoFactorQr = ref('');
+const recoveryCodes = ref<string[]>([]);
+const twoFactorBusy = ref(false);
+
+const publicDisplayBusy = ref(false);
+
+const changeLanguage = (value: string) => setLocale(value as 'en' | 'lv');
+
+const savePublicDisplayPreferences = async (next: PublicDisplayPreferences) => {
+  const previous = {
+    language: publicLanguagePreference.value,
+    appearance: publicAppearancePreference.value
+  };
+  setPublicDisplayPreferences(next);
+  publicDisplayBusy.value = true;
+  try {
+    const saved = await api<PublicDisplayPreferences>('/api/settings/public-display', {
+      method: 'PATCH', body: JSON.stringify(next)
+    });
+    setPublicDisplayPreferences(saved);
+    pushToast({ tone: 'success', title: t('publicDisplay.saved') });
+  } catch (error) {
+    setPublicDisplayPreferences(previous);
+    pushToast({ tone: 'error', title: t('publicDisplay.saveFailed'), description: (error as Error).message });
+  } finally { publicDisplayBusy.value = false; }
+};
+
+const changePublicLanguage = (value: string) => savePublicDisplayPreferences({
+  language: value as LanguagePreference,
+  appearance: publicAppearancePreference.value
+});
+
+const changePublicAppearance = (value: string) => savePublicDisplayPreferences({
+  language: publicLanguagePreference.value,
+  appearance: value as AppearancePreference
+});
 
 const formatSessionTime = (value: string) =>
   new Date(value).toLocaleString(locale.value === 'lv' ? 'lv-LV' : 'en-US');
@@ -37,15 +87,72 @@ const formatUserAgent = (value: string | null) => {
 
 const load = async () => {
   try {
-    const [nextSessions, nextRules] = await Promise.all([
+    const [nextSessions, nextRules, nextTwoFactorStatus, nextPublicDisplay] = await Promise.all([
       api<UserSession[]>('/api/sessions'),
-      api<ModerationRule[]>('/api/moderation/rules')
+      api<ModerationRule[]>('/api/moderation/rules'),
+      api<TwoFactorStatus>('/api/settings/two-factor'),
+      api<PublicDisplayPreferences>('/api/settings/public-display')
     ]);
     sessions.value = nextSessions;
     moderationRules.value = nextRules;
+    twoFactorStatus.value = nextTwoFactorStatus;
+    setPublicDisplayPreferences(nextPublicDisplay);
   } catch (error) {
     pushToast({ tone: 'error', title: t('notices.sessionsLoadFailed'), description: (error as Error).message });
   }
+};
+
+const startTwoFactorEnrollment = async () => {
+  twoFactorBusy.value = true;
+  try {
+    twoFactorEnrollment.value = await api<TwoFactorEnrollment>('/api/settings/two-factor/enrollment', {
+      method: 'POST', body: JSON.stringify({ password: twoFactorPassword.value })
+    });
+    twoFactorQr.value = await QRCode.toDataURL(twoFactorEnrollment.value.otpauthUri, { width: 280, margin: 1 });
+    twoFactorCode.value = '';
+  } catch (error) {
+    pushToast({ tone: 'error', title: t('twoFactor.setupFailed'), description: (error as Error).message });
+  } finally { twoFactorBusy.value = false; }
+};
+
+const confirmTwoFactorEnrollment = async () => {
+  twoFactorBusy.value = true;
+  try {
+    const result = await api<{ enabled: true; recoveryCodes: string[] }>('/api/settings/two-factor/enrollment/confirm', {
+      method: 'POST', body: JSON.stringify({ code: twoFactorCode.value })
+    });
+    recoveryCodes.value = result.recoveryCodes;
+    twoFactorStatus.value = await api<TwoFactorStatus>('/api/settings/two-factor');
+    twoFactorEnrollment.value = null;
+    twoFactorQr.value = '';
+    twoFactorPassword.value = '';
+    twoFactorCode.value = '';
+    pushToast({ tone: 'success', title: t('twoFactor.enabled') });
+  } catch (error) {
+    pushToast({ tone: 'error', title: t('twoFactor.setupFailed'), description: (error as Error).message });
+  } finally { twoFactorBusy.value = false; }
+};
+
+const disableTwoFactor = async () => {
+  twoFactorBusy.value = true;
+  try {
+    await api('/api/settings/two-factor/disable', {
+      method: 'POST', body: JSON.stringify({ password: twoFactorPassword.value, code: twoFactorCode.value })
+    });
+    twoFactorStatus.value = await api<TwoFactorStatus>('/api/settings/two-factor');
+    twoFactorPassword.value = '';
+    twoFactorCode.value = '';
+    recoveryCodes.value = [];
+    await load();
+    pushToast({ tone: 'success', title: t('twoFactor.disabled') });
+  } catch (error) {
+    pushToast({ tone: 'error', title: t('twoFactor.disableFailed'), description: (error as Error).message });
+  } finally { twoFactorBusy.value = false; }
+};
+
+const copyRecoveryCodes = async () => {
+  await navigator.clipboard.writeText(recoveryCodes.value.join('\n'));
+  pushToast({ tone: 'success', title: t('twoFactor.copied') });
 };
 
 const saveRule = async () => {
@@ -122,18 +229,110 @@ onMounted(load);
     <section class="min-w-0 xl:col-span-2">
       <div class="panel p-5 sm:p-6">
         <h2 class="text-xl font-semibold">{{ t('settings.preferences') }}</h2>
-        <p class="mt-2 text-sm text-[var(--ui-text-muted)]">{{ t('settings.preferencesDescription') }}</p>
-        <div class="mt-5 max-w-md">
+        <p class="mt-2 text-sm text-[var(--ui-text-muted)]">{{ t('displayPreferences.description') }}</p>
+        <div class="mt-5 grid max-w-3xl gap-5 sm:grid-cols-2">
+          <div>
           <label class="mb-2 block text-sm font-medium" for="interface-locale">{{ t('locale.label') }}</label>
-          <select id="interface-locale" class="input px-4 py-3" :value="selectedLocale" @change="setLocale(($event.target as HTMLSelectElement).value as 'en' | 'lv')">
+          <select id="interface-locale" class="input px-4 py-3" :value="accountLocale" @change="changeLanguage(($event.target as HTMLSelectElement).value)">
             <option value="en">{{ t('locale.en') }}</option>
             <option value="lv">{{ t('locale.lv') }}</option>
           </select>
           <p class="mt-2 text-xs text-[var(--ui-text-muted)]">{{ t('locale.description') }}</p>
+          </div>
+          <div>
+            <label class="mb-2 block text-sm font-medium" for="interface-appearance">{{ t('theme.label') }}</label>
+            <select id="interface-appearance" class="input px-4 py-3" :value="appearancePreference" @change="setTheme(($event.target as HTMLSelectElement).value as 'system' | 'light' | 'dark')">
+              <option value="system">{{ t('theme.system') }}</option>
+              <option value="light">{{ t('theme.light') }}</option>
+              <option value="dark">{{ t('theme.dark') }}</option>
+            </select>
+            <p class="mt-2 text-xs text-[var(--ui-text-muted)]">{{ t('theme.description') }}</p>
+          </div>
         </div>
         <button v-if="syncError" type="button" class="mt-4 rounded-2xl bg-[#FCE8DB] px-4 py-3 text-left text-sm text-[#AF3029] dark:bg-[#321F1C] dark:text-[#F89A8A]" @click="retry">
           {{ t('settings.syncFailed') }} <span class="font-semibold">{{ t('common.retry') }}</span>
         </button>
+      </div>
+    </section>
+    <section class="min-w-0 xl:col-span-2">
+      <div class="panel p-5 sm:p-6">
+        <h2 class="text-xl font-semibold">{{ t('publicDisplay.title') }}</h2>
+        <p class="mt-2 text-sm text-[var(--ui-text-muted)]">{{ t('publicDisplay.description') }}</p>
+        <div class="mt-5 grid max-w-3xl gap-5 sm:grid-cols-2">
+          <div>
+            <label class="mb-2 block text-sm font-medium" for="public-locale">{{ t('publicDisplay.language') }}</label>
+            <select id="public-locale" class="input px-4 py-3" :value="publicLanguagePreference" :disabled="publicDisplayBusy" @change="changePublicLanguage(($event.target as HTMLSelectElement).value)">
+              <option value="auto">{{ t('locale.auto') }}</option>
+              <option value="en">{{ t('locale.en') }}</option>
+              <option value="lv">{{ t('locale.lv') }}</option>
+            </select>
+            <p class="mt-2 text-xs text-[var(--ui-text-muted)]">{{ t('publicDisplay.languageDescription') }}</p>
+          </div>
+          <div>
+            <label class="mb-2 block text-sm font-medium" for="public-appearance">{{ t('publicDisplay.appearance') }}</label>
+            <select id="public-appearance" class="input px-4 py-3" :value="publicAppearancePreference" :disabled="publicDisplayBusy" @change="changePublicAppearance(($event.target as HTMLSelectElement).value)">
+              <option value="system">{{ t('theme.system') }}</option>
+              <option value="light">{{ t('theme.light') }}</option>
+              <option value="dark">{{ t('theme.dark') }}</option>
+            </select>
+            <p class="mt-2 text-xs text-[var(--ui-text-muted)]">{{ t('publicDisplay.appearanceDescription') }}</p>
+          </div>
+        </div>
+      </div>
+    </section>
+    <section class="min-w-0 xl:col-span-2">
+      <div class="panel p-5 sm:p-6">
+        <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h2 class="text-xl font-semibold">{{ t('twoFactor.title') }}</h2>
+            <p class="mt-2 text-sm text-[var(--ui-text-muted)]">{{ t('twoFactor.description') }}</p>
+          </div>
+          <span v-if="twoFactorStatus" class="rounded-full px-3 py-1.5 text-xs font-semibold" :class="twoFactorStatus.enabled ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'bg-[var(--ui-panel-muted)] text-[var(--ui-text-muted)]'">
+            {{ twoFactorStatus.enabled ? t('twoFactor.on') : t('twoFactor.off') }}
+          </span>
+        </div>
+
+        <div v-if="twoFactorStatus && !twoFactorStatus.enrollmentAvailable && !twoFactorStatus.enabled" class="mt-5 rounded-2xl border border-amber-500/20 bg-amber-500/10 p-4 text-sm text-amber-800 dark:text-amber-200">
+          {{ t('twoFactor.keyMissing') }}
+        </div>
+
+        <div v-if="recoveryCodes.length" class="mt-5 rounded-[1.75rem] border border-amber-500/25 bg-amber-500/10 p-5">
+          <h3 class="font-semibold">{{ t('twoFactor.saveRecoveryCodes') }}</h3>
+          <p class="mt-2 text-sm text-[var(--ui-text-muted)]">{{ t('twoFactor.recoveryCodesOnce') }}</p>
+          <div class="mt-4 grid gap-2 font-mono text-sm sm:grid-cols-2">
+            <code v-for="item in recoveryCodes" :key="item" class="rounded-xl bg-[var(--ui-panel)] px-3 py-2">{{ item }}</code>
+          </div>
+          <button type="button" class="btn-secondary mt-4" @click="copyRecoveryCodes">{{ t('twoFactor.copyCodes') }}</button>
+        </div>
+
+        <div v-else-if="twoFactorEnrollment" class="mt-5 grid gap-5 md:grid-cols-[280px_minmax(0,1fr)] md:items-center">
+          <img :src="twoFactorQr" class="mx-auto w-full max-w-[280px] rounded-2xl bg-white p-3" :alt="t('twoFactor.qrAlt')" />
+          <div class="min-w-0">
+            <p class="text-sm text-[var(--ui-text-muted)]">{{ t('twoFactor.scanHelp') }}</p>
+            <p class="mt-3 break-all rounded-2xl bg-[var(--ui-panel-muted)] p-3 font-mono text-xs">{{ twoFactorEnrollment.manualKey }}</p>
+            <label class="mt-4 block">
+              <span class="mb-2 block text-sm font-medium">{{ t('twoFactor.verificationCode') }}</span>
+              <input v-model="twoFactorCode" class="input" inputmode="numeric" autocomplete="one-time-code" maxlength="6" />
+            </label>
+            <button type="button" class="btn-primary mt-4" :disabled="twoFactorBusy || twoFactorCode.length !== 6" @click="confirmTwoFactorEnrollment">{{ t('twoFactor.confirm') }}</button>
+          </div>
+        </div>
+
+        <div v-else-if="twoFactorStatus" class="mt-5 grid max-w-3xl gap-4 sm:grid-cols-2">
+          <label class="block">
+            <span class="mb-2 block text-sm font-medium">{{ t('twoFactor.currentPassword') }}</span>
+            <input v-model="twoFactorPassword" class="input" type="password" autocomplete="current-password" maxlength="256" />
+          </label>
+          <label v-if="twoFactorStatus.enabled" class="block">
+            <span class="mb-2 block text-sm font-medium">{{ t('twoFactor.verificationOrRecovery') }}</span>
+            <input v-model="twoFactorCode" class="input" autocomplete="one-time-code" maxlength="32" />
+          </label>
+          <div class="sm:col-span-2">
+            <p v-if="twoFactorStatus.enabled" class="mb-4 text-sm text-[var(--ui-text-muted)]">{{ t('twoFactor.remaining', { count: twoFactorStatus.recoveryCodesRemaining }) }}</p>
+            <button v-if="twoFactorStatus.enabled" type="button" class="btn-secondary text-[#AF3029] dark:text-[#F89A8A]" :disabled="twoFactorBusy" @click="disableTwoFactor">{{ t('twoFactor.disable') }}</button>
+            <button v-else type="button" class="btn-primary" :disabled="twoFactorBusy || !twoFactorStatus.enrollmentAvailable" @click="startTwoFactorEnrollment">{{ t('twoFactor.start') }}</button>
+          </div>
+        </div>
       </div>
     </section>
     <section class="min-w-0">

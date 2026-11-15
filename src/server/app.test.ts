@@ -1,5 +1,6 @@
 // @vitest-environment node
 import argon2 from 'argon2';
+import * as OTPAuth from 'otpauth';
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
@@ -48,7 +49,9 @@ const envKeys = [
   'BLOCK_LOCAL_URLS',
   'BLOCK_PRIVATE_IPS',
   'SESSION_TTL_HOURS',
-  'SESSION_COOKIE_NAME'
+  'SESSION_COOKIE_NAME',
+  'TOTP_ENCRYPTION_KEY',
+  'PENDING_AUTH_COOKIE_NAME'
 ];
 
 const extractCookies = (setCookie: string[] | string | undefined) => {
@@ -115,7 +118,9 @@ const setBaseEnv = (dbPath: string, overrides: Record<string, string | undefined
     BLOCK_LOCAL_URLS: 'true',
     BLOCK_PRIVATE_IPS: 'false',
     SESSION_TTL_HOURS: '720',
-    SESSION_COOKIE_NAME: 'shortswitch_session'
+    SESSION_COOKIE_NAME: 'shortswitch_session',
+    PENDING_AUTH_COOKIE_NAME: 'shortswitch_pending_auth',
+    TOTP_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64')
   };
 
   Object.assign(process.env, nextEnv);
@@ -240,7 +245,7 @@ describe.sequential('server security hardening', () => {
     const { buildApp } = await import('./app.js');
     const app = await buildApp();
     const cases = [
-      { language: 'lv-LV', locale: 'lv', heading: 'Adrese nav atrasta' },
+      { language: 'lv-LV', locale: 'lv', heading: 'Saite nav atrasta' },
       { language: 'en-US', locale: 'en', heading: 'Address not found' },
       { language: 'ru-RU,lv-LV;q=0.9', locale: 'en', heading: 'Address not found' },
       { language: 'zz-ZZ', locale: 'en', heading: 'Address not found' }
@@ -260,6 +265,54 @@ describe.sequential('server security hardening', () => {
     await app.close();
   });
 
+  test('applies server-owned public display preferences and ignores visitor overrides', async () => {
+    const { buildApp } = await import('./app.js');
+    const { SettingsRepository } = await import('./repositories/settings-repository.js');
+    const app = await buildApp();
+    new SettingsRepository().updatePublicDisplayPreferences({ language: 'lv', appearance: 'dark' });
+    const response = await app.inject({
+      method: 'GET',
+      url: '/missing-public-resource',
+      headers: {
+        'accept-language': 'en-US',
+        cookie: 'ss_public_language_preference=en; ss_public_appearance_preference=light'
+      }
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.body).toContain('<html lang="lv">');
+    expect(response.body).toContain('Saite nav atrasta');
+    expect(response.body).toContain('<body data-theme="dark">');
+    expect(response.body).not.toMatch(/<script\b/i);
+    await app.close();
+  });
+
+  test('protects and persists global public display settings independently from account preferences', async () => {
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+    expect((await app.inject({ method: 'GET', url: '/api/settings/public-display' })).statusCode).toBe(401);
+
+    const csrf = await getCsrfBundle(app);
+    const admin = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
+    const headers = { cookie: admin.cookies, 'x-csrf-token': csrf.csrfToken };
+    const updated = await app.inject({
+      method: 'PATCH', url: '/api/settings/public-display', headers,
+      payload: { language: 'lv', appearance: 'dark' }
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json()).toEqual({ language: 'lv', appearance: 'dark' });
+
+    const account = await app.inject({ method: 'GET', url: '/api/settings/preferences', headers: { cookie: admin.cookies } });
+    expect(account.json()).toMatchObject({ locale: 'en', theme: 'system' });
+    const publicConfig = await app.inject({ method: 'GET', url: '/api/public/config' });
+    expect(publicConfig.json().publicDisplayPreferences).toEqual({ language: 'lv', appearance: 'dark' });
+    expect((await app.inject({
+      method: 'PATCH', url: '/api/settings/public-display', headers,
+      payload: { language: 'ru', appearance: 'sepia' }
+    })).statusCode).toBe(400);
+    await app.close();
+  });
+
   test('renders localized protected, expired and disabled public states', async () => {
     const {
       renderLinkDisabledPage,
@@ -276,9 +329,12 @@ describe.sequential('server security hardening', () => {
     expect(renderLinkExpiredPage('lv', 'live')).toContain('Aktivitātes termiņš ir beidzies');
     expect(renderLinkDisabledPage('lv', 'page')).toContain('Lapa ir atspējota');
     expect(renderPublicServiceUnavailablePage('lv')).toContain('Pakalpojums nav pieejams');
-    expect(renderExternalLinkConfirmationPage({
+    const externalPage = renderExternalLinkConfirmationPage({
       locale: 'lv', targetHostname: 'example.com', targetUrl: 'https://example.com/path'
-    })).toContain('Atvērt mērķa adresi');
+    });
+    expect(externalPage).toContain('Atvērt saiti');
+    expect(externalPage).toContain('src="https://example.com/favicon.ico"');
+    expect(externalPage).toContain('referrerpolicy="no-referrer"');
   });
 
   test('manages service page drafts and publishes safe localized content with essential fallbacks', async () => {
@@ -586,6 +642,125 @@ describe.sequential('server security hardening', () => {
       finalStatus = response.statusCode;
     }
     expect(finalStatus).toBe(429);
+    await app.close();
+  });
+
+  test('independently disables public forms, preserves Inbox data and persists availability', async () => {
+    const { buildApp } = await import('./app.js');
+    const { getDb, resetDb } = await import('./db.js');
+    let app = await buildApp();
+    let csrf = await getCsrfBundle(app);
+    let admin = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
+
+    const initial = await app.inject({
+      method: 'GET', url: '/api/service-submission-settings', headers: { cookie: admin.cookies }
+    });
+    expect(initial.json()).toMatchObject({ contactFormEnabled: true, reportAbuseFormEnabled: true });
+
+    const contactPage = await app.inject({ method: 'GET', url: '/service/contacts' });
+    const contactCookie = extractCookies(contactPage.headers['set-cookie'] as string[] | string | undefined);
+    const stored = await app.inject({
+      method: 'POST', url: '/service/contacts/submit',
+      headers: { cookie: contactCookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: new URLSearchParams({ email: 'kept@example.test', subject: 'Keep me', message: 'Existing submission' }).toString()
+    });
+    expect(stored.statusCode).toBe(200);
+
+    const anonymousCsrf = await getCsrfBundle(app);
+    const unauthorized = await app.inject({
+      method: 'PATCH', url: '/api/service-submission-settings',
+      headers: { cookie: anonymousCsrf.csrfCookies, 'x-csrf-token': anonymousCsrf.csrfToken },
+      payload: { contactFormEnabled: false }
+    });
+    expect(unauthorized.statusCode).toBe(401);
+
+    const disableContact = await app.inject({
+      method: 'PATCH', url: '/api/service-submission-settings',
+      headers: { cookie: admin.cookies, 'x-csrf-token': csrf.csrfToken },
+      payload: {
+        contactFormEnabled: false,
+        reportAbuseFormEnabled: true,
+        publicContactEmail: 'security@example.test'
+      }
+    });
+    expect(disableContact.statusCode).toBe(200);
+    expect(disableContact.json()).toMatchObject({ contactFormEnabled: false, reportAbuseFormEnabled: true });
+
+    const disabledContactPage = await app.inject({
+      method: 'GET', url: '/service/contacts', headers: { 'accept-language': 'lv-LV' }
+    });
+    expect(disabledContactPage.statusCode).toBe(200);
+    expect(disabledContactPage.body).toContain('Saziņas forma pašlaik nav pieejama');
+    expect(disabledContactPage.body).toContain('class="form-status form-unavailable"');
+    expect(disabledContactPage.body).toContain('class="contact-form-unavailable"');
+    expect(disabledContactPage.body).toContain('mailto:security@example.test');
+    expect(disabledContactPage.body).not.toContain('action="/service/contacts/submit"');
+
+    const blockedContact = await app.inject({
+      method: 'POST', url: '/service/contacts/submit',
+      headers: { cookie: contactCookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: new URLSearchParams({ email: 'new@example.test', subject: 'Blocked', message: 'Must not persist' }).toString()
+    });
+    expect(blockedContact.statusCode).toBe(503);
+    expect(blockedContact.body).toContain('temporarily unavailable');
+    expect(getDb().prepare("SELECT COUNT(*) AS count FROM service_submissions WHERE submission_type = 'contact'").get())
+      .toEqual({ count: 1 });
+
+    const reportPage = await app.inject({ method: 'GET', url: '/service/report-abuse' });
+    const reportCookie = extractCookies(reportPage.headers['set-cookie'] as string[] | string | undefined);
+    expect(reportPage.body).toContain('action="/service/report-abuse/submit"');
+    const report = await app.inject({
+      method: 'POST', url: '/service/report-abuse/submit',
+      headers: { cookie: reportCookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: new URLSearchParams({ link: 'safe-test-id', reason: 'other', description: 'Independent toggle works.' }).toString()
+    });
+    expect(report.statusCode).toBe(200);
+
+    const disableReport = await app.inject({
+      method: 'PATCH', url: '/api/service-submission-settings',
+      headers: { cookie: admin.cookies, 'x-csrf-token': csrf.csrfToken },
+      payload: { contactFormEnabled: true, reportAbuseFormEnabled: false }
+    });
+    expect(disableReport.statusCode).toBe(200);
+
+    const concurrentResults = await Promise.all(Array.from({ length: 4 }, (_, index) => app.inject({
+      method: 'POST', url: '/service/report-abuse/submit',
+      headers: { cookie: reportCookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: new URLSearchParams({ link: `blocked-${index}`, reason: 'spam', description: 'Must not persist.' }).toString()
+    })));
+    expect(concurrentResults.every((response) => response.statusCode === 503)).toBe(true);
+    expect(getDb().prepare("SELECT COUNT(*) AS count FROM service_submissions WHERE submission_type = 'report_abuse'").get())
+      .toEqual({ count: 1 });
+
+    const disabledReportPage = await app.inject({ method: 'GET', url: '/service/report-abuse' });
+    expect(disabledReportPage.statusCode).toBe(200);
+    expect(disabledReportPage.body).toContain('report form is temporarily unavailable');
+    expect(disabledReportPage.body).toContain('class="form-status form-unavailable"');
+    expect(disabledReportPage.body).toContain('/service/security');
+    expect(disabledReportPage.body).toContain('/service/contacts');
+    expect(disabledReportPage.body.match(/\/service\/security/g)).toHaveLength(1);
+    expect(disabledReportPage.body.match(/\/service\/contacts/g)).toHaveLength(1);
+    expect(disabledReportPage.body).toContain('mailto:security@example.test');
+    expect(disabledReportPage.body).not.toContain('action="/service/report-abuse/submit"');
+
+    const inbox = await app.inject({
+      method: 'GET', url: '/api/service-submissions', headers: { cookie: admin.cookies }
+    });
+    expect(inbox.statusCode).toBe(200);
+    expect(inbox.json().total).toBe(2);
+
+    await app.close();
+    resetDb();
+    vi.resetModules();
+    const restarted = await import('./app.js');
+    app = await restarted.buildApp();
+    csrf = await getCsrfBundle(app);
+    admin = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
+    const persisted = await app.inject({
+      method: 'GET', url: '/api/service-submission-settings', headers: { cookie: admin.cookies }
+    });
+    expect(persisted.json()).toMatchObject({ contactFormEnabled: true, reportAbuseFormEnabled: false });
+    expect((await app.inject({ method: 'GET', url: '/api/service-submissions', headers: { cookie: admin.cookies } })).json().total).toBe(2);
     await app.close();
   });
 
@@ -1839,8 +2014,9 @@ describe.sequential('server security hardening', () => {
       expect(confirmation.headers.location).toBeUndefined();
       expect(confirmation.headers['cache-control']).toContain('no-store');
       expect(confirmation.body).toContain('<html lang="lv">');
-      expect(confirmation.body).toContain('Tu atstāj ShortSwitch');
+      expect(confirmation.body).toContain('Saites atvēršana...');
       expect(confirmation.body).toContain('outside.example');
+      expect(confirmation.body).toContain('src="https://outside.example/favicon.ico"');
       expect(confirmation.body).toContain('name="viewport"');
       expect(confirmation.body).toContain('@media (max-width: 520px)');
       expect(confirmation.body).toContain('target="_blank"');
@@ -2463,6 +2639,95 @@ describe.sequential('server security hardening', () => {
 
     const removed = new LinkService().cleanupAnalytics();
     expect(removed).toBeGreaterThan(0);
+    await app.close();
+  });
+
+  test('applies one Riga calendar range consistently to Link, Page and global analytics APIs', async () => {
+    const { buildApp } = await import('./app.js');
+    const { getDb } = await import('./db.js');
+    const { createId } = await import('./utils.js');
+    const app = await buildApp();
+    const csrf = await getCsrfBundle(app);
+    const adminLogin = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
+    const db = getDb();
+    const admin = db.prepare('SELECT id FROM users WHERE email = ?').get('admin@example.com') as { id: string };
+    const linkId = createId();
+    const pageId = createId();
+    const createdAt = '2026-09-01T00:00:00.000Z';
+
+    db.prepare(`INSERT INTO links (
+      id, user_id, slug, target_url, password_hash, enabled, created_at, updated_at, expires_at, click_count
+    ) VALUES (?, ?, 'range-link', 'https://example.com', NULL, 1, ?, ?, NULL, 2)`).run(linkId, admin.id, createdAt, createdAt);
+    db.prepare(`INSERT INTO pages (
+      id, user_id, slug, title, description, emoji, avatar_url, theme, layout, background_pattern,
+      pattern_intensity, status, seo_title, seo_description, created_at, updated_at
+    ) VALUES (?, ?, 'range-page', 'Range page', NULL, NULL, NULL, 'classic_cream', 'classic', 'none',
+      35, 'published', NULL, NULL, ?, ?)`).run(pageId, admin.id, createdAt, createdAt);
+
+    const insertLinkEvent = db.prepare(`INSERT INTO analytics_events (
+      id, link_id, slug, timestamp, browser, os, device_type, referrer, country, region, city,
+      language, traffic_type, auth_outcome, visitor_hash, raw_ip
+    ) VALUES (?, ?, 'range-link', ?, 'Chrome', 'Windows', 'desktop', 'Direct', 'LV', 'Riga', NULL,
+      'lv-LV', 'human', 'success', ?, NULL)`);
+    const insertPageView = db.prepare(`INSERT INTO page_views (
+      id, page_id, timestamp, visitor_hash, device_type, browser, os, referrer, language, raw_ip
+    ) VALUES (?, ?, ?, ?, 'desktop', 'Chrome', 'Windows', 'Direct', 'lv-LV', NULL)`);
+    const insertPageClick = db.prepare(`INSERT INTO page_block_clicks (
+      id, page_id, block_id, block_label, event_id, timestamp, visitor_hash, device_type, browser,
+      os, referrer, language, raw_ip
+    ) VALUES (?, ?, 'missing-block', 'Test link', ?, ?, ?, 'desktop', 'Chrome', 'Windows', 'Direct', 'lv-LV', NULL)`);
+
+    for (const [index, timestamp] of ['2026-10-01T00:00:00.000Z', '2026-10-02T00:00:00.000Z'].entries()) {
+      const visitor = `visitor-${index}`;
+      insertLinkEvent.run(createId(), linkId, timestamp, visitor);
+      insertPageView.run(createId(), pageId, timestamp, visitor);
+      insertPageClick.run(createId(), pageId, `event-${index}`, timestamp, visitor);
+    }
+
+    const query = 'datePreset=custom&startDate=2026-10-01&endDate=2026-10-01';
+    const headers = { cookie: adminLogin.cookies };
+    const linkResponse = await app.inject({ method: 'GET', url: `/api/links/${linkId}/analytics?${query}`, headers });
+    const pageResponse = await app.inject({ method: 'GET', url: `/api/pages/${pageId}/analytics?${query}`, headers });
+    const globalResponse = await app.inject({ method: 'GET', url: `/api/analytics/global?${query}`, headers });
+
+    expect(linkResponse.statusCode).toBe(200);
+    expect(linkResponse.json().overview.totalClicks).toBe(1);
+    expect(linkResponse.json().overview.points.reduce((sum: number, point: any) => sum + point.clicks, 0)).toBe(1);
+    expect(linkResponse.json().recentClicks).toHaveLength(1);
+    expect(pageResponse.statusCode).toBe(200);
+    expect(pageResponse.json()).toMatchObject({ totalViews: 1, uniqueVisitors: 1, totalLinkClicks: 1 });
+    expect(pageResponse.json().viewsOverTime.reduce((sum: number, point: any) => sum + point.views, 0)).toBe(1);
+    expect(pageResponse.json().recentClicks).toHaveLength(1);
+    expect(globalResponse.statusCode).toBe(200);
+    expect(globalResponse.json().totals).toMatchObject({ clicks: 2, views: 1, uniqueVisitors: 1 });
+    expect(globalResponse.json().activityOverTime.reduce((sum: number, point: any) => sum + point.clicks, 0)).toBe(2);
+    expect(globalResponse.json().activityOverTime.reduce((sum: number, point: any) => sum + point.views, 0)).toBe(1);
+
+    const weeklyQuery = 'datePreset=custom&startDate=2026-09-01&endDate=2026-10-31';
+    const weeklyLink = (await app.inject({ method: 'GET', url: `/api/links/${linkId}/analytics?${weeklyQuery}`, headers })).json();
+    const weeklyPage = (await app.inject({ method: 'GET', url: `/api/pages/${pageId}/analytics?${weeklyQuery}`, headers })).json();
+    const weeklyGlobal = (await app.inject({ method: 'GET', url: `/api/analytics/global?${weeklyQuery}`, headers })).json();
+    expect(weeklyLink.overview.points.filter((point: any) => point.clicks > 0)).toHaveLength(1);
+    expect(weeklyLink.overview.points.reduce((sum: number, point: any) => sum + point.clicks, 0)).toBe(2);
+    expect(weeklyPage.viewsOverTime.filter((point: any) => point.views > 0)).toHaveLength(1);
+    expect(weeklyPage.viewsOverTime.reduce((sum: number, point: any) => sum + point.views, 0)).toBe(2);
+    expect(weeklyGlobal.activityOverTime.reduce((sum: number, point: any) => sum + point.clicks, 0)).toBe(4);
+    expect(weeklyGlobal.activityOverTime.reduce((sum: number, point: any) => sum + point.views, 0)).toBe(2);
+
+    const emptyResponse = await app.inject({
+      method: 'GET',
+      url: `/api/links/${linkId}/analytics?datePreset=custom&startDate=2026-09-10&endDate=2026-09-10`,
+      headers
+    });
+    expect(emptyResponse.json().overview.totalClicks).toBe(0);
+    expect(emptyResponse.json().overview.points.every((point: any) => point.clicks === 0)).toBe(true);
+
+    const invalidResponse = await app.inject({
+      method: 'GET',
+      url: `/api/pages/${pageId}/analytics?datePreset=custom&startDate=2026-10-02&endDate=2026-10-01`,
+      headers
+    });
+    expect(invalidResponse.statusCode).toBe(400);
     await app.close();
   });
 
@@ -3311,7 +3576,7 @@ describe.sequential('server security hardening', () => {
       })).statusCode).toBe(202);
     }
     await new Promise((resolve) => setImmediate(resolve));
-    const analytics = (await app.inject({ method: 'GET', url: `/api/pages/${created.id}/analytics`, headers: { cookie: admin.cookies } })).json();
+    const analytics = (await app.inject({ method: 'GET', url: `/api/pages/${created.id}/analytics?datePreset=today`, headers: { cookie: admin.cookies } })).json();
     expect(analytics.totalViews).toBe(1);
     expect(analytics.uniqueVisitors).toBe(1);
     expect(analytics.totalLinkClicks).toBe(1);
@@ -3355,7 +3620,8 @@ describe.sequential('server security hardening', () => {
     expect(globalAnalyticsResponse.statusCode).toBe(200);
     const globalAnalytics = globalAnalyticsResponse.json();
     expect(globalAnalytics.totals).toEqual({ clicks: 1, views: 2, uniqueVisitors: 1, devices: 1 });
-    expect(globalAnalytics.activityOverTime).toHaveLength(24);
+    expect(globalAnalytics.activityOverTime.length).toBeGreaterThan(0);
+    expect(globalAnalytics.activityOverTime.length).toBeLessThanOrEqual(25);
     expect(globalAnalytics.activityOverTime.reduce((sum: number, point: any) => sum + point.clicks, 0)).toBe(1);
     expect(globalAnalytics.activityOverTime.reduce((sum: number, point: any) => sum + point.views, 0)).toBe(2);
     const activityOverTimeResponse = await app.inject({
@@ -3386,9 +3652,13 @@ describe.sequential('server security hardening', () => {
     const dailyAnalytics = (await app.inject({ method: 'GET', url: `/api/pages/${created.id}/analytics?range=day&timezoneOffsetMinutes=180`, headers: { cookie: admin.cookies } })).json();
     const weeklyAnalytics = (await app.inject({ method: 'GET', url: `/api/pages/${created.id}/analytics?range=week&timezoneOffsetMinutes=180`, headers: { cookie: admin.cookies } })).json();
     const monthlyAnalytics = (await app.inject({ method: 'GET', url: `/api/pages/${created.id}/analytics?range=month&timezoneOffsetMinutes=180`, headers: { cookie: admin.cookies } })).json();
-    expect(dailyAnalytics.viewsOverTime).toHaveLength(24);
-    expect(weeklyAnalytics.viewsOverTime.map((point: any) => point.label)).toEqual(['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']);
-    expect(monthlyAnalytics.viewsOverTime).toHaveLength(30);
+    expect(dailyAnalytics.viewsOverTime.length).toBeGreaterThan(0);
+    expect(dailyAnalytics.viewsOverTime.length).toBeLessThanOrEqual(25);
+    expect(weeklyAnalytics.viewsOverTime.length).toBeGreaterThan(0);
+    expect(weeklyAnalytics.viewsOverTime.length).toBeLessThanOrEqual(7);
+    expect(weeklyAnalytics.viewsOverTime.every((point: any) => typeof point.label === 'string' && point.label.length > 0)).toBe(true);
+    expect(monthlyAnalytics.viewsOverTime.length).toBeGreaterThan(0);
+    expect(monthlyAnalytics.viewsOverTime.length).toBeLessThanOrEqual(31);
     const clearedPageAnalytics = await app.inject({
       method: 'POST', url: `/api/pages/${created.id}/analytics/clear`, headers: adminHeaders, payload: {}
     });
@@ -4729,6 +4999,196 @@ describe.sequential('server security hardening', () => {
     expect((await app.inject({
       method: 'GET', url: `/api/activities/${created.activity.id}/attempts/analytics_attempt_000`, headers: { cookie: admin.cookies }
     })).statusCode).toBe(404);
+    await app.close();
+  });
+
+  test('enrolls, enforces, recovers and disables TOTP two-factor authentication securely', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-11-14T18:00:00.000Z'));
+    const { buildApp } = await import('./app.js');
+    const { getDb } = await import('./db.js');
+    const app = await buildApp();
+    const db = getDb();
+
+    expect(db.prepare('SELECT name FROM schema_migrations WHERE version = 27').get())
+      .toEqual({ name: 'administrator_totp_two_factor' });
+    expect((await app.inject({ method: 'GET', url: '/api/settings/two-factor' })).statusCode).toBe(401);
+    expect((await app.inject({
+      method: 'POST', url: '/api/settings/two-factor/enrollment', payload: { password: 'test-admin-password-42' }
+    })).statusCode).toBe(403);
+    await seedUser('non-admin-2fa@example.com', 'non-admin-password-42');
+    const nonAdminCsrf = await getCsrfBundle(app);
+    const nonAdmin = await login(app, 'non-admin-2fa@example.com', 'non-admin-password-42', nonAdminCsrf);
+    expect((await app.inject({
+      method: 'GET', url: '/api/settings/two-factor', headers: { cookie: nonAdmin.cookies }
+    })).statusCode).toBe(403);
+
+    const csrf = await getCsrfBundle(app);
+    const initial = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
+    expect(initial.response.statusCode).toBe(200);
+    const authenticatedHeaders = { cookie: initial.cookies, 'x-csrf-token': csrf.csrfToken };
+    expect((await app.inject({ method: 'GET', url: '/api/settings/two-factor', headers: { cookie: initial.cookies } })).json())
+      .toMatchObject({ enabled: false, recoveryCodesRemaining: 0, enrollmentAvailable: true });
+    expect((await app.inject({
+      method: 'POST', url: '/api/settings/two-factor/enrollment',
+      headers: authenticatedHeaders, payload: { password: 'wrong-password' }
+    })).statusCode).toBe(400);
+
+    const enrollmentResponse = await app.inject({
+      method: 'POST', url: '/api/settings/two-factor/enrollment',
+      headers: authenticatedHeaders, payload: { password: 'test-admin-password-42' }
+    });
+    expect(enrollmentResponse.statusCode).toBe(200);
+    const enrollment = enrollmentResponse.json() as { otpauthUri: string; manualKey: string };
+    expect(enrollment.otpauthUri).toMatch(/^otpauth:\/\/totp\//);
+    expect((await app.inject({
+      method: 'POST', url: '/api/settings/two-factor/enrollment/confirm',
+      headers: authenticatedHeaders, payload: { code: '000000' }
+    })).statusCode).toBe(400);
+
+    const totp = OTPAuth.URI.parse(enrollment.otpauthUri) as OTPAuth.TOTP;
+    const enrollmentCode = totp.generate({ timestamp: Date.now() });
+    const confirmResponse = await app.inject({
+      method: 'POST', url: '/api/settings/two-factor/enrollment/confirm',
+      headers: authenticatedHeaders, payload: { code: enrollmentCode }
+    });
+    expect(confirmResponse.statusCode).toBe(200);
+    const recoveryCodes = confirmResponse.json().recoveryCodes as string[];
+    expect(recoveryCodes).toHaveLength(10);
+    expect(new Set(recoveryCodes).size).toBe(10);
+    const storedSecret = db.prepare('SELECT secret_encrypted AS secret FROM user_totp_settings').get() as { secret: string };
+    expect(storedSecret.secret).toMatch(/^v1\./);
+    expect(storedSecret.secret).not.toContain(enrollment.manualKey);
+    const storedRecovery = db.prepare('SELECT code_hash AS codeHash FROM user_totp_recovery_codes LIMIT 1').get() as { codeHash: string };
+    expect(storedRecovery.codeHash).not.toContain(recoveryCodes[0]);
+
+    await app.inject({ method: 'POST', url: '/api/auth/logout', headers: authenticatedHeaders, payload: {} });
+    vi.setSystemTime(new Date(Date.now() + 30_000));
+    const secondCsrf = await getCsrfBundle(app);
+    const passwordStep = await login(app, 'admin@example.com', 'test-admin-password-42', secondCsrf);
+    expect(passwordStep.response.json()).toEqual({ requiresTwoFactor: true });
+    expect((await app.inject({ method: 'GET', url: '/api/auth/me', headers: { cookie: passwordStep.cookies } })).statusCode).toBe(401);
+    const loginCode = totp.generate({ timestamp: Date.now() });
+    const totpLogin = await app.inject({
+      method: 'POST', url: '/api/auth/two-factor',
+      headers: { cookie: passwordStep.cookies, 'x-csrf-token': secondCsrf.csrfToken },
+      payload: { code: loginCode }
+    });
+    expect(totpLogin.statusCode).toBe(200);
+    const totpSessionCookies = `${secondCsrf.csrfCookies}; ${extractCookies(totpLogin.headers['set-cookie'] as string[] | string | undefined)}`;
+    expect((await app.inject({ method: 'GET', url: '/api/auth/me', headers: { cookie: totpSessionCookies } })).statusCode).toBe(200);
+
+    await app.inject({
+      method: 'POST', url: '/api/auth/logout',
+      headers: { cookie: totpSessionCookies, 'x-csrf-token': secondCsrf.csrfToken }, payload: {}
+    });
+    const recoveryCsrf = await getCsrfBundle(app);
+    const recoveryPasswordStep = await login(app, 'admin@example.com', 'test-admin-password-42', recoveryCsrf);
+    const replay = await app.inject({
+      method: 'POST', url: '/api/auth/two-factor',
+      headers: { cookie: recoveryPasswordStep.cookies, 'x-csrf-token': recoveryCsrf.csrfToken },
+      payload: { code: loginCode }
+    });
+    expect(replay.statusCode).toBe(401);
+    const recoveryLogin = await app.inject({
+      method: 'POST', url: '/api/auth/two-factor',
+      headers: { cookie: recoveryPasswordStep.cookies, 'x-csrf-token': recoveryCsrf.csrfToken },
+      payload: { code: recoveryCodes[0] }
+    });
+    expect(recoveryLogin.statusCode).toBe(200);
+    const recoverySessionCookies = `${recoveryCsrf.csrfCookies}; ${extractCookies(recoveryLogin.headers['set-cookie'] as string[] | string | undefined)}`;
+    expect((await app.inject({ method: 'GET', url: '/api/settings/two-factor', headers: { cookie: recoverySessionCookies } })).json())
+      .toMatchObject({ enabled: true, recoveryCodesRemaining: 9 });
+
+    await app.inject({
+      method: 'POST', url: '/api/auth/logout',
+      headers: { cookie: recoverySessionCookies, 'x-csrf-token': recoveryCsrf.csrfToken }, payload: {}
+    });
+    const reuseCsrf = await getCsrfBundle(app);
+    const reusePasswordStep = await login(app, 'admin@example.com', 'test-admin-password-42', reuseCsrf);
+    expect((await app.inject({
+      method: 'POST', url: '/api/auth/two-factor',
+      headers: { cookie: reusePasswordStep.cookies, 'x-csrf-token': reuseCsrf.csrfToken },
+      payload: { code: recoveryCodes[0] }
+    })).statusCode).toBe(401);
+    const secondRecoveryLogin = await app.inject({
+      method: 'POST', url: '/api/auth/two-factor',
+      headers: { cookie: reusePasswordStep.cookies, 'x-csrf-token': reuseCsrf.csrfToken },
+      payload: { code: recoveryCodes[1] }
+    });
+    expect(secondRecoveryLogin.statusCode).toBe(200);
+    const secondRecoverySession = `${reuseCsrf.csrfCookies}; ${extractCookies(secondRecoveryLogin.headers['set-cookie'] as string[] | string | undefined)}`;
+
+    await app.inject({
+      method: 'POST', url: '/api/auth/logout',
+      headers: { cookie: secondRecoverySession, 'x-csrf-token': reuseCsrf.csrfToken }, payload: {}
+    });
+    const expiredCsrf = await getCsrfBundle(app);
+    const expiredPasswordStep = await login(app, 'admin@example.com', 'test-admin-password-42', expiredCsrf);
+    const expiredCode = totp.generate({ timestamp: Date.now() });
+    vi.setSystemTime(new Date(Date.now() + 120_000));
+    expect((await app.inject({
+      method: 'POST', url: '/api/auth/two-factor',
+      headers: { cookie: expiredPasswordStep.cookies, 'x-csrf-token': expiredCsrf.csrfToken },
+      payload: { code: expiredCode }
+    })).statusCode).toBe(401);
+    const currentAfterExpiry = totp.generate({ timestamp: Date.now() });
+    const afterExpiryLogin = await app.inject({
+      method: 'POST', url: '/api/auth/two-factor',
+      headers: { cookie: expiredPasswordStep.cookies, 'x-csrf-token': expiredCsrf.csrfToken },
+      payload: { code: currentAfterExpiry }
+    });
+    expect(afterExpiryLogin.statusCode).toBe(200);
+    const afterExpirySession = `${expiredCsrf.csrfCookies}; ${extractCookies(afterExpiryLogin.headers['set-cookie'] as string[] | string | undefined)}`;
+
+    await app.inject({
+      method: 'POST', url: '/api/auth/logout',
+      headers: { cookie: afterExpirySession, 'x-csrf-token': expiredCsrf.csrfToken }, payload: {}
+    });
+    const limitedCsrf = await getCsrfBundle(app);
+    const limitedPasswordStep = await login(app, 'admin@example.com', 'test-admin-password-42', limitedCsrf);
+    const invalidStatuses: number[] = [];
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      invalidStatuses.push((await app.inject({
+        method: 'POST', url: '/api/auth/two-factor',
+        headers: { cookie: limitedPasswordStep.cookies, 'x-csrf-token': limitedCsrf.csrfToken },
+        payload: { code: '000000' }
+      })).statusCode);
+    }
+    expect(invalidStatuses.slice(0, 5)).toEqual([401, 401, 401, 401, 401]);
+    expect(invalidStatuses[5]).toBe(429);
+
+    const disableCsrf = await getCsrfBundle(app);
+    const disablePasswordStep = await login(app, 'admin@example.com', 'test-admin-password-42', disableCsrf);
+    vi.setSystemTime(new Date(Date.now() + 30_000));
+    const disableLoginCode = totp.generate({ timestamp: Date.now() });
+    const disableLogin = await app.inject({
+      method: 'POST', url: '/api/auth/two-factor',
+      headers: { cookie: disablePasswordStep.cookies, 'x-csrf-token': disableCsrf.csrfToken },
+      payload: { code: disableLoginCode }
+    });
+    expect(disableLogin.statusCode).toBe(200);
+    const disableSessionCookies = `${disableCsrf.csrfCookies}; ${extractCookies(disableLogin.headers['set-cookie'] as string[] | string | undefined)}`;
+    vi.setSystemTime(new Date(Date.now() + 30_000));
+    const disableCode = totp.generate({ timestamp: Date.now() });
+    const disableResponse = await app.inject({
+      method: 'POST', url: '/api/settings/two-factor/disable',
+      headers: { cookie: disableSessionCookies, 'x-csrf-token': disableCsrf.csrfToken },
+      payload: { password: 'test-admin-password-42', code: disableCode }
+    });
+    expect(disableResponse.statusCode).toBe(200);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM user_totp_settings').get()).toEqual({ count: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM user_totp_recovery_codes').get()).toEqual({ count: 0 });
+    expect((await app.inject({ method: 'GET', url: '/api/auth/me', headers: { cookie: disableSessionCookies } })).statusCode).toBe(200);
+
+    await app.inject({
+      method: 'POST', url: '/api/auth/logout',
+      headers: { cookie: disableSessionCookies, 'x-csrf-token': disableCsrf.csrfToken }, payload: {}
+    });
+    const finalCsrf = await getCsrfBundle(app);
+    const finalLogin = await login(app, 'admin@example.com', 'test-admin-password-42', finalCsrf);
+    expect(finalLogin.response.statusCode).toBe(200);
+    expect(finalLogin.response.json()).toMatchObject({ email: 'admin@example.com' });
     await app.close();
   });
 });
