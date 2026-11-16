@@ -14,9 +14,12 @@ try {
     .find((item) => item.startsWith('ss_theme='))
     ?.slice('ss_theme='.length);
   const publicAppearance = cookie('ss_public_appearance_preference');
-  const theme = accountInterface
-    ? (account?.theme || legacyTheme || 'system')
-    : (['light', 'dark', 'system'].includes(publicAppearance) ? publicAppearance : 'system');
+  const validThemes = ['light', 'dark', 'system'];
+  const accountTheme = validThemes.includes(account?.theme)
+    ? account.theme
+    : (validThemes.includes(legacyTheme) ? legacyTheme : null);
+  const publicTheme = validThemes.includes(publicAppearance) ? publicAppearance : 'system';
+  const theme = accountInterface && accountTheme ? accountTheme : publicTheme;
   const dark = theme === 'dark'
     || (theme === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
   document.documentElement.classList.toggle('dark', dark);

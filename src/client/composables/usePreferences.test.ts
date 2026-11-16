@@ -22,8 +22,23 @@ describe('usePreferences', () => {
     Object.defineProperty(window, 'localStorage', { configurable: true, value: storage });
     Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: storage });
     vi.useFakeTimers();
+    vi.resetModules();
     apiMock.mockReset();
     localStorage.clear();
+  });
+
+  test('hydrates the reactive startup state from the same active cache as theme-init', async () => {
+    localStorage.setItem('ss_preferences_active', JSON.stringify({
+      userId: 'cached-user', theme: 'light', sidebarCollapsed: true, locale: 'lv'
+    }));
+
+    const { usePreferences } = await import('./usePreferences');
+    const preferences = usePreferences();
+
+    expect(preferences.theme.value).toBe('light');
+    expect(preferences.sidebarCollapsed.value).toBe(true);
+    expect(preferences.locale.value).toBe('lv');
+    expect(preferences.state.userId).toBeNull();
   });
 
   test('hydrates server preferences, updates immediately and coalesces fast changes', async () => {

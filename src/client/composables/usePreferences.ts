@@ -5,8 +5,28 @@ import { api } from '../lib/api';
 type EditablePreferences = Omit<UserPreferences, 'initialized'>;
 
 const defaults: EditablePreferences = { theme: 'system', sidebarCollapsed: false, locale: 'en' };
+const isTheme = (value: unknown): value is ThemeMode => ['light', 'dark', 'system'].includes(String(value));
+const isLocale = (value: unknown): value is Locale => value === 'en' || value === 'lv';
+
+const readActiveCache = (): Partial<EditablePreferences> => {
+  if (typeof window === 'undefined') return {};
+  try {
+    const cached = JSON.parse(window.localStorage.getItem('ss_preferences_active') ?? 'null') as Record<string, unknown> | null;
+    if (!cached) return {};
+    return {
+      ...(isTheme(cached.theme) ? { theme: cached.theme } : {}),
+      ...(typeof cached.sidebarCollapsed === 'boolean' ? { sidebarCollapsed: cached.sidebarCollapsed } : {}),
+      ...(isLocale(cached.locale) ? { locale: cached.locale } : {})
+    };
+  } catch {
+    return {};
+  }
+};
+
+const initialCache = readActiveCache();
 const state = reactive({
   ...defaults,
+  ...initialCache,
   userId: null as string | null,
   initialized: false,
   syncing: false,
@@ -16,9 +36,6 @@ let pending: Partial<EditablePreferences> = {};
 let timer: number | undefined;
 let requestSequence = 0;
 let appliedSequence = 0;
-
-const isTheme = (value: unknown): value is ThemeMode => ['light', 'dark', 'system'].includes(String(value));
-const isLocale = (value: unknown): value is Locale => value === 'en' || value === 'lv';
 
 const readLegacyCookie = (name: string) => {
   if (typeof document === 'undefined') return null;
