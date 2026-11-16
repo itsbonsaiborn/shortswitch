@@ -46,6 +46,22 @@ const envKeys = [
   'REDIRECT_RATE_LIMIT_BLOCK_MINUTES',
   'LIVE_SUBMIT_MAX_REQUESTS',
   'LIVE_SUBMIT_WINDOW_MINUTES',
+  'BOARD_RATE_LIMIT_WINDOW_MINUTES',
+  'BOARD_RATE_LIMIT_BLOCK_MINUTES',
+  'BOARD_PUBLIC_READ_IP_MAX_REQUESTS',
+  'BOARD_PUBLIC_READ_BOARD_MAX_REQUESTS',
+  'BOARD_PUBLIC_MUTATION_IP_MAX_REQUESTS',
+  'BOARD_PUBLIC_MUTATION_SESSION_MAX_REQUESTS',
+  'BOARD_CARD_CREATE_IP_MAX_REQUESTS',
+  'BOARD_CARD_CREATE_BOARD_MAX_REQUESTS',
+  'BOARD_CARD_CREATE_SESSION_MAX_REQUESTS',
+  'BOARD_REACTION_IP_MAX_REQUESTS',
+  'BOARD_REACTION_BOARD_MAX_REQUESTS',
+  'BOARD_REACTION_SESSION_MAX_REQUESTS',
+  'BOARD_SSE_CONNECT_IP_MAX_REQUESTS',
+  'BOARD_SSE_CONNECT_BOARD_MAX_REQUESTS',
+  'BOARD_SSE_MAX_CONNECTIONS_PER_IP',
+  'BOARD_SSE_MAX_CONNECTIONS_PER_BOARD',
   'BLOCK_LOCAL_URLS',
   'BLOCK_PRIVATE_IPS',
   'SESSION_TTL_HOURS',
@@ -115,6 +131,22 @@ const setBaseEnv = (dbPath: string, overrides: Record<string, string | undefined
     REDIRECT_RATE_LIMIT_BLOCK_MINUTES: '10',
     LIVE_SUBMIT_MAX_REQUESTS: '60',
     LIVE_SUBMIT_WINDOW_MINUTES: '1',
+    BOARD_RATE_LIMIT_WINDOW_MINUTES: '1',
+    BOARD_RATE_LIMIT_BLOCK_MINUTES: '2',
+    BOARD_PUBLIC_READ_IP_MAX_REQUESTS: '1000',
+    BOARD_PUBLIC_READ_BOARD_MAX_REQUESTS: '2000',
+    BOARD_PUBLIC_MUTATION_IP_MAX_REQUESTS: '600',
+    BOARD_PUBLIC_MUTATION_SESSION_MAX_REQUESTS: '60',
+    BOARD_CARD_CREATE_IP_MAX_REQUESTS: '300',
+    BOARD_CARD_CREATE_BOARD_MAX_REQUESTS: '500',
+    BOARD_CARD_CREATE_SESSION_MAX_REQUESTS: '15',
+    BOARD_REACTION_IP_MAX_REQUESTS: '600',
+    BOARD_REACTION_BOARD_MAX_REQUESTS: '2000',
+    BOARD_REACTION_SESSION_MAX_REQUESTS: '60',
+    BOARD_SSE_CONNECT_IP_MAX_REQUESTS: '300',
+    BOARD_SSE_CONNECT_BOARD_MAX_REQUESTS: '600',
+    BOARD_SSE_MAX_CONNECTIONS_PER_IP: '250',
+    BOARD_SSE_MAX_CONNECTIONS_PER_BOARD: '500',
     BLOCK_LOCAL_URLS: 'true',
     BLOCK_PRIVATE_IPS: 'false',
     SESSION_TTL_HOURS: '720',
@@ -241,6 +273,24 @@ describe.sequential('server security hardening', () => {
     await expect(import('./config.js')).rejects.toThrow('COOKIE_SECURE must be enabled');
   });
 
+  test('loads configurable Boards limits while retaining safe positive defaults', async () => {
+    setBaseEnv(testDbPath, {
+      BOARD_CARD_CREATE_IP_MAX_REQUESTS: '975',
+      BOARD_REACTION_IP_MAX_REQUESTS: '1875',
+      BOARD_SSE_MAX_CONNECTIONS_PER_BOARD: '750',
+      BOARD_PUBLIC_READ_IP_MAX_REQUESTS: '0'
+    });
+    vi.resetModules();
+
+    const { config } = await import('./config.js');
+    expect(config.boardRateLimits).toMatchObject({
+      cardCreateIpMaxRequests: 975,
+      reactionIpMaxRequests: 1875,
+      sseMaxConnectionsPerBoard: 750,
+      publicReadIpMaxRequests: 1000
+    });
+  });
+
   test('localizes public HTML from only the primary Accept-Language value', async () => {
     const { buildApp } = await import('./app.js');
     const app = await buildApp();
@@ -337,6 +387,9 @@ describe.sequential('server security hardening', () => {
     expect(externalPage).toContain('https://example.com/favicon.png');
     expect(externalPage).toContain('src="/app/external-link-favicon.js"');
     expect(externalPage).toContain('referrerpolicy="no-referrer"');
+    expect(externalPage).toContain('class="destination-summary"');
+    expect(externalPage).toContain('class="url-row"');
+    expect(externalPage).toMatch(/class="open-link"[\s\S]*?<svg/);
     expect(externalPage).not.toContain('target="_blank"');
   });
 
@@ -2018,7 +2071,7 @@ describe.sequential('server security hardening', () => {
       expect(confirmation.headers.location).toBeUndefined();
       expect(confirmation.headers['cache-control']).toContain('no-store');
       expect(confirmation.body).toContain('<html lang="lv">');
-      expect(confirmation.body).toContain('Nospied pogu, lai atvērtu saiti');
+      expect(confirmation.body).toContain('Viss gatavs! Atveram saiti?');
       expect(confirmation.body).toContain('outside.example');
       expect(confirmation.body).toContain('src="https://outside.example/favicon.ico"');
       expect(confirmation.body).toContain('name="viewport"');
@@ -2030,6 +2083,8 @@ describe.sequential('server security hardening', () => {
       expect(confirmation.body).toContain('/service/security');
       expect(confirmation.body).toContain('/service/report-abuse');
       expect(confirmation.body).toContain('data-service-page-footer');
+      expect(confirmation.body).toContain('width: min(100%, 780px)');
+      expect(confirmation.body).not.toContain('<span style="display:flex;flex-wrap:wrap;align-items:center;justify-content:center');
       expect(confirmation.body).not.toContain('<script>');
       expect(confirmation.body).not.toContain('http-equiv="refresh"');
       expect(confirmation.body).not.toMatch(/<script(?![^>]+src="\/app\/external-link-favicon\.js")/i);
@@ -3662,7 +3717,8 @@ describe.sequential('server security hardening', () => {
     expect(dailyAnalytics.viewsOverTime.length).toBeGreaterThan(0);
     expect(dailyAnalytics.viewsOverTime.length).toBeLessThanOrEqual(25);
     expect(weeklyAnalytics.viewsOverTime.length).toBeGreaterThan(0);
-    expect(weeklyAnalytics.viewsOverTime.length).toBeLessThanOrEqual(7);
+    // On Monday the current-week range is still a one-day range and therefore uses hourly buckets.
+    expect(weeklyAnalytics.viewsOverTime.length).toBeLessThanOrEqual(25);
     expect(weeklyAnalytics.viewsOverTime.every((point: any) => typeof point.label === 'string' && point.label.length > 0)).toBe(true);
     expect(monthlyAnalytics.viewsOverTime.length).toBeGreaterThan(0);
     expect(monthlyAnalytics.viewsOverTime.length).toBeLessThanOrEqual(31);

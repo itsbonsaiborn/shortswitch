@@ -103,7 +103,9 @@ export const buildApp = async () => {
       footerLinks = serviceSectionDefinitions.filter((section) => section.required).map((section) => ({
         type: section.type,
         href: section.publicPath,
-        label: locale === 'lv' ? section.titleLv : section.titleEn
+        label: section.type === 'about'
+          ? (locale === 'lv' ? 'Par projektu' : 'About')
+          : (locale === 'lv' ? section.titleLv : section.titleEn)
       }));
       footerLinks.push({
         type: 'report_abuse',

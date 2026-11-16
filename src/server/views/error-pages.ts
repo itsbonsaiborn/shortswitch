@@ -19,12 +19,13 @@ const appMetaDescription = config.appDescription;
 const appOgImage = '/og/app-og.png';
 
 const renderBrandLink = () => `<a href="/" aria-label="${escapeHtml(config.appName)}" style="display:inline-flex;align-items:center;gap:8px;color:var(--text);font-weight:750;letter-spacing:-.01em;text-decoration:none"><img src="/icons/favicon-32.png" alt="" width="22" height="22" style="width:22px;height:22px" /><strong>${escapeHtml(config.appName)}</strong></a>`;
-const renderFooterBrand = () => `<span style="display:inline-flex;align-items:center;gap:8px;color:var(--muted)"><img src="/icons/favicon-32.png" alt="" width="22" height="22" style="width:22px;height:22px" />${escapeHtml(config.appName)}</span>`;
+const renderFooterBrand = () => `<span style="display:inline-flex;align-items:center;gap:8px;color:var(--muted);white-space:nowrap"><img src="/icons/favicon-32.png" alt="" width="22" height="22" style="display:block;width:22px;height:22px;flex:0 0 22px" />${escapeHtml(config.appName)}</span>`;
+const renderReportAbuseIcon = () => `<svg aria-hidden="true" viewBox="0 0 24 24" width="17" height="17" style="display:block;flex:0 0 17px" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v6"/><path d="M12 17h.01"/></svg>`;
 
 export const renderServiceFooterHtml = (links: ServiceFooterLink[]) => `
-  <footer data-service-page-footer style="display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:10px 16px;margin-top:auto;padding-top:24px;border-top:1px solid var(--border);font-size:.86rem;line-height:1.4">
+  <footer data-service-page-footer style="display:flex;flex-wrap:wrap;align-items:center;justify-content:center;column-gap:12px;row-gap:10px;margin-top:auto;padding-top:24px;border-top:1px solid var(--border);font-size:.82rem;line-height:1.4">
     ${renderFooterBrand()}
-    ${links.map((link) => `<a href="${escapeHtml(link.href)}" style="color:var(--accent);text-decoration:none;font-weight:400">${escapeHtml(link.label)}</a>`).join('')}
+    ${links.map((link, index) => `${index ? '<span aria-hidden="true" style="color:var(--border)">|</span>' : ''}<a href="${escapeHtml(link.href)}" style="display:inline-flex;align-items:center;gap:6px;color:var(--accent);text-decoration:none;font-weight:400;white-space:nowrap">${link.type === 'report_abuse' ? renderReportAbuseIcon() : ''}${escapeHtml(link.label)}</a>`).join('')}
   </footer>`;
 
 const renderTextContent = (body: string) => renderRichTextParagraphs(body);
@@ -509,7 +510,7 @@ ${renderCommonHead(
       article {
         display: flex;
         flex-direction: column;
-        width: min(100%, 620px);
+        width: min(100%, 780px);
         border: 1px solid var(--border);
         border-radius: 28px;
         background: var(--panel);
@@ -541,9 +542,15 @@ ${renderCommonHead(
       .destination {
         margin-top: 22px;
         border: 1px solid var(--border);
-        border-radius: 18px;
+        border-radius: 22px;
         background: var(--panel-soft);
-        padding: 16px;
+        padding: 20px;
+      }
+      .destination-summary {
+        display: flex;
+        min-width: 0;
+        align-items: center;
+        gap: 18px;
       }
       .destination-label {
         color: var(--muted);
@@ -554,31 +561,52 @@ ${renderCommonHead(
       }
       .hostname {
         color: var(--text);
-        font-size: 1.1rem;
-        font-weight: 700;
+        font-size: clamp(1.15rem, 4vw, 1.55rem);
+        font-weight: 750;
+        line-height: 1.18;
         overflow-wrap: anywhere;
       }
-      .destination-site {
+      .destination-copy {
+        min-width: 0;
+        flex: 1;
+        border-left: 1px solid var(--border);
+        padding-left: 18px;
+      }
+      .destination-favicon {
+        display: block;
+        width: 54px;
+        height: 54px;
+        flex: 0 0 54px;
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.88);
+        object-fit: contain;
+        padding: 7px;
+        box-shadow: 0 6px 18px rgba(16, 15, 15, 0.08);
+      }
+      .destination-favicon-placeholder {
+        display: grid;
+        place-items: center;
+        color: var(--accent);
+      }
+      .url-row {
         display: flex;
         min-width: 0;
         align-items: center;
         gap: 10px;
-        margin-top: 8px;
+        margin-top: 16px;
+        border-radius: 13px;
+        background: color-mix(in srgb, var(--accent) 7%, var(--panel));
+        padding: 10px 13px;
       }
-      .destination-favicon {
-        display: block;
-        width: 28px;
-        height: 28px;
-        flex: 0 0 28px;
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        background: rgba(255, 255, 255, 0.88);
-        object-fit: contain;
-        padding: 4px;
+      .url-row svg {
+        width: 18px;
+        height: 18px;
+        flex: 0 0 18px;
+        color: var(--accent);
       }
       .url {
-        display: block;
-        margin-top: 10px;
+        min-width: 0;
         color: var(--muted);
         font-family: ui-monospace, "Cascadia Code", "SFMono-Regular", Consolas, monospace;
         font-size: 0.82rem;
@@ -592,6 +620,7 @@ ${renderCommonHead(
         min-height: 50px;
         align-items: center;
         justify-content: center;
+        gap: 10px;
         margin: 18px 0 24px;
         border: 1px solid var(--accent);
         border-radius: 18px;
@@ -602,6 +631,7 @@ ${renderCommonHead(
         text-decoration: none;
         transition: background-color 160ms ease, transform 160ms ease;
       }
+      .open-link svg { width: 22px; height: 22px; flex: 0 0 22px; }
       .open-link:hover {
         background: var(--accent-hover);
         text-decoration: none;
@@ -614,6 +644,10 @@ ${renderCommonHead(
       @media (max-width: 520px) {
         body { padding: 14px; }
         article { border-radius: 22px; padding: 24px 20px; }
+        .destination { padding: 16px; }
+        .destination-summary { gap: 13px; }
+        .destination-copy { padding-left: 13px; }
+        .destination-favicon { width: 46px; height: 46px; flex-basis: 46px; }
       }
       @media (prefers-reduced-motion: reduce) {
         .open-link { transition: none; }
@@ -627,19 +661,24 @@ ${renderCommonHead(
       <h1>${escapeHtml(externalLinkText(options.locale ?? 'en', 'title'))}</h1>
       <p>${escapeHtml(externalLinkText(options.locale ?? 'en', 'description'))}</p>
       <div class="destination">
-        <div class="destination-label">${escapeHtml(externalLinkText(options.locale ?? 'en', 'destination'))}</div>
-        <div class="destination-site">
-          ${faviconUrl ? `<img class="destination-favicon" src="${escapeHtml(faviconUrl)}" data-favicon-candidates="${faviconCandidatesJson}" alt="" referrerpolicy="no-referrer" />` : ''}
-          <div class="hostname">${escapeHtml(options.targetHostname)}</div>
+        <div class="destination-summary">
+          ${faviconUrl ? `<img class="destination-favicon" src="${escapeHtml(faviconUrl)}" data-favicon-candidates="${faviconCandidatesJson}" alt="" referrerpolicy="no-referrer" />` : `<span class="destination-favicon destination-favicon-placeholder" aria-hidden="true">↗</span>`}
+          <div class="destination-copy">
+            <div class="destination-label">${escapeHtml(externalLinkText(options.locale ?? 'en', 'destination'))}</div>
+            <div class="hostname">${escapeHtml(options.targetHostname)}</div>
+          </div>
         </div>
-        <span class="url">${escapeHtml(options.targetUrl)}</span>
+        <div class="url-row">
+          <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+          <span class="url">${escapeHtml(options.targetUrl)}</span>
+        </div>
       </div>
       <a
         class="open-link"
         href="${escapeHtml(options.targetUrl)}"
         rel="noreferrer external"
         referrerpolicy="no-referrer"
-      >${escapeHtml(externalLinkText(options.locale ?? 'en', 'openDestination'))}</a>
+      ><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="m10 14 11-11"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>${escapeHtml(externalLinkText(options.locale ?? 'en', 'openDestination'))}</a>
       ${SERVICE_FOOTER_MARKER}
     </article>
   </body>

@@ -335,9 +335,9 @@ onBeforeUnmount(() => {
               <Transition enter-active-class="transition duration-300 ease-out" enter-from-class="opacity-0" enter-to-class="opacity-100" leave-active-class="transition duration-200 ease-in" leave-from-class="opacity-100" leave-to-class="opacity-0">
                 <Teleport to="body">
                   <div v-if="activeCardMenuId === card.id" data-board-card-menu class="board-card-menu-surface max-h-[min(20rem,calc(100dvh-2rem))] cursor-default overflow-y-auto rounded-3xl border border-[var(--ui-border)] bg-[var(--ui-dropdown-bg)] p-3 ring-1 ring-black/5 backdrop-blur-xl dark:ring-white/5" :class="surfaceTokenClasses" :style="cardMenuStyle" role="menu" @click.stop>
-                    <button v-if="card.owned && board?.settings.participantCanEdit" type="button" role="menuitem" class="flex w-full items-center rounded-2xl border border-transparent px-4 py-3 text-left text-sm transition hover:border-[var(--ui-border)] hover:bg-[#FFFBEF] dark:hover:bg-[#1C1A19]" @click="openEdit(card)">{{ t('common.edit') }}</button>
-                    <button v-if="card.owned && board?.settings.participantCanDelete" type="button" role="menuitem" class="mt-1 flex w-full items-center rounded-2xl border border-transparent px-4 py-3 text-left text-sm text-[#AF3029] transition hover:border-[#AF3029]/20 hover:bg-[#FCE8DB] dark:text-[#F89A8A] dark:hover:bg-[#321F1C]" @click="activeCardMenuId = ''; selectedCard = card; dialog = 'delete'">{{ t('common.delete') }}</button>
-                    <button v-if="!card.owned && board?.settings.participantCanEdit" type="button" role="menuitem" class="flex w-full items-center rounded-2xl border border-transparent px-4 py-3 text-left text-sm transition hover:border-[var(--ui-border)] hover:bg-[#FFFBEF] dark:hover:bg-[#1C1A19]" @click="openRecover(card)">{{ t('boards.recoverAccess') }}</button>
+                    <button v-if="card.owned && board?.settings.participantCanEdit" type="button" role="menuitem" class="board-card-menu-item" @click="openEdit(card)">{{ t('common.edit') }}</button>
+                    <button v-if="card.owned && board?.settings.participantCanDelete" type="button" role="menuitem" class="board-card-menu-item board-card-menu-item-danger mt-1" @click="activeCardMenuId = ''; selectedCard = card; dialog = 'delete'">{{ t('common.delete') }}</button>
+                    <button v-if="!card.owned && board?.settings.participantCanEdit" type="button" role="menuitem" class="board-card-menu-item" @click="openRecover(card)">{{ t('boards.recoverAccess') }}</button>
                   </div>
                 </Teleport>
               </Transition>
@@ -412,9 +412,13 @@ onBeforeUnmount(() => {
 .board-primary:disabled{cursor:not-allowed;opacity:.55}
 .board-menu-button{display:flex;height:2.5rem;width:2.5rem;cursor:pointer;align-items:center;justify-content:center;border:1px solid var(--ui-border);border-radius:.75rem;color:var(--ui-text-muted);transition:border-color .2s ease,color .2s ease,background-color .2s ease}.board-menu-button:hover{border-color:var(--ui-accent);color:var(--ui-accent);background:var(--ui-accent-soft)}
 .board-card-menu-surface{background:var(--ui-dropdown-bg);color:var(--ui-text)}
+.board-card-menu-item{display:flex;width:100%;align-items:center;border:1px solid transparent;border-radius:1rem;padding:.75rem 1rem;color:var(--ui-text);text-align:left;font-size:.875rem;transition:background-color .18s ease,border-color .18s ease,color .18s ease}
+.board-card-menu-item:hover,.board-card-menu-item:focus-visible{border-color:var(--ui-border);background:var(--ui-panel-muted);color:var(--ui-text);outline:none}
+.board-card-menu-item-danger{color:color-mix(in srgb,#d14d41 72%,var(--ui-text))}
+.board-card-menu-item-danger:hover,.board-card-menu-item-danger:focus-visible{border-color:color-mix(in srgb,#d14d41 35%,var(--ui-border));background:color-mix(in srgb,#d14d41 12%,var(--ui-panel));color:color-mix(in srgb,#d14d41 78%,var(--ui-text))}
 .board-add-card{box-shadow:0 10px 30px color-mix(in srgb,var(--ui-accent) 28%,transparent)}
 @media(max-width:480px){.board-sort-label{width:100%;align-items:flex-start;flex-direction:column}.board-sort-select{width:100%}}
 @media(min-width:64rem){.board-grid-masonry{grid-auto-flow:row dense;grid-auto-rows:8px}.board-grid-masonry>.board-card-view{align-self:start}}
 @media(min-width:110rem){.board-grid,.board-presentation .board-grid{grid-template-columns:repeat(5,minmax(0,1fr))}}
-@media(prefers-reduced-motion:reduce){.board-reaction,.board-secondary,.board-primary,.board-menu-button,.board-add-card{scroll-behavior:auto;transition:none}}
+@media(prefers-reduced-motion:reduce){.board-reaction,.board-secondary,.board-primary,.board-menu-button,.board-card-menu-item,.board-add-card{scroll-behavior:auto;transition:none}}
 </style>

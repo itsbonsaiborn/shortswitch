@@ -200,7 +200,9 @@ export class ServiceSectionRepository {
       const row = byType.get(definition.type);
       if (row && (!row.showInFooter || (!row.isRequired && !row.isEnabled))) return [];
       if (!row && !definition.required) return [];
-      const title = row?.isPublished
+      const title = definition.type === 'about'
+        ? (locale === 'lv' ? 'Par projektu' : 'About')
+        : row?.isPublished
         ? (locale === 'lv' ? row.publishedTitleLv : row.publishedTitleEn)
         : (locale === 'lv' ? definition.titleLv : definition.titleEn);
       return [{ type: definition.type, label: title, href: definition.publicPath }];

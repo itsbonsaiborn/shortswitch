@@ -3,11 +3,17 @@ import type { BoardReactionType } from '@/shared/board-types.js';
 import { BoardRepository } from '../repositories/board-repository.js';
 import { sha256 } from '../utils.js';
 import { RateLimiterService } from './rate-limiter-service.js';
+import { config } from '../config.js';
 
 const REACTION_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-const REACTION_BOARD_LIMIT = { maxAttempts: 2_000, windowMinutes: 1, blockMinutes: 2 } as const;
-const REACTION_IP_LIMIT = { maxAttempts: 600, windowMinutes: 1, blockMinutes: 2 } as const;
-const REACTION_SESSION_LIMIT = { maxAttempts: 60, windowMinutes: 1, blockMinutes: 2 } as const;
+const reactionLimit = (maxAttempts: number) => ({
+  maxAttempts,
+  windowMinutes: config.boardRateLimits.windowMinutes,
+  blockMinutes: config.boardRateLimits.blockMinutes
+});
+const REACTION_BOARD_LIMIT = reactionLimit(config.boardRateLimits.reactionBoardMaxRequests);
+const REACTION_IP_LIMIT = reactionLimit(config.boardRateLimits.reactionIpMaxRequests);
+const REACTION_SESSION_LIMIT = reactionLimit(config.boardRateLimits.reactionSessionMaxRequests);
 const REACTION_SESSION_BURST_LIMIT = { maxAttempts: 10, windowMinutes: 0.05, blockMinutes: 0.05 } as const;
 const randomSecret = () => crypto.randomBytes(32).toString('base64url');
 

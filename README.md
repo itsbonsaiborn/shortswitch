@@ -196,6 +196,24 @@ services:
       LIVE_SUBMIT_MAX_REQUESTS: 600
       LIVE_SUBMIT_WINDOW_MINUTES: 1
 
+      # Boards have separate public limits; shared-IP and per-session limits are independent.
+      BOARD_RATE_LIMIT_WINDOW_MINUTES: 1
+      BOARD_RATE_LIMIT_BLOCK_MINUTES: 2
+      BOARD_PUBLIC_READ_IP_MAX_REQUESTS: 1000
+      BOARD_PUBLIC_READ_BOARD_MAX_REQUESTS: 2000
+      BOARD_PUBLIC_MUTATION_IP_MAX_REQUESTS: 600
+      BOARD_PUBLIC_MUTATION_SESSION_MAX_REQUESTS: 60
+      BOARD_CARD_CREATE_IP_MAX_REQUESTS: 300
+      BOARD_CARD_CREATE_BOARD_MAX_REQUESTS: 500
+      BOARD_CARD_CREATE_SESSION_MAX_REQUESTS: 15
+      BOARD_REACTION_IP_MAX_REQUESTS: 600
+      BOARD_REACTION_BOARD_MAX_REQUESTS: 2000
+      BOARD_REACTION_SESSION_MAX_REQUESTS: 60
+      BOARD_SSE_CONNECT_IP_MAX_REQUESTS: 300
+      BOARD_SSE_CONNECT_BOARD_MAX_REQUESTS: 600
+      BOARD_SSE_MAX_CONNECTIONS_PER_IP: 250
+      BOARD_SSE_MAX_CONNECTIONS_PER_BOARD: 500
+
       BLOCK_LOCAL_URLS: "true"
       BLOCK_PRIVATE_IPS: "true"
       STORE_RAW_IP: "false"
@@ -217,6 +235,10 @@ Then start the service:
 docker compose pull
 docker compose up -d
 ```
+
+### Boards rate limits
+
+Public Boards routes intentionally use their own layered limits instead of the generic `API_RATE_LIMIT_MAX_REQUESTS`. The `*_IP_*` values protect a shared public address, `*_SESSION_*` values protect one anonymous browser session, and `*_BOARD_*` values protect one board across all participants. The defaults shown above preserve the built-in behavior. For a school network behind one public IP, increase the IP limits first while keeping the session limits unchanged; for example, `BOARD_CARD_CREATE_IP_MAX_REQUESTS=1000` and `BOARD_REACTION_IP_MAX_REQUESTS=2000`. Changes require recreating the container, but no database migration.
 
 The application will be available on port `3000`. For public hosting, place it behind an HTTPS reverse proxy or tunnel and keep `PUBLIC_URL` and `CORS_ORIGIN` aligned with the public origin.
 

@@ -9,15 +9,20 @@ import { config } from './config.js';
 import type { BoardRealtimeService } from './services/board-realtime-service.js';
 import { sha256 } from './utils.js';
 
-const PUBLIC_READ_IP_LIMIT = { maxAttempts: 1_000, windowMinutes: 1, blockMinutes: 2 } as const;
-const PUBLIC_READ_BOARD_LIMIT = { maxAttempts: 2_000, windowMinutes: 1, blockMinutes: 2 } as const;
-const PUBLIC_MUTATION_IP_LIMIT = { maxAttempts: 600, windowMinutes: 1, blockMinutes: 2 } as const;
-const PUBLIC_MUTATION_SESSION_LIMIT = { maxAttempts: 60, windowMinutes: 1, blockMinutes: 2 } as const;
+const boardLimit = (maxAttempts: number) => ({
+  maxAttempts,
+  windowMinutes: config.boardRateLimits.windowMinutes,
+  blockMinutes: config.boardRateLimits.blockMinutes
+});
+const PUBLIC_READ_IP_LIMIT = boardLimit(config.boardRateLimits.publicReadIpMaxRequests);
+const PUBLIC_READ_BOARD_LIMIT = boardLimit(config.boardRateLimits.publicReadBoardMaxRequests);
+const PUBLIC_MUTATION_IP_LIMIT = boardLimit(config.boardRateLimits.publicMutationIpMaxRequests);
+const PUBLIC_MUTATION_SESSION_LIMIT = boardLimit(config.boardRateLimits.publicMutationSessionMaxRequests);
 const PUBLIC_MUTATION_SESSION_BURST_LIMIT = { maxAttempts: 20, windowMinutes: 0.1, blockMinutes: 0.1 } as const;
-const SSE_CONNECT_IP_LIMIT = { maxAttempts: 300, windowMinutes: 1, blockMinutes: 2 } as const;
-const SSE_CONNECT_BOARD_LIMIT = { maxAttempts: 600, windowMinutes: 1, blockMinutes: 2 } as const;
-const MAX_SSE_CONNECTIONS_PER_BOARD = 500;
-const MAX_SSE_CONNECTIONS_PER_IP = 250;
+const SSE_CONNECT_IP_LIMIT = boardLimit(config.boardRateLimits.sseConnectIpMaxRequests);
+const SSE_CONNECT_BOARD_LIMIT = boardLimit(config.boardRateLimits.sseConnectBoardMaxRequests);
+const MAX_SSE_CONNECTIONS_PER_BOARD = config.boardRateLimits.sseMaxConnectionsPerBoard;
+const MAX_SSE_CONNECTIONS_PER_IP = config.boardRateLimits.sseMaxConnectionsPerIp;
 
 const errorStatus = (message: string) => message.includes('not found') ? 404
   : message.includes('already in use') ? 409

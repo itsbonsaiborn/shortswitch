@@ -14,14 +14,20 @@ import { RateLimiterService } from './rate-limiter-service.js';
 import { sha256 } from '../utils.js';
 import { ModerationFilterService } from './moderation-filter-service.js';
 import { stripRichText } from '../../shared/rich-text.js';
+import { config } from '../config.js';
 
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const RECOVERY_LIMIT = { maxAttempts: 5, windowMinutes: 10, blockMinutes: 15 } as const;
 const RECOVERY_IP_BOARD_LIMIT = { maxAttempts: 100, windowMinutes: 10, blockMinutes: 15 } as const;
 const RECOVERY_PERSISTENT_LIMIT = { maxAttempts: 10, windowMs: 10 * 60_000, lockMs: 30 * 60_000 } as const;
-const CREATE_BOARD_LIMIT = { maxAttempts: 500, windowMinutes: 1, blockMinutes: 2 } as const;
-const CREATE_IP_LIMIT = { maxAttempts: 300, windowMinutes: 1, blockMinutes: 2 } as const;
-const CREATE_SESSION_LIMIT = { maxAttempts: 15, windowMinutes: 1, blockMinutes: 2 } as const;
+const createLimit = (maxAttempts: number) => ({
+  maxAttempts,
+  windowMinutes: config.boardRateLimits.windowMinutes,
+  blockMinutes: config.boardRateLimits.blockMinutes
+});
+const CREATE_BOARD_LIMIT = createLimit(config.boardRateLimits.cardCreateBoardMaxRequests);
+const CREATE_IP_LIMIT = createLimit(config.boardRateLimits.cardCreateIpMaxRequests);
+const CREATE_SESSION_LIMIT = createLimit(config.boardRateLimits.cardCreateSessionMaxRequests);
 const CREATE_SESSION_BURST_LIMIT = { maxAttempts: 3, windowMinutes: 0.1, blockMinutes: 0.1 } as const;
 
 const randomSecret = () => crypto.randomBytes(32).toString('base64url');

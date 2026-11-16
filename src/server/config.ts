@@ -7,6 +7,14 @@ const parseNumber = (value: string | undefined, fallback: number) => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
+const parsePositiveNumber = (value: string | undefined, fallback: number) => {
+  const parsed = parseNumber(value, fallback);
+  return parsed > 0 ? parsed : fallback;
+};
+
+const parsePositiveInteger = (value: string | undefined, fallback: number) =>
+  Math.max(1, Math.floor(parsePositiveNumber(value, fallback)));
+
 const parseBoolean = (value: string | undefined, fallback: boolean) => {
   if (value === undefined) return fallback;
   return value === 'true';
@@ -122,6 +130,24 @@ export const config = {
     redirectRateLimitBlockMinutes: parseNumber(process.env.REDIRECT_RATE_LIMIT_BLOCK_MINUTES, 10),
     liveSubmitMaxRequests: parseNumber(process.env.LIVE_SUBMIT_MAX_REQUESTS, 60),
     liveSubmitWindowMinutes: parseNumber(process.env.LIVE_SUBMIT_WINDOW_MINUTES, 1)
+  },
+  boardRateLimits: {
+    windowMinutes: parsePositiveNumber(process.env.BOARD_RATE_LIMIT_WINDOW_MINUTES, 1),
+    blockMinutes: parsePositiveNumber(process.env.BOARD_RATE_LIMIT_BLOCK_MINUTES, 2),
+    publicReadIpMaxRequests: parsePositiveInteger(process.env.BOARD_PUBLIC_READ_IP_MAX_REQUESTS, 1_000),
+    publicReadBoardMaxRequests: parsePositiveInteger(process.env.BOARD_PUBLIC_READ_BOARD_MAX_REQUESTS, 2_000),
+    publicMutationIpMaxRequests: parsePositiveInteger(process.env.BOARD_PUBLIC_MUTATION_IP_MAX_REQUESTS, 600),
+    publicMutationSessionMaxRequests: parsePositiveInteger(process.env.BOARD_PUBLIC_MUTATION_SESSION_MAX_REQUESTS, 60),
+    cardCreateIpMaxRequests: parsePositiveInteger(process.env.BOARD_CARD_CREATE_IP_MAX_REQUESTS, 300),
+    cardCreateBoardMaxRequests: parsePositiveInteger(process.env.BOARD_CARD_CREATE_BOARD_MAX_REQUESTS, 500),
+    cardCreateSessionMaxRequests: parsePositiveInteger(process.env.BOARD_CARD_CREATE_SESSION_MAX_REQUESTS, 15),
+    reactionIpMaxRequests: parsePositiveInteger(process.env.BOARD_REACTION_IP_MAX_REQUESTS, 600),
+    reactionBoardMaxRequests: parsePositiveInteger(process.env.BOARD_REACTION_BOARD_MAX_REQUESTS, 2_000),
+    reactionSessionMaxRequests: parsePositiveInteger(process.env.BOARD_REACTION_SESSION_MAX_REQUESTS, 60),
+    sseConnectIpMaxRequests: parsePositiveInteger(process.env.BOARD_SSE_CONNECT_IP_MAX_REQUESTS, 300),
+    sseConnectBoardMaxRequests: parsePositiveInteger(process.env.BOARD_SSE_CONNECT_BOARD_MAX_REQUESTS, 600),
+    sseMaxConnectionsPerIp: parsePositiveInteger(process.env.BOARD_SSE_MAX_CONNECTIONS_PER_IP, 250),
+    sseMaxConnectionsPerBoard: parsePositiveInteger(process.env.BOARD_SSE_MAX_CONNECTIONS_PER_BOARD, 500)
   },
   blockLocalUrls: parseBoolean(process.env.BLOCK_LOCAL_URLS, true),
   blockPrivateIps: parseBoolean(process.env.BLOCK_PRIVATE_IPS, false),

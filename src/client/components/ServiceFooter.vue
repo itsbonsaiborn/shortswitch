@@ -34,11 +34,12 @@ watch(locale, () => void loadLinks(), { immediate: true });
 
 <template>
   <footer class="flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-center text-xs text-[var(--ui-text-muted)]">
-    <a
-      v-for="link in links"
-      :key="link.type"
-      :href="link.href"
-      class="rounded-md transition-colors hover:text-[var(--ui-accent)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ui-accent)]"
-    >{{ link.label }}</a>
+    <template v-for="(link, index) in links" :key="link.type">
+      <span v-if="index" aria-hidden="true" class="text-[var(--ui-border)]">|</span>
+      <a
+        :href="link.href"
+        class="inline-flex items-center gap-1.5 rounded-md transition-colors hover:text-[var(--ui-accent)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ui-accent)]"
+      ><svg v-if="link.type === 'report_abuse'" aria-hidden="true" class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v6"/><path d="M12 17h.01"/></svg>{{ link.type === 'about' ? (locale === 'lv' ? 'Par projektu' : 'About') : link.label }}</a>
+    </template>
   </footer>
 </template>

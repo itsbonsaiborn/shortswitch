@@ -26,6 +26,21 @@ describe('ServiceFooter', () => {
     await flushPromises();
 
     expect(wrapper.findAll('a')).toHaveLength(1);
-    expect(wrapper.get('a').text()).toBe('About this service');
+    expect(wrapper.get('a').text()).toBe('About');
+  });
+
+  test('separates links and decorates the report-abuse action', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ links: [
+        { type: 'contacts', label: 'Contacts', href: '/service/contacts' },
+        { type: 'report_abuse', label: 'Report Abuse', href: '/service/report-abuse' }
+      ] })
+    }));
+    const wrapper = mount(ServiceFooter);
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('|');
+    expect(wrapper.get('a[href="/service/report-abuse"] svg')).toBeTruthy();
   });
 });
