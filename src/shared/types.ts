@@ -178,6 +178,8 @@ export type LiveActivityStatus = 'active' | 'closed';
 export type LiveModerationMode = 'off' | 'filter_only' | 'review_all';
 export type LiveResponseStatus = 'approved' | 'pending' | 'rejected';
 export type ModerationMatchMode = 'whole_word' | 'contains';
+export type RemoteModerationParsingMode = 'contains' | 'whole' | 'smart';
+export type RemoteModerationSyncStatus = 'pending' | 'success' | 'unchanged' | 'error';
 
 export interface LiveQuestionOption {
   id: string;
@@ -342,6 +344,35 @@ export interface ModerationRule {
   matchMode: ModerationMatchMode;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface RemoteModerationSource {
+  id: string;
+  url: string;
+  parsingMode: RemoteModerationParsingMode;
+  updateIntervalMinutes: number | null;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+  lastSuccessfulUpdateAt: string | null;
+  lastCheckedAt: string | null;
+  ruleCount: number;
+  syncStatus: RemoteModerationSyncStatus;
+  lastError: string | null;
+  syncing: boolean;
+}
+
+export interface RemoteModerationRulePreview {
+  id: string;
+  pattern: string;
+  matchMode: ModerationMatchMode;
+  position: number;
+}
+
+export interface RemoteModerationSourceDetails {
+  source: RemoteModerationSource;
+  rules: RemoteModerationRulePreview[];
+  previewLimit: number;
 }
 
 export type PageStatus = 'draft' | 'published' | 'disabled';

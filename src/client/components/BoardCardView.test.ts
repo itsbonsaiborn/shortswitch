@@ -6,7 +6,7 @@ import BoardCardView from './BoardCardView.vue';
 
 const card: PublicBoardCard = {
   id: 'card', title: 'A very long title', body: 'longword'.repeat(40),
-  imageUrl: 'https://images.example/missing.png', authorDisplayName: null,
+  imageUrl: 'https://images.example/missing.png', imageBlurred: false, authorDisplayName: null,
   layout: 'image_text', moderationStatus: 'approved', publishedAt: null,
   createdAt: '', updatedAt: '', owned: false,
   position: { x: 0, y: 0, width: 280, height: 180, zIndex: 0, revision: 0, updatedAt: '' },
@@ -22,6 +22,33 @@ describe('BoardCardView', () => {
     await wrapper.find('img').trigger('error');
     expect(wrapper.find('img').exists()).toBe(false);
     expect(wrapper.text()).toContain('Image unavailable');
+  });
+
+  test('renders and reactively removes the persisted image blur state', async () => {
+    const wrapper = mount(BoardCardView, {
+      props: { card: { ...card, imageBlurred: true }, imageFallbackLabel: 'Image unavailable' }
+    });
+    expect(wrapper.find('.board-card-image').classes()).toContain('board-card-image-is-blurred');
+    expect(wrapper.find('img').classes()).toContain('blur-2xl');
+    expect(wrapper.find('img').classes()).toContain('scale-[1.15]');
+    expect(wrapper.find('img').classes()).toContain('pointer-events-none');
+    expect(wrapper.find('img').attributes('data-image-blurred')).toBe('true');
+    expect(wrapper.find('img').attributes('draggable')).toBe('false');
+    expect(wrapper.find('[data-public-image-guard="true"]').exists()).toBe(true);
+    const contextMenu = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+    wrapper.find('[data-public-image-guard="true"]').element.dispatchEvent(contextMenu);
+    expect(contextMenu.defaultPrevented).toBe(true);
+
+    await wrapper.setProps({ card: { ...card, imageBlurred: false } });
+    expect(wrapper.find('.board-card-image').classes()).not.toContain('board-card-image-is-blurred');
+    expect(wrapper.find('img').classes()).not.toContain('blur-2xl');
+    expect(wrapper.find('img').classes()).toContain('pointer-events-none');
+    expect(wrapper.find('img').attributes('data-image-blurred')).toBe('false');
+    expect(wrapper.find('img').attributes('draggable')).toBe('false');
+    expect(wrapper.find('[data-public-image-guard="true"]').exists()).toBe(true);
+    const visibleContextMenu = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+    wrapper.find('[data-public-image-guard="true"]').element.dispatchEvent(visibleContextMenu);
+    expect(visibleContextMenu.defaultPrevented).toBe(true);
   });
 
   test('uses the compact layout without hiding the body text', () => {

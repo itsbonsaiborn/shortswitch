@@ -1114,6 +1114,227 @@ export class ActivityAttemptRepository {
     ).run(pending ? null : totalUnits, pending ? null : unitsToPoints(totalUnits), pending ? 1 : 0, timestamp, attemptId);
   }
 
+  regradeGradingModeResponses(userId: string, activityId: string) {
+    const timestamp = nowIso();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const sourceVersion = this.db.prepare(
+        `SELECT v.id, v.version_number as versionNumber
+         FROM activity_models m
+         INNER JOIN live_activities a ON a.id = m.activity_id
+         INNER JOIN activity_versions v ON v.id = m.published_version_id
+         WHERE m.activity_id = ? AND m.model = 'slides_v1' AND a.user_id = ?`
+      ).get(activityId, userId) as { id: string; versionNumber: number } | undefined;
+      if (!sourceVersion) throw new Error('Publish the Activity before regrading submissions.');
+
+      const sourceRows = this.db.prepare(
+        `SELECT b.stable_id as stableId, b.question_type as questionType,
+                b.public_config_json as configJson, k.key_json as keyJson
+         FROM activity_version_blocks b
+         INNER JOIN activity_version_slides s ON s.id = b.slide_id
+         INNER JOIN activity_version_question_keys k ON k.block_id = b.id
+         WHERE s.version_id = ?
+           AND b.question_type IN ('multiple_choice', 'ordering', 'matching')
+           AND b.is_graded = 1`
+      ).all(sourceVersion.id) as unknown as Array<{
+        stableId: string;
+        questionType: 'multiple_choice' | 'ordering' | 'matching';
+        configJson: string;
+        keyJson: string;
+      }>;
+      const sourceByStableId = new Map(sourceRows.map((row) => [row.stableId, row]));
+      const attempts = this.db.prepare(
+        `SELECT id FROM activity_attempts
+         WHERE activity_id = ? AND status <> 'in_progress' ORDER BY id`
+      ).all(activityId) as unknown as Array<{ id: string }>;
+      const responseRows = this.db.prepare(
+        `SELECT r.question_block_id as blockId, b.stable_id as stableId,
+                b.question_type as questionType,
+                b.public_config_json as configJson, k.key_json as keyJson,
+                r.answer_json as answerJson, r.awarded_points_units as previousUnits,
+                r.grading_details_json as detailsJson, COALESCE(r.teacher_feedback, '') as teacherFeedback,
+                COALESCE(p.maximum_points_units, CAST(ROUND(b.points * 1000) AS INTEGER)) as maximumUnits
+         FROM activity_attempt_responses r
+         INNER JOIN activity_attempts a ON a.id = r.attempt_id
+         INNER JOIN activity_version_blocks b ON b.id = r.question_block_id
+         INNER JOIN activity_version_slides s ON s.id = b.slide_id AND s.version_id = a.published_version_id
+         INNER JOIN activity_version_question_keys k ON k.block_id = b.id
+         LEFT JOIN activity_attempt_question_points p
+           ON p.attempt_id = r.attempt_id AND p.question_block_id = b.id
+         WHERE r.attempt_id = ?
+           AND b.question_type IN ('multiple_choice', 'ordering', 'matching')
+           AND b.is_graded = 1`
+      );
+      const updateResponse = this.db.prepare(
+        `UPDATE activity_attempt_responses SET grading_status = 'graded', awarded_points = ?,
+          awarded_points_units = ?, grading_details_json = ?
+         WHERE attempt_id = ? AND question_block_id = ?`
+      );
+      const insertAudit = this.db.prepare(
+        `INSERT INTO activity_grading_audit (
+          id, attempt_id, question_block_id, action, previous_awarded_units, awarded_units,
+          teacher_feedback, actor_user_id, details_json, created_at
+        ) VALUES (?, ?, ?, 'automatic', ?, ?, ?, ?, ?, ?)`
+      );
+
+      let attemptsRegraded = 0;
+      let responsesRegraded = 0;
+      let skippedIncompatible = 0;
+      let skippedManualOverrides = 0;
+      for (const attempt of attempts) {
+        const responses = responseRows.all(attempt.id) as unknown as Array<{
+          blockId: string; stableId: string;
+          questionType: 'multiple_choice' | 'ordering' | 'matching';
+          configJson: string; keyJson: string;
+          answerJson: string; previousUnits: number | null; detailsJson: string | null;
+          teacherFeedback: string; maximumUnits: number;
+        }>;
+        let changedAttempt = false;
+        for (const response of responses) {
+          const source = sourceByStableId.get(response.stableId);
+          if (!source) { skippedIncompatible += 1; continue; }
+          let previousDetails: Record<string, unknown> = {};
+          try { previousDetails = response.detailsJson ? JSON.parse(response.detailsJson) as Record<string, unknown> : {}; }
+          catch { previousDetails = {}; }
+          if (previousDetails.gradingMode === 'manual_override' || previousDetails.manuallyGraded === true) {
+            skippedManualOverrides += 1;
+            continue;
+          }
+          if (previousDetails.regradedFromPublishedVersionId === sourceVersion.id) continue;
+
+          const oldConfig = JSON.parse(response.configJson) as ActivityQuestionPublicConfig;
+          const nextConfig = JSON.parse(source.configJson) as ActivityQuestionPublicConfig;
+          const oldKey = JSON.parse(response.keyJson) as Record<string, unknown>;
+          const nextKey = JSON.parse(source.keyJson) as Record<string, unknown>;
+          const answer = JSON.parse(response.answerJson) as ActivitySupportedAnswer;
+          const strings = (value: unknown) => Array.isArray(value)
+            ? value.filter((entry): entry is string => typeof entry === 'string')
+            : [];
+          const sortedStrings = (value: unknown) => strings(value).sort();
+          const sameStrings = (left: string[], right: string[]) => JSON.stringify(left) === JSON.stringify(right);
+          const normalizedPairs = (value: unknown) => Array.isArray(value)
+            ? value
+                .filter((entry): entry is { leftId: string; rightId: string } => (
+                  typeof entry === 'object' && entry !== null
+                  && typeof (entry as { leftId?: unknown }).leftId === 'string'
+                  && typeof (entry as { rightId?: unknown }).rightId === 'string'
+                ))
+                .map((entry) => `${entry.leftId}\u0000${entry.rightId}`)
+                .sort()
+            : [];
+          let compatible = false;
+          let previousGradingMode: 'all_or_nothing' | 'partial' | null = null;
+          let nextGradingMode: 'all_or_nothing' | 'partial' | null = null;
+          if (
+            response.questionType === 'multiple_choice'
+            && source.questionType === 'multiple_choice'
+            && oldConfig.questionType === 'multiple_choice'
+            && nextConfig.questionType === 'multiple_choice'
+            && answer.questionType === 'multiple_choice'
+          ) {
+            previousGradingMode = oldConfig.gradingMode;
+            nextGradingMode = nextConfig.gradingMode;
+            compatible = sameStrings(
+              oldConfig.options.map((option) => option.id).sort(),
+              nextConfig.options.map((option) => option.id).sort()
+            ) && sameStrings(
+              sortedStrings(oldKey.correctOptionIds),
+              sortedStrings(nextKey.correctOptionIds)
+            );
+          } else if (
+            response.questionType === 'ordering'
+            && source.questionType === 'ordering'
+            && oldConfig.questionType === 'ordering'
+            && nextConfig.questionType === 'ordering'
+            && answer.questionType === 'ordering'
+          ) {
+            previousGradingMode = oldConfig.gradingMode;
+            nextGradingMode = nextConfig.gradingMode;
+            compatible = sameStrings(
+              oldConfig.items.map((item) => item.id).sort(),
+              nextConfig.items.map((item) => item.id).sort()
+            ) && sameStrings(strings(oldKey.orderedItemIds), strings(nextKey.orderedItemIds));
+          } else if (
+            response.questionType === 'matching'
+            && source.questionType === 'matching'
+            && oldConfig.questionType === 'matching'
+            && nextConfig.questionType === 'matching'
+            && answer.questionType === 'matching'
+          ) {
+            previousGradingMode = oldConfig.gradingMode;
+            nextGradingMode = nextConfig.gradingMode;
+            compatible = sameStrings(
+              oldConfig.leftItems.map((item) => item.id).sort(),
+              nextConfig.leftItems.map((item) => item.id).sort()
+            ) && sameStrings(
+              oldConfig.rightItems.map((item) => item.id).sort(),
+              nextConfig.rightItems.map((item) => item.id).sort()
+            ) && sameStrings(normalizedPairs(oldKey.pairs), normalizedPairs(nextKey.pairs));
+          }
+          if (!compatible || !previousGradingMode || !nextGradingMode) { skippedIncompatible += 1; continue; }
+
+          const result = gradeActivityQuestion({
+            questionType: response.questionType,
+            config: { ...oldConfig, gradingMode: nextGradingMode } as ActivityQuestionPublicConfig,
+            answer,
+            key: oldKey,
+            maximumUnits: Number(response.maximumUnits),
+            graded: true,
+            moderationStatus: 'approved'
+          });
+          if (result.status !== 'graded') { skippedIncompatible += 1; continue; }
+          const awardedUnits = result.awardedUnits ?? 0;
+          const details = {
+            ...result.details,
+            regradedAt: timestamp,
+            regradedFromPublishedVersionId: sourceVersion.id,
+            regradedFromPublishedVersionNumber: Number(sourceVersion.versionNumber),
+            previousGradingMode
+          };
+          updateResponse.run(
+            unitsToPoints(awardedUnits), awardedUnits, JSON.stringify(details), attempt.id, response.blockId
+          );
+          insertAudit.run(
+            createId(), attempt.id, response.blockId, response.previousUnits, awardedUnits,
+            response.teacherFeedback, userId,
+            JSON.stringify({
+              reason: 'grading_mode_regrade',
+              questionType: response.questionType,
+              previousGradingMode,
+              gradingMode: nextGradingMode,
+              sourceVersionId: sourceVersion.id,
+              sourceVersionNumber: Number(sourceVersion.versionNumber)
+            }),
+            timestamp
+          );
+          responsesRegraded += 1;
+          changedAttempt = true;
+        }
+        if (changedAttempt) {
+          this.recalculateAttemptTotal(attempt.id, timestamp);
+          attemptsRegraded += 1;
+        }
+      }
+      this.db.exec('COMMIT');
+      return {
+        sourceVersionId: sourceVersion.id,
+        sourceVersionNumber: Number(sourceVersion.versionNumber),
+        attemptsScanned: attempts.length,
+        attemptsRegraded,
+        responsesRegraded,
+        skippedIncompatible,
+        skippedManualOverrides
+      };
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  regradeOrderingResponses(userId: string, activityId: string) {
+    return this.regradeGradingModeResponses(userId, activityId);
+  }
+
   gradeManualResponse(input: {
     userId: string;
     activityId: string;

@@ -1035,6 +1035,109 @@ const migrations: Migration[] = [
           ON pending_auth_challenges(expires_at);
       `);
     }
+  },
+  {
+    version: 28,
+    name: 'remote_moderation_blocklists',
+    up(db) {
+      db.exec(`
+        CREATE TABLE moderation_remote_sources (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          url TEXT NOT NULL,
+          parsing_mode TEXT NOT NULL CHECK (parsing_mode IN ('contains', 'whole', 'smart')),
+          update_interval_minutes INTEGER CHECK (
+            update_interval_minutes IS NULL OR
+            update_interval_minutes BETWEEN 5 AND 10080
+          ),
+          enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          last_successful_update_at TEXT,
+          last_checked_at TEXT,
+          rule_count INTEGER NOT NULL DEFAULT 0 CHECK (rule_count >= 0),
+          sync_status TEXT NOT NULL DEFAULT 'pending'
+            CHECK (sync_status IN ('pending', 'success', 'unchanged', 'error')),
+          last_error TEXT,
+          content_hash TEXT,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_moderation_remote_sources_user
+          ON moderation_remote_sources(user_id, created_at DESC);
+        CREATE INDEX idx_moderation_remote_sources_due
+          ON moderation_remote_sources(enabled, update_interval_minutes, last_checked_at);
+
+        CREATE TABLE moderation_remote_rules (
+          id TEXT PRIMARY KEY,
+          source_id TEXT NOT NULL,
+          pattern TEXT NOT NULL,
+          match_mode TEXT NOT NULL CHECK (match_mode IN ('whole_word', 'contains')),
+          position INTEGER NOT NULL CHECK (position >= 0),
+          created_at TEXT NOT NULL,
+          FOREIGN KEY (source_id) REFERENCES moderation_remote_sources(id) ON DELETE CASCADE,
+          UNIQUE (source_id, match_mode, pattern),
+          UNIQUE (source_id, position)
+        );
+        CREATE INDEX idx_moderation_remote_rules_source
+          ON moderation_remote_rules(source_id, position);
+      `);
+    }
+  },
+  {
+    version: 29,
+    name: 'board_reaction_modes',
+    up(db) {
+      const boardSettings = db.prepare(`
+        SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'board_settings'
+      `).get();
+      if (!boardSettings) return;
+      const existingColumn = db.prepare(`
+        SELECT name FROM pragma_table_info('board_settings') WHERE name = 'reaction_mode'
+      `).get();
+      if (existingColumn) return;
+      db.exec(`
+        ALTER TABLE board_settings
+          ADD COLUMN reaction_mode TEXT NOT NULL DEFAULT 'both'
+          CHECK (reaction_mode IN ('both', 'likes_only', 'dislikes_only', 'disabled'));
+      `);
+    }
+  },
+  {
+    version: 30,
+    name: 'board_image_blur_state',
+    up(db) {
+      const boardSettings = db.prepare(`
+        SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'board_settings'
+      `).get();
+      if (boardSettings) {
+        const existingSetting = db.prepare(`
+          SELECT name FROM pragma_table_info('board_settings') WHERE name = 'blur_images_by_default'
+        `).get();
+        if (!existingSetting) {
+          db.exec(`
+            ALTER TABLE board_settings
+              ADD COLUMN blur_images_by_default INTEGER NOT NULL DEFAULT 0
+              CHECK (blur_images_by_default IN (0, 1));
+          `);
+        }
+      }
+
+      const boardCards = db.prepare(`
+        SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'board_cards'
+      `).get();
+      if (boardCards) {
+        const existingCardState = db.prepare(`
+          SELECT name FROM pragma_table_info('board_cards') WHERE name = 'image_blurred'
+        `).get();
+        if (!existingCardState) {
+          db.exec(`
+            ALTER TABLE board_cards
+              ADD COLUMN image_blurred INTEGER NOT NULL DEFAULT 0
+              CHECK (image_blurred IN (0, 1));
+          `);
+        }
+      }
+    }
   }
 ];
 

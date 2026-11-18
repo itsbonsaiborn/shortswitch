@@ -16,6 +16,7 @@ import type {
   BoardThemeReference,
   PublicBoard
 } from '@/shared/board-types.js';
+import { boardReactionModeAllows, effectiveBoardReactionMode } from '../../shared/board-types.js';
 import { config } from '../config.js';
 import { getDb } from '../db.js';
 import {
@@ -45,6 +46,7 @@ interface BoardRow {
   visualStyle: BoardSettings['visualStyle'];
   backgroundPattern: BoardSettings['backgroundPattern'];
   patternIntensity: number;
+  reactionMode: BoardSettings['reactionMode'];
   readOnly: number;
   locked: number;
   submissionsExpiresAt: string | null;
@@ -55,6 +57,7 @@ interface BoardRow {
   maxTitleLength: number;
   maxBodyLength: number;
   allowImageUrls: number;
+  blurImagesByDefault: number;
   participantCanEdit: number;
   participantCanDelete: number;
   requireCardTitle: number;
@@ -68,6 +71,7 @@ interface CardRow {
   title: string;
   body: string;
   imageUrl: string | null;
+  imageBlurred: number;
   cardLayout: BoardCardLayout;
   moderationStatus: BoardCardModerationStatus;
   moderationReason: string | null;
@@ -100,19 +104,21 @@ const boardSelect = `
          (SELECT COUNT(*) FROM board_cards bc WHERE bc.board_id = b.id AND bc.moderation_status = 'pending') as pendingCardCount,
          s.theme_id as themeId, s.layout, s.visual_style as visualStyle,
          s.background_pattern as backgroundPattern, s.pattern_intensity as patternIntensity,
+         s.reaction_mode as reactionMode,
          s.is_read_only as readOnly, s.is_locked as locked,
          s.submissions_expires_at as submissionsExpiresAt,
          s.require_participant_name as requireParticipantName, s.moderation_mode as moderationMode,
          s.max_cards_total as maxCardsTotal, s.max_cards_per_participant as maxCardsPerParticipant,
          s.max_title_length as maxTitleLength, s.max_body_length as maxBodyLength,
-         s.allow_image_urls as allowImageUrls, s.participant_can_edit as participantCanEdit,
+         s.allow_image_urls as allowImageUrls, s.blur_images_by_default as blurImagesByDefault,
+         s.participant_can_edit as participantCanEdit,
          s.participant_can_delete as participantCanDelete, s.require_card_title as requireCardTitle
   FROM boards b INNER JOIN board_settings s ON s.board_id = b.id`;
 
 const cardSelect = `
   SELECT c.id, c.board_id as boardId, c.participant_id as participantId,
          c.author_display_name as authorDisplayName, c.title, c.body, c.image_url as imageUrl,
-         c.card_layout as cardLayout,
+         c.image_blurred as imageBlurred, c.card_layout as cardLayout,
          c.moderation_status as moderationStatus, c.moderation_reason as moderationReason,
          c.is_hidden as hidden,
          c.published_at as publishedAt, c.created_at as createdAt, c.updated_at as updatedAt,
@@ -157,6 +163,7 @@ export class BoardRepository {
         visualStyle: row.visualStyle,
         backgroundPattern: row.backgroundPattern,
         patternIntensity: Number(row.patternIntensity),
+        reactionMode: row.reactionMode,
         readOnly: Boolean(row.readOnly),
         locked: Boolean(row.locked),
         submissionsExpiresAt: row.submissionsExpiresAt,
@@ -167,6 +174,7 @@ export class BoardRepository {
         maxTitleLength: Number(row.maxTitleLength),
         maxBodyLength: Number(row.maxBodyLength),
         allowImageUrls: Boolean(row.allowImageUrls),
+        blurImagesByDefault: Boolean(row.blurImagesByDefault),
         participantCanEdit: Boolean(row.participantCanEdit),
         participantCanDelete: Boolean(row.participantCanDelete),
         requireCardTitle: Boolean(row.requireCardTitle)
@@ -192,6 +200,7 @@ export class BoardRepository {
       title: row.title,
       body: row.body,
       imageUrl: row.imageUrl,
+      imageBlurred: Boolean(row.imageBlurred),
       layout: row.cardLayout,
       moderationStatus: row.moderationStatus,
       moderationReason: row.moderationReason,
@@ -217,6 +226,7 @@ export class BoardRepository {
     const row = this.db.prepare(`${boardSelect} WHERE b.slug = ? AND b.status = 'published' AND b.archived_at IS NULL`).get(slug) as unknown as BoardRow | undefined;
     if (!row) return undefined;
     const board = this.toBoard(row);
+    const effectiveReactionMode = effectiveBoardReactionMode(board.settings);
     const session = !presentation && sessionTokenHash ? this.findOwnershipSession(board.id, sessionTokenHash) : undefined;
     const reactionSession = !presentation && reactionSessionTokenHash
       ? this.findReactionSession(board.id, reactionSessionTokenHash)
@@ -224,7 +234,7 @@ export class BoardRepository {
     const cards = (this.db.prepare(
       `SELECT c.id, c.board_id as boardId, c.participant_id as participantId,
         c.author_display_name as authorDisplayName, c.title, c.body, c.image_url as imageUrl,
-        c.card_layout as cardLayout,
+        c.image_blurred as imageBlurred, c.card_layout as cardLayout,
         c.moderation_status as moderationStatus, c.moderation_reason as moderationReason,
         c.is_hidden as hidden,
         c.published_at as publishedAt, c.created_at as createdAt, c.updated_at as updatedAt,
@@ -256,6 +266,7 @@ export class BoardRepository {
         title: card.title,
         body: card.body,
         imageUrl: card.imageUrl,
+        imageBlurred: card.imageBlurred,
         layout: card.layout,
         moderationStatus: card.moderationStatus,
         publishedAt: card.publishedAt,
@@ -266,7 +277,9 @@ export class BoardRepository {
         reactions: {
           likes: Number(cardRow.likes),
           dislikes: Number(cardRow.dislikes),
-          current: cardRow.currentReaction
+          current: cardRow.currentReaction && boardReactionModeAllows(effectiveReactionMode, cardRow.currentReaction)
+            ? cardRow.currentReaction
+            : null
         }
       };
     });
@@ -285,6 +298,7 @@ export class BoardRepository {
         visualStyle: board.settings.visualStyle,
         backgroundPattern: board.settings.backgroundPattern,
         patternIntensity: board.settings.patternIntensity,
+        reactionMode: effectiveReactionMode,
         readOnly: board.settings.readOnly,
         locked: board.settings.locked,
         submissionsExpiresAt: board.settings.submissionsExpiresAt,
@@ -375,20 +389,22 @@ export class BoardRepository {
       `).run(slug, input.title, input.description, input.status, input.status, timestamp, input.expiresAt ?? null, timestamp, boardId, userId);
       this.db.prepare(`
         UPDATE board_settings SET theme_id = ?, layout = ?, visual_style = ?,
-          background_pattern = ?, pattern_intensity = ?, is_read_only = ?, is_locked = ?,
+          background_pattern = ?, pattern_intensity = ?, reaction_mode = ?, is_read_only = ?, is_locked = ?,
           submissions_expires_at = ?,
           require_participant_name = ?, moderation_mode = ?, max_cards_total = ?,
           max_cards_per_participant = ?, max_title_length = ?, max_body_length = ?,
-          allow_image_urls = ?, participant_can_edit = ?, participant_can_delete = ?,
+          allow_image_urls = ?, blur_images_by_default = ?, participant_can_edit = ?, participant_can_delete = ?,
           updated_at = ?, require_card_title = ?
         WHERE board_id = ?
       `).run(
         input.settings.themeId, input.settings.layout, input.settings.visualStyle,
-        input.settings.backgroundPattern, input.settings.patternIntensity, input.settings.readOnly ? 1 : 0,
+        input.settings.backgroundPattern, input.settings.patternIntensity, input.settings.reactionMode,
+        input.settings.readOnly ? 1 : 0,
         input.settings.locked ? 1 : 0, input.settings.submissionsExpiresAt,
         input.settings.requireParticipantName ? 1 : 0,
         input.settings.moderationMode, input.settings.maxCardsTotal, input.settings.maxCardsPerParticipant,
         input.settings.maxTitleLength, input.settings.maxBodyLength, input.settings.allowImageUrls ? 1 : 0,
+        input.settings.blurImagesByDefault ? 1 : 0,
         input.settings.participantCanEdit ? 1 : 0, input.settings.participantCanDelete ? 1 : 0,
         timestamp, input.settings.requireCardTitle ? 1 : 0, boardId
       );
@@ -422,18 +438,19 @@ export class BoardRepository {
     this.db.prepare(`
       INSERT INTO board_settings (
         board_id, theme_id, layout, visual_style, background_pattern, pattern_intensity,
-        is_read_only, is_locked, submissions_expires_at, require_participant_name,
+        reaction_mode, is_read_only, is_locked, submissions_expires_at, require_participant_name,
         moderation_mode, max_cards_total, max_cards_per_participant, max_title_length,
-        max_body_length, allow_image_urls, participant_can_edit, participant_can_delete,
+        max_body_length, allow_image_urls, blur_images_by_default, participant_can_edit, participant_can_delete,
         require_card_title, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       boardId, settings.themeId, settings.layout, settings.visualStyle,
-      settings.backgroundPattern, settings.patternIntensity, settings.readOnly ? 1 : 0, settings.locked ? 1 : 0,
+      settings.backgroundPattern, settings.patternIntensity, settings.reactionMode,
+      settings.readOnly ? 1 : 0, settings.locked ? 1 : 0,
       settings.submissionsExpiresAt,
       settings.requireParticipantName ? 1 : 0, settings.moderationMode, settings.maxCardsTotal,
       settings.maxCardsPerParticipant, settings.maxTitleLength, settings.maxBodyLength,
-      settings.allowImageUrls ? 1 : 0, settings.participantCanEdit ? 1 : 0,
+      settings.allowImageUrls ? 1 : 0, settings.blurImagesByDefault ? 1 : 0, settings.participantCanEdit ? 1 : 0,
       settings.participantCanDelete ? 1 : 0, settings.requireCardTitle ? 1 : 0, timestamp, timestamp
     );
   }
@@ -638,14 +655,15 @@ export class BoardRepository {
                s.max_cards_per_participant as maxCardsPerParticipant,
                s.max_title_length as maxTitleLength, s.max_body_length as maxBodyLength,
                s.allow_image_urls as allowImageUrls, s.require_participant_name as requireParticipantName,
-               s.require_card_title as requireCardTitle
+               s.require_card_title as requireCardTitle,
+               s.blur_images_by_default as blurImagesByDefault
         FROM boards b INNER JOIN board_settings s ON s.board_id = b.id WHERE b.id = ?
       `).get(input.boardId) as {
         status: BoardSummary['status']; archivedAt: string | null; expiresAt: string | null;
         readOnly: number; locked: number; submissionsExpiresAt: string | null;
         moderationMode: BoardSettings['moderationMode']; maxCardsTotal: number; maxCardsPerParticipant: number;
         maxTitleLength: number; maxBodyLength: number; allowImageUrls: number; requireParticipantName: number;
-        requireCardTitle: number;
+        requireCardTitle: number; blurImagesByDefault: number;
       } | undefined;
       if (!board || board.status !== 'published' || board.archivedAt) throw new Error('Board is not available.');
       if (board.expiresAt && Date.parse(board.expiresAt) <= Date.now()) throw new Error('Board is expired.');
@@ -673,11 +691,12 @@ export class BoardRepository {
       this.db.prepare(`
         INSERT INTO board_cards (
           id, board_id, participant_id, author_display_name, title, body, image_url,
-          card_layout, moderation_status, moderation_reason, published_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          image_blurred, card_layout, moderation_status, moderation_reason, published_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         cardId, input.boardId, input.participantId, card.authorDisplayName,
-        card.title, card.body, card.imageUrl, card.layout, moderationStatus,
+        card.title, card.body, card.imageUrl, card.imageUrl && Boolean(board.blurImagesByDefault) ? 1 : 0,
+        card.layout, moderationStatus,
         moderationStatus === 'pending' ? input.moderationReason ?? null : null,
         moderationStatus === 'approved' ? timestamp : null, timestamp, timestamp
       );
@@ -961,6 +980,28 @@ export class BoardRepository {
       this.db.prepare('UPDATE board_cards SET is_hidden = ?, updated_at = ? WHERE board_id = ? AND id = ?')
         .run(hidden ? 1 : 0, timestamp, boardId, cardId);
       this.appendEvent(boardId, 'card_moderated', cardId, { status: card.status, hidden }, timestamp);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+    return this.findCard(boardId, cardId)!;
+  }
+
+  setCardImageBlurred(userId: string, boardId: string, cardId: string, blurred: boolean) {
+    const timestamp = nowIso();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const card = this.db.prepare(`
+        SELECT c.image_url as imageUrl FROM board_cards c
+        INNER JOIN boards b ON b.id = c.board_id
+        WHERE b.user_id = ? AND b.id = ? AND c.id = ?
+      `).get(userId, boardId, cardId) as { imageUrl: string | null } | undefined;
+      if (!card) throw new Error('Board card not found.');
+      if (!card.imageUrl) throw new Error('Board card has no image.');
+      this.db.prepare('UPDATE board_cards SET image_blurred = ?, updated_at = ? WHERE board_id = ? AND id = ?')
+        .run(blurred ? 1 : 0, timestamp, boardId, cardId);
+      this.appendEvent(boardId, 'card_updated', cardId, { imageBlurred: blurred }, timestamp);
       this.db.exec('COMMIT');
     } catch (error) {
       this.db.exec('ROLLBACK');

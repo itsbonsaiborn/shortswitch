@@ -32,6 +32,7 @@ import { BoardCardService } from './services/board-card-service.js';
 import { BoardReactionService } from './services/board-reaction-service.js';
 import { BoardRealtimeService } from './services/board-realtime-service.js';
 import { ModerationFilterService } from './services/moderation-filter-service.js';
+import { RemoteModerationService } from './services/remote-moderation-service.js';
 import { ServiceSectionService } from './services/service-section-service.js';
 import { ServiceSubmissionService } from './services/service-submission-service.js';
 import { registerServiceSectionRoutes } from './service-section-routes.js';
@@ -65,6 +66,7 @@ export const buildApp = async () => {
   const users = new UserRepository();
   const rateLimiter = new RateLimiterService();
   const moderationFilter = new ModerationFilterService();
+  const remoteModeration = new RemoteModerationService(moderationFilter);
   const live = new LiveService(moderationFilter);
   const liveRealtime = new LiveRealtimeService();
   const pages = new PageService();
@@ -82,6 +84,7 @@ export const buildApp = async () => {
   const publicOgRoot = path.join(clientRoot, 'og');
   const analyticsCleanupIntervalMs = 12 * 60 * 60 * 1000;
   const activityExpirationIntervalMs = 10 * 1000;
+  const remoteModerationSyncIntervalMs = 60 * 1000;
   const getRequestIpForLogs = (ip: string | undefined) => (config.storeRawIp ? ip : undefined);
   const applyNoStore = (reply: any) => {
     reply.header('Cache-Control', 'no-store, no-cache, must-revalidate, private');
@@ -338,9 +341,31 @@ export const buildApp = async () => {
     }
   }, activityExpirationIntervalMs);
 
+  let remoteModerationSyncRun: Promise<void> | null = null;
+  const runRemoteModerationSync = () => {
+    if (remoteModerationSyncRun) return remoteModerationSyncRun;
+    remoteModerationSyncRun = (async () => {
+      try {
+        const result = await remoteModeration.syncDueSources();
+        if (result.checked > 0) {
+          logger.info({ checked: result.checked, failed: result.failed }, 'remote moderation synchronization completed');
+        }
+      } catch (error) {
+        logger.error({ err: error }, 'remote moderation synchronization failed');
+      }
+    })().finally(() => {
+      remoteModerationSyncRun = null;
+    });
+    return remoteModerationSyncRun;
+  };
+  void runRemoteModerationSync();
+  const remoteModerationSyncTimer = setInterval(() => void runRemoteModerationSync(), remoteModerationSyncIntervalMs);
+
   app.addHook('onClose', async () => {
     clearInterval(analyticsCleanupTimer);
     clearInterval(activityExpirationTimer);
+    clearInterval(remoteModerationSyncTimer);
+    await remoteModerationSyncRun;
     liveRealtime.close();
     boardRealtime.close();
     await links.flushAnalytics();
@@ -448,7 +473,8 @@ export const buildApp = async () => {
     live,
     realtime: liveRealtime,
     sessions,
-    rateLimiter
+    rateLimiter,
+    remoteModeration
   });
   await registerPageRoutes(app, { pages, sessions, rateLimiter });
   await registerActivityRoutes(app, { activities, attempts: activityAttempts, sessions });

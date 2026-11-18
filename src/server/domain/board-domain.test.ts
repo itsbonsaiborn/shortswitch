@@ -22,6 +22,8 @@ describe('Boards domain validation', () => {
         visualStyle: 'classic',
         backgroundPattern: 'none',
         patternIntensity: 35,
+        reactionMode: 'both',
+        blurImagesByDefault: false,
         readOnly: false,
         locked: false,
         submissionsExpiresAt: null,
@@ -39,6 +41,9 @@ describe('Boards domain validation', () => {
     })).toMatchObject({ visualStyle: 'soft', backgroundPattern: 'dots', patternIntensity: 70 });
     expect(() => parseBoardSettings({ backgroundPattern: 'animated_waves' })).toThrow();
     expect(() => parseBoardSettings({ patternIntensity: 101 })).toThrow();
+    expect(parseBoardSettings({ reactionMode: 'likes_only' }).reactionMode).toBe('likes_only');
+    expect(parseBoardSettings({ blurImagesByDefault: true }).blurImagesByDefault).toBe(true);
+    expect(() => parseBoardSettings({ reactionMode: 'hearts' })).toThrow();
   });
 
   test('enforces board-specific card limits and participant names', () => {

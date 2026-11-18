@@ -11,6 +11,7 @@ const props = defineProps<{
 
 const imageFailed = ref(false);
 watch(() => props.card.imageUrl, () => { imageFailed.value = false; });
+const preventPublicImageInteraction = (event: Event) => { event.preventDefault(); };
 </script>
 
 <template>
@@ -19,17 +20,21 @@ watch(() => props.card.imageUrl, () => { imageFailed.value = false; });
     :class="[`board-card-layout-${card.layout}`]"
   >
     <slot name="top" />
-    <div v-if="card.imageUrl" class="board-card-image aspect-video w-full overflow-hidden">
+    <div v-if="card.imageUrl" class="board-card-image relative aspect-video w-full overflow-hidden" :class="{ 'board-card-image-is-blurred': card.imageBlurred }" @contextmenu="preventPublicImageInteraction">
       <img
         v-if="!imageFailed"
         :src="card.imageUrl"
         :alt="stripRichText(card.title) || imageFallbackLabel"
-        class="h-full w-full object-cover"
+        class="pointer-events-none h-full w-full select-none object-cover transition-[filter,transform] duration-300"
+        :class="card.imageBlurred ? 'scale-[1.15] blur-2xl' : ''"
+        :data-image-blurred="card.imageBlurred ? 'true' : 'false'"
+        :draggable="false"
         loading="lazy"
         decoding="async"
         referrerpolicy="no-referrer"
         @error="imageFailed = true"
       />
+      <div v-if="!imageFailed" class="absolute inset-0 z-10 cursor-default select-none" aria-hidden="true" data-public-image-guard="true" @dragstart.prevent></div>
       <div v-else class="flex h-full items-center justify-center gap-2 px-4 text-center text-sm" role="status">
         <svg aria-hidden="true" class="h-5 w-5 shrink-0" viewBox="0 0 24 24"><path d="M3 5.75A2.75 2.75 0 0 1 5.75 3h12.5A2.75 2.75 0 0 1 21 5.75v12.5A2.75 2.75 0 0 1 18.25 21H5.75A2.75 2.75 0 0 1 3 18.25V5.75Zm1.5 0v9.69l3.43-3.43a2.25 2.25 0 0 1 3.18 0l1.31 1.31 2.47-2.47a2.25 2.25 0 0 1 3.18 0l1.43 1.43V5.75c0-.69-.56-1.25-1.25-1.25H5.75c-.69 0-1.25.56-1.25 1.25Zm15 8.65-2.49-2.49a.75.75 0 0 0-1.06 0l-2.47 2.47 2.12 2.12a.75.75 0 0 1-1.06 1.06l-4.49-4.49a.75.75 0 0 0-1.06 0L4.5 17.56v.69c0 .69.56 1.25 1.25 1.25h12.5c.69 0 1.25-.56 1.25-1.25V14.4ZM8.25 6.5a1.75 1.75 0 1 1 0 3.5 1.75 1.75 0 0 1 0-3.5Z" fill="currentColor"/></svg>
         <span>{{ imageFallbackLabel }}</span>
@@ -52,6 +57,8 @@ watch(() => props.card.imageUrl, () => { imageFailed.value = false; });
 <style scoped>
 .board-card-view{background:var(--ui-panel);border-color:var(--ui-border);border-radius:var(--activity-radius,1.5rem);box-shadow:var(--activity-shadow,none);color:var(--ui-text)}
 .board-card-image{background:var(--ui-panel-muted);color:var(--ui-text-muted)}
+.board-card-image-is-blurred{isolation:isolate}
+.board-card-image img{-webkit-user-drag:none}
 .board-card-content{display:flex;flex:1;flex-direction:column;padding:1.25rem}
 .board-card-content h2,.board-card-body{overflow-wrap:anywhere;word-break:break-word}
 .board-card-content h2{font-size:1.1rem;line-height:1.45}
@@ -61,5 +68,6 @@ watch(() => props.card.imageUrl, () => { imageFailed.value = false; });
 .board-card-layout-compact .board-card-content h2{font-size:1rem}
 .board-card-layout-compact .board-card-body{font-size:.85rem;line-height:1.5}
 @media (min-width:640px){.board-card-content{padding:1.4rem}}
+@media (prefers-reduced-motion:reduce){.board-card-image img{transition:none}}
 </style>
 

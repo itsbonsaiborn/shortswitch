@@ -134,6 +134,20 @@ export const registerBoardRoutes = async (
       return card;
     });
   });
+  app.post('/api/boards/:id/cards/:cardId/image-blur', { onRequest: app.csrfProtection }, async (request, reply) => {
+    const auth = await requireAdmin(request, reply); if (!auth) return;
+    const { id, cardId } = request.params as { id: string; cardId: string };
+    return handle(reply, () => {
+      const card = boardCards.setImageBlurred(
+        auth.currentUser.id,
+        id,
+        cardId,
+        requireBoolean((request.body as { blurred?: unknown }).blurred)
+      );
+      realtime.schedule(id);
+      return card;
+    });
+  });
   app.post('/api/boards/:id/cards/:cardId/ownership/reset', { onRequest: app.csrfProtection }, async (request, reply) => {
     const auth = await requireAdmin(request, reply); if (!auth) return;
     const { id, cardId } = request.params as { id: string; cardId: string };

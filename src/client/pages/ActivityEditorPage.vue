@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router';
 import { useI18n } from 'vue-i18n';
-import type { Activity, ActivityAdminAttempt, ActivityAdminAttemptDetail, ActivityAdminResults, ActivityBackgroundPattern, ActivityLayout, ActivityPublishValidation, ActivityQuestionType, ActivitySettings, ActivityTheme, PublishedActivityVersion } from '@/shared/activity-types';
+import type { Activity, ActivityAdminAttempt, ActivityAdminAttemptDetail, ActivityAdminResults, ActivityBackgroundPattern, ActivityGradingModeRegradeResult, ActivityLayout, ActivityPublishValidation, ActivityQuestionType, ActivitySettings, ActivityTheme, PublishedActivityVersion } from '@/shared/activity-types';
 import { isValidActivityTimeZone, utcActivityDateTimeToLocalInput, zonedActivityDateTimeToUtc } from '@/shared/activity-deadline';
 import { api } from '../lib/api';
 import { activityAnswerRows as answerRows, activityChoiceReviewOptions as choiceReviewOptions, activityCorrectAnswerRows as correctAnswerRows, formatActivityNumber, formatActivityPercent, formatActivityScorePercent } from '../lib/activity-results';
@@ -53,6 +53,8 @@ const copiedPublicUrl = ref(false);
 let copiedPublicUrlTimer: number | undefined;
 const lifecycleState = ref<Activity['lifecycleState']>('draft');
 const publishConfirmation = ref(false);
+const regradeConfirmation = ref(false);
+const regradingGradingModes = ref(false);
 const publishValidation = ref<ActivityPublishValidation | null>(null);
 const adminAttempts = ref<ActivityAdminAttempt[]>([]);
 const activityResults = ref<ActivityAdminResults | null>(null);
@@ -200,6 +202,32 @@ const changeAttemptPage = async (delta: number) => {
   if (!activityResults.value) return;
   attemptPage.value = Math.min(activityResults.value.pagination.totalPages || 1, Math.max(1, attemptPage.value + delta));
   await loadAttempts();
+};
+const regradeGradingModeResponses = async () => {
+  if (!activityId.value || !publishedVersion.value) return;
+  regradingGradingModes.value = true;
+  try {
+    const result = await api<ActivityGradingModeRegradeResult>(
+      `/api/activities/${activityId.value}/results/regrade-grading-modes`,
+      { method: 'POST', body: '{}' }
+    );
+    regradeConfirmation.value = false;
+    await loadAttempts();
+    if (selectedAttemptDetail.value) await loadAttemptDetail(selectedAttemptDetail.value.id);
+    pushToast({
+      tone: 'success',
+      title: t('activityRegrade.complete'),
+      description: t('activityRegrade.summary', {
+        responses: result.responsesRegraded,
+        attempts: result.attemptsRegraded,
+        version: result.sourceVersionNumber
+      })
+    });
+  } catch (error) {
+    pushToast({ tone: 'error', title: t('activityRegrade.failed'), description: (error as Error).message });
+  } finally {
+    regradingGradingModes.value = false;
+  }
 };
 const formatPercent = formatActivityPercent;
 const formatAttemptScorePercent = formatActivityScorePercent;
@@ -1154,7 +1182,7 @@ onBeforeUnmount(() => { if (slideDragSession) finishSlideDrag(false); if (blockD
           <label class="flex items-center gap-3 rounded-2xl border border-[var(--ui-border)] p-4"><input v-model="settings.allowBackNavigation" type="checkbox" /><span>{{ t('activityNavigation.allowBackNavigation') }}</span></label>
           </template>
           <section v-if="activeTab === 'results' && activityId && activityResults" class="space-y-4 sm:col-span-2">
-            <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><h3 class="font-semibold">{{ t('activityResults.title') }}</h3><p class="text-xs text-[var(--ui-text-muted)]">{{ t('activityResults.description') }}</p></div><div class="grid w-full gap-2 sm:flex sm:w-auto sm:flex-wrap"><a class="btn-secondary justify-center px-3 py-2 text-center text-sm" :href="attemptExportUrl">{{ t('activityResults.exportAttempts') }}</a><a class="btn-secondary justify-center px-3 py-2 text-center text-sm" :href="responseExportUrl">{{ t('activityResults.exportResponses') }}</a><a class="btn-secondary justify-center px-3 py-2 text-center text-sm" :href="responseXlsxExportUrl">{{ t('activityResults.exportResponsesXlsx') }}</a></div></div>
+            <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><h3 class="font-semibold">{{ t('activityResults.title') }}</h3><p class="text-xs text-[var(--ui-text-muted)]">{{ t('activityResults.description') }}</p></div><div class="grid w-full gap-2 sm:flex sm:w-auto sm:flex-wrap"><button v-if="publishedVersion && activityResults.overview.totalAttempts" type="button" class="btn-secondary justify-center px-3 py-2 text-sm" :disabled="regradingGradingModes" @click="regradeConfirmation = true">{{ t('activityRegrade.action') }}</button><a class="btn-secondary justify-center px-3 py-2 text-center text-sm" :href="attemptExportUrl">{{ t('activityResults.exportAttempts') }}</a><a class="btn-secondary justify-center px-3 py-2 text-center text-sm" :href="responseExportUrl">{{ t('activityResults.exportResponses') }}</a><a class="btn-secondary justify-center px-3 py-2 text-center text-sm" :href="responseXlsxExportUrl">{{ t('activityResults.exportResponsesXlsx') }}</a></div></div>
             <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><article v-for="metric in [
               [t('activityResults.totalAttempts'), activityResults.overview.totalAttempts],
               [t('activityResults.submitted'), activityResults.overview.submittedAttempts],
@@ -1271,6 +1299,9 @@ onBeforeUnmount(() => { if (slideDragSession) finishSlideDrag(false); if (blockD
     </div>
     <div v-if="publishConfirmation" class="fixed inset-0 z-[125] flex items-center justify-center bg-black/55 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="publish-confirm-title">
       <div class="panel w-full max-w-lg p-6"><h3 id="publish-confirm-title" class="text-lg font-semibold">{{ publishedVersion ? t('activitiesPublishing.confirmRepublishTitle') : t('activitiesPublishing.confirmPublishTitle') }}</h3><p class="mt-2 text-sm leading-6 text-[var(--ui-text-muted)]">{{ t('activitiesPublishing.confirmPublishDescription', { version: (publishedVersion ?? 0) + 1 }) }}</p><ul class="mt-4 space-y-2" :aria-label="t('activitiesPublishing.confirmPublishTitle')"><li v-for="item in publishValidation?.items" :key="item.code" class="flex items-start gap-2 rounded-xl bg-[var(--ui-panel-muted)] px-3 py-2 text-sm"><span :class="item.valid ? 'text-[var(--ui-accent)]' : 'text-red-500'">{{ item.valid ? '✓' : '!' }}</span><span>{{ t(`activitiesPublishing.checklist.${item.code}`) }}</span></li></ul><div class="mt-6 flex justify-end gap-2"><button class="btn-secondary" :disabled="publishing" @click="publishConfirmation = false">{{ t('common.cancel') }}</button><button class="btn-primary" :disabled="publishing" @click="publish">{{ publishing ? t('activitiesEditor.publishing') : t('activitiesPublishing.confirmPublish') }}</button></div></div>
+    </div>
+    <div v-if="regradeConfirmation" class="fixed inset-0 z-[125] flex items-center justify-center bg-black/55 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="regrade-grading-modes-title" @keydown.esc="!regradingGradingModes && (regradeConfirmation = false)">
+      <div class="panel w-full max-w-lg p-6"><h3 id="regrade-grading-modes-title" class="text-lg font-semibold">{{ t('activityRegrade.title') }}</h3><p class="mt-2 text-sm leading-6 text-[var(--ui-text-muted)]">{{ t('activityRegrade.description', { version: publishedVersion }) }}</p><div class="mt-6 flex justify-end gap-2"><button class="btn-secondary" :disabled="regradingGradingModes" @click="regradeConfirmation = false">{{ t('common.cancel') }}</button><button class="btn-primary" :disabled="regradingGradingModes" @click="regradeGradingModeResponses">{{ regradingGradingModes ? t('activityRegrade.progress') : t('activityRegrade.confirm') }}</button></div></div>
     </div>
   </div>
 </template>

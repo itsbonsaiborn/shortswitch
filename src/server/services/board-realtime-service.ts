@@ -81,6 +81,10 @@ export class BoardRealtimeService {
   }
 
   broadcastReaction(boardId: string, cardId: string, reactions: { likes: number; dislikes: number }, revision: number) {
+    // Mutation responses also contain the current participant's selection. Build a
+    // new aggregate-only value so that structural typing cannot leak `current`
+    // into a board-wide event at runtime.
+    const aggregate = { likes: reactions.likes, dislikes: reactions.dislikes };
     for (const client of [...(this.clients.get(boardId) ?? [])]) {
       if (revision <= client.snapshot.publicRevision) continue;
       if (revision !== client.snapshot.publicRevision + 1) {
@@ -93,13 +97,13 @@ export class BoardRealtimeService {
         publicRevision: revision,
         cards: card
           ? client.snapshot.cards.map((item) => item.id === cardId
-            ? { ...item, reactions: { ...item.reactions, ...reactions } }
+            ? { ...item, reactions: { ...item.reactions, ...aggregate } }
             : item)
           : client.snapshot.cards
       };
       const delta: BoardRealtimeDelta = {
         type: 'delta', baseRevision: revision - 1, revision,
-        changes: card ? [{ type: 'reaction_updated', cardId, reactions }] : []
+        changes: card ? [{ type: 'reaction_updated', cardId, reactions: aggregate }] : []
       };
       this.writeEvent(boardId, client, 'delta', JSON.stringify(delta), revision);
     }

@@ -364,6 +364,19 @@ export interface ActivityAdminResults {
   wordClouds: ActivityWordCloudAnalytics[];
 }
 
+export interface ActivityGradingModeRegradeResult {
+  sourceVersionId: string;
+  sourceVersionNumber: number;
+  attemptsScanned: number;
+  attemptsRegraded: number;
+  responsesRegraded: number;
+  skippedIncompatible: number;
+  skippedManualOverrides: number;
+}
+
+/** @deprecated Use ActivityGradingModeRegradeResult. */
+export type ActivityOrderingRegradeResult = ActivityGradingModeRegradeResult;
+
 export interface ActivityAdminAttemptResponse {
   questionBlockId: string;
   slideNumber: number;

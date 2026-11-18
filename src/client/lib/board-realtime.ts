@@ -25,7 +25,16 @@ export const applyBoardRealtimeDelta = (board: PublicBoard, delta: BoardRealtime
       continue;
     }
     const card = next.cards.find((item) => item.id === change.cardId);
-    if (card) card.reactions = { ...card.reactions, ...change.reactions };
+    if (card) {
+      // Realtime reaction events are board-wide and may only update aggregate
+      // counts. The participant-specific selection comes from their own HTTP
+      // response or personalized snapshot and must never be overwritten here.
+      card.reactions = {
+        ...card.reactions,
+        likes: change.reactions.likes,
+        dislikes: change.reactions.dislikes
+      };
+    }
   }
   next.publicRevision = delta.revision;
   return { state: 'applied', board: next };

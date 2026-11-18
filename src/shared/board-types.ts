@@ -6,6 +6,15 @@ export type BoardCardModerationStatus = 'pending' | 'approved' | 'rejected';
 export type BoardCardLayout = 'text' | 'image_text' | 'compact';
 export type BoardLayout = 'grid';
 export type BoardReactionType = 'like' | 'dislike';
+export type BoardReactionMode = 'both' | 'likes_only' | 'dislikes_only' | 'disabled';
+
+export const effectiveBoardReactionMode = (
+  settings: Pick<BoardSettings, 'readOnly' | 'reactionMode'>
+): BoardReactionMode => settings.readOnly ? 'disabled' : settings.reactionMode;
+
+export const boardReactionModeAllows = (mode: BoardReactionMode, reaction: BoardReactionType) =>
+  mode === 'both' || (mode === 'likes_only' && reaction === 'like') ||
+  (mode === 'dislikes_only' && reaction === 'dislike');
 
 export interface BoardThemeReference {
   id: string;
@@ -20,6 +29,7 @@ export interface BoardSettings {
   visualStyle: ActivityLayout;
   backgroundPattern: ActivityBackgroundPattern;
   patternIntensity: number;
+  reactionMode: BoardReactionMode;
   readOnly: boolean;
   locked: boolean;
   submissionsExpiresAt: string | null;
@@ -30,6 +40,7 @@ export interface BoardSettings {
   maxTitleLength: number;
   maxBodyLength: number;
   allowImageUrls: boolean;
+  blurImagesByDefault: boolean;
   participantCanEdit: boolean;
   participantCanDelete: boolean;
   requireCardTitle: boolean;
@@ -82,14 +93,14 @@ export interface PublicBoard {
   expiresAt: string | null;
   theme: BoardThemeReference;
   settings: Pick<BoardSettings,
-    'layout' | 'visualStyle' | 'backgroundPattern' | 'patternIntensity' | 'readOnly' | 'locked' | 'submissionsExpiresAt' | 'requireParticipantName' | 'moderationMode' |
+    'layout' | 'visualStyle' | 'backgroundPattern' | 'patternIntensity' | 'reactionMode' | 'readOnly' | 'locked' | 'submissionsExpiresAt' | 'requireParticipantName' | 'moderationMode' |
     'maxCardsPerParticipant' | 'maxTitleLength' | 'maxBodyLength' | 'allowImageUrls' |
     'participantCanEdit' | 'participantCanDelete' | 'requireCardTitle'>;
   cards: PublicBoardCard[];
 }
 
 export type PublicBoardCard = Pick<BoardCard,
-  'id' | 'authorDisplayName' | 'title' | 'body' | 'imageUrl' | 'layout' | 'moderationStatus' |
+  'id' | 'authorDisplayName' | 'title' | 'body' | 'imageUrl' | 'imageBlurred' | 'layout' | 'moderationStatus' |
   'publishedAt' | 'createdAt' | 'updatedAt' | 'position'> & {
     owned: boolean;
     reactions: BoardCardReactionState;
@@ -127,6 +138,7 @@ export interface BoardCard {
   title: string;
   body: string;
   imageUrl: string | null;
+  imageBlurred: boolean;
   layout: BoardCardLayout;
   moderationStatus: BoardCardModerationStatus;
   moderationReason: string | null;

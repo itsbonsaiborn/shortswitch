@@ -17,19 +17,19 @@ const api = vi.fn(async (..._args: unknown[]) => ({
   id: 'board-1', slug: 'class-board', title: 'Class board', description: '', publicRevision: 1,
   expiresAt: null, theme: { id: 'theme', name: 'Theme', config: { surface: 'minimal_light' }, system: true },
   settings: {
-    layout: 'grid', visualStyle: 'soft', backgroundPattern: 'dots', patternIntensity: 55,
+    layout: 'grid', visualStyle: 'soft', backgroundPattern: 'dots', patternIntensity: 55, reactionMode: 'both',
     readOnly: false, locked: false, submissionsExpiresAt: null, requireParticipantName: false,
     moderationMode: 'auto_approve', maxCardsPerParticipant: 10, maxTitleLength: 160,
     maxBodyLength: 5000, allowImageUrls: true, participantCanEdit: true,
     participantCanDelete: true, requireCardTitle: true
   },
   cards: [
-    { id: 'card-1', title: 'Long card', body: 'Text '.repeat(80), imageUrl: null, authorDisplayName: null,
+    { id: 'card-1', title: 'Long card', body: 'Text '.repeat(80), imageUrl: null, imageBlurred: false, authorDisplayName: null,
       layout: 'text', moderationStatus: 'approved', publishedAt: '2026-01-01T00:00:00Z',
       createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z', owned: false,
       position: { x: 999, y: 999, width: 900, height: 900, zIndex: 99, revision: 0, updatedAt: '2026-01-01T00:00:00Z' },
       reactions: { likes: 2, dislikes: 1, current: null } },
-    { id: 'card-2', title: 'Image card', body: 'Body', imageUrl: 'https://images.example/card.png', authorDisplayName: 'Anna',
+    { id: 'card-2', title: 'Image card', body: 'Body', imageUrl: 'https://images.example/card.png', imageBlurred: true, authorDisplayName: 'Anna',
       layout: 'image_text', moderationStatus: 'approved', publishedAt: '2026-01-02T00:00:00Z',
       createdAt: '2026-01-02T00:00:00Z', updatedAt: '2026-01-02T00:00:00Z', owned: false,
       position: { x: 0, y: 0, width: 1200, height: 1600, zIndex: 1, revision: 0, updatedAt: '2026-01-02T00:00:00Z' },
@@ -117,6 +117,35 @@ describe('PublicBoardPage grid', () => {
     expect(wrapper.findAll('.board-reaction-count')).toHaveLength(4);
     wrapper.unmount();
     routeState.path = '/class-board';
+  });
+
+  test('renders only controls allowed by the current reaction mode', async () => {
+    const likesOnly = await api() as Awaited<ReturnType<typeof api>>;
+    likesOnly.settings.reactionMode = 'likes_only';
+    api.mockResolvedValueOnce(likesOnly);
+    const likesWrapper = mount(PublicBoardPage, { global: { plugins: [i18n] } });
+    await flushPromises();
+    expect(likesWrapper.findAll('button.board-reaction')).toHaveLength(2);
+    expect(likesWrapper.findAll('button.board-reaction').every((button) => button.attributes('aria-label')?.startsWith('Like'))).toBe(true);
+    likesWrapper.unmount();
+
+    const dislikesOnly = await api() as Awaited<ReturnType<typeof api>>;
+    dislikesOnly.settings.reactionMode = 'dislikes_only';
+    api.mockResolvedValueOnce(dislikesOnly);
+    const dislikesWrapper = mount(PublicBoardPage, { global: { plugins: [i18n] } });
+    await flushPromises();
+    expect(dislikesWrapper.findAll('button.board-reaction')).toHaveLength(2);
+    expect(dislikesWrapper.findAll('button.board-reaction').every((button) => button.attributes('aria-label')?.startsWith('Dislike'))).toBe(true);
+    dislikesWrapper.unmount();
+
+    const disabled = await api() as Awaited<ReturnType<typeof api>>;
+    disabled.settings.reactionMode = 'disabled';
+    api.mockResolvedValueOnce(disabled);
+    const disabledWrapper = mount(PublicBoardPage, { global: { plugins: [i18n] } });
+    await flushPromises();
+    expect(disabledWrapper.findAll('.board-reaction')).toHaveLength(0);
+    expect(disabledWrapper.findAll('.board-reaction-count')).toHaveLength(0);
+    disabledWrapper.unmount();
   });
 
   test('keeps one card menu open and uses a protected centered card dialog', async () => {

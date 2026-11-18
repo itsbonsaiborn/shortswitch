@@ -7,11 +7,11 @@ import { BoardRealtimeService, buildBoardRealtimeDelta } from './board-realtime-
 const snapshot = (revision = 1): PublicBoard => ({
   id: 'board', slug: 'board', title: 'Board', description: '', publicRevision: revision, expiresAt: null,
   theme: { id: 'theme', name: 'Theme', config: {}, system: true },
-  settings: { layout: 'grid', visualStyle: 'classic', backgroundPattern: 'none', patternIntensity: 35,
+  settings: { layout: 'grid', visualStyle: 'classic', backgroundPattern: 'none', patternIntensity: 35, reactionMode: 'both',
     readOnly: false, locked: false, submissionsExpiresAt: null, requireParticipantName: false, moderationMode: 'auto_approve',
     maxCardsPerParticipant: 10, maxTitleLength: 160, maxBodyLength: 5000, allowImageUrls: true,
     participantCanEdit: true, participantCanDelete: true, requireCardTitle: true },
-  cards: [{ id: 'card', title: 'Card', body: 'Body', imageUrl: null, authorDisplayName: null, layout: 'text',
+  cards: [{ id: 'card', title: 'Card', body: 'Body', imageUrl: null, imageBlurred: false, authorDisplayName: null, layout: 'text',
     moderationStatus: 'approved', publishedAt: '', createdAt: '', updatedAt: '', owned: false,
     position: { x: 0, y: 0, width: 280, height: 180, zIndex: 0, revision: 0, updatedAt: '' },
     reactions: { likes: revision - 1, dislikes: 0, current: null } }]
@@ -43,11 +43,23 @@ describe('Board realtime SSE', () => {
     const edited = { ...snapshot(3), cards: [{ ...snapshot(2).cards[0], title: 'Edited' }] };
     expect(buildBoardRealtimeDelta(created, edited).changes).toContainEqual(expect.objectContaining({ type: 'card_upserted' }));
 
+    const blurred = { ...snapshot(3), cards: [{ ...snapshot(2).cards[0], imageBlurred: true }] };
+    expect(buildBoardRealtimeDelta(created, blurred).changes).toContainEqual(
+      expect.objectContaining({ type: 'card_upserted', card: expect.objectContaining({ imageBlurred: true }) })
+    );
+
     const hidden = { ...snapshot(4), cards: [] };
     expect(buildBoardRealtimeDelta(edited, hidden).changes).toContainEqual({ type: 'card_deleted', cardId: 'card' });
 
     const locked = { ...hidden, publicRevision: 5, settings: { ...hidden.settings, locked: true } };
     expect(buildBoardRealtimeDelta(hidden, locked).changes).toContainEqual(expect.objectContaining({ type: 'board_updated' }));
+
+    const reactionsDisabled = {
+      ...locked, publicRevision: 6, settings: { ...locked.settings, reactionMode: 'disabled' as const }
+    };
+    expect(buildBoardRealtimeDelta(locked, reactionsDisabled).changes).toContainEqual(
+      expect.objectContaining({ type: 'board_updated', board: expect.objectContaining({ settings: expect.objectContaining({ reactionMode: 'disabled' }) }) })
+    );
   });
 
   test('sends a snapshot, a scoped delta and removes disconnected clients', async () => {
@@ -115,6 +127,26 @@ describe('Board realtime SSE', () => {
     expect(provider).toHaveBeenCalledTimes(1);
     expect(response.writes.join('')).toContain('"reaction_updated"');
     expect(response.writes.join('')).toContain('"likes":3');
+    realtime.close();
+  });
+
+  test('never broadcasts a participant-specific reaction selection to other clients', () => {
+    const participantA = new FakeResponse();
+    const participantB = new FakeResponse();
+    const realtime = new BoardRealtimeService();
+    realtime.addClient('board', participantA as never, () => snapshot());
+    realtime.addClient('board', participantB as never, () => snapshot());
+    participantA.writes = [];
+    participantB.writes = [];
+
+    const mutationState = { likes: 1, dislikes: 0, current: 'like' as const };
+    realtime.broadcastReaction('board', 'card', mutationState, 2);
+
+    for (const response of [participantA, participantB]) {
+      const payload = response.writes.join('');
+      expect(payload).toContain('"likes":1');
+      expect(payload).not.toContain('"current"');
+    }
     realtime.close();
   });
 });

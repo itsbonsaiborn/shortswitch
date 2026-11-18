@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
-import type { BoardReactionType } from '@/shared/board-types.js';
+import type { BoardReactionType, BoardSettings } from '@/shared/board-types.js';
+import { boardReactionModeAllows, effectiveBoardReactionMode } from '../../shared/board-types.js';
 import { BoardRepository } from '../repositories/board-repository.js';
 import { sha256 } from '../utils.js';
 import { RateLimiterService } from './rate-limiter-service.js';
@@ -31,6 +32,21 @@ export class BoardReactionService {
     if (!board || board.status !== 'published' || board.archivedAt) throw new Error('Board not found.');
     if (board.expiresAt && Date.parse(board.expiresAt) <= Date.now()) throw new Error('Board expired.');
     return board;
+  }
+
+  private mode(settings: Pick<BoardSettings, 'readOnly' | 'reactionMode'>) {
+    return effectiveBoardReactionMode(settings);
+  }
+
+  private publicState(
+    settings: Pick<BoardSettings, 'readOnly' | 'reactionMode'>,
+    state: { likes: number; dislikes: number; current: BoardReactionType | null }
+  ) {
+    const mode = this.mode(settings);
+    return {
+      ...state,
+      current: state.current && boardReactionModeAllows(mode, state.current) ? state.current : null
+    };
   }
 
   private ensureSession(boardId: string, rawToken?: string) {
@@ -66,14 +82,15 @@ export class BoardReactionService {
       : undefined;
     const state = this.boards.getReactionState(board.id, cardId, session?.id);
     if (!state) throw new Error('Board card not found.');
-    return state;
+    return this.publicState(board.settings, state);
   }
 
   set(slug: string, cardId: string, rawReaction: unknown, rawSessionToken?: string, requestKey = 'unknown') {
     const board = this.getAvailableBoard(slug);
-    if (board.settings.readOnly) throw new Error('Board reactions are locked.');
-    this.ensureRequestAllowed(board.id, requestKey, slug);
     if (rawReaction !== 'like' && rawReaction !== 'dislike') throw new Error('Invalid board reaction.');
+    const mode = this.mode(board.settings);
+    if (!boardReactionModeAllows(mode, rawReaction)) throw new Error('This reaction is not available for this Board.');
+    this.ensureRequestAllowed(board.id, requestKey, slug);
     if (!this.boards.getReactionState(board.id, cardId)) throw new Error('Board card not found.');
     const session = this.ensureSession(board.id, rawSessionToken);
     this.ensureSessionAllowed(board.id, session.session.id, slug);
@@ -89,7 +106,7 @@ export class BoardReactionService {
 
   remove(slug: string, cardId: string, rawSessionToken?: string, requestKey = 'unknown') {
     const board = this.getAvailableBoard(slug);
-    if (board.settings.readOnly) throw new Error('Board reactions are locked.');
+    if (this.mode(board.settings) === 'disabled') throw new Error('This reaction is not available for this Board.');
     this.ensureRequestAllowed(board.id, requestKey, slug);
     if (!rawSessionToken) {
       const state = this.boards.getReactionState(board.id, cardId);

@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { useI18n } from 'vue-i18n';
 import { useRoute } from 'vue-router';
 import type { BoardCardCreateResponse, BoardCardInput, BoardCardReactionState, BoardReactionType, BoardRealtimeDelta, PublicBoard, PublicBoardCard } from '@/shared/board-types';
+import { boardReactionModeAllows } from '@/shared/board-types';
 import { stripRichText } from '@/shared/rich-text';
 import { ApiError, api } from '../lib/api';
 import { sortBoardCards, type BoardCardSortMode } from '../lib/board-card-sort';
@@ -57,6 +58,8 @@ const canCreate = computed(() => Boolean(
   !board.value.settings.locked && !submissionsExpired.value
 ));
 const sortedCards = computed(() => sortBoardCards(board.value?.cards ?? [], sortMode.value, locale.value));
+const reactionMode = computed(() => board.value?.settings.reactionMode ?? 'disabled');
+const reactionAllowed = (reaction: BoardReactionType) => boardReactionModeAllows(reactionMode.value, reaction);
 const form = reactive<BoardCardInput>({ title: '', body: '', imageUrl: null, authorDisplayName: null, layout: 'text' });
 const cardFormComplete = computed(() => Boolean(
   stripRichText(form.body) &&
@@ -69,6 +72,7 @@ const publicError = (cause: unknown) => {
     if (cause.status === 429) return t('boardSecurity.rateLimited');
     if (cause.message === 'Participant card limit reached.') return t('boardSecurity.participantLimitReached');
     if (cause.message === 'Board card limit reached.') return t('boardSecurity.boardLimitReached');
+    if (cause.message === 'This reaction is not available for this Board.') return t('boardSecurity.reactionUnavailable');
   }
   return cause instanceof Error ? cause.message : t('errors.generic');
 };
@@ -156,7 +160,7 @@ const copyRecoveryPin = async () => {
   }, 1400);
 };
 const updateReaction = async (card: PublicBoardCard, reaction: BoardReactionType) => {
-  if (reactingCardIds.value.includes(card.id)) return;
+  if (!reactionAllowed(reaction) || reactingCardIds.value.includes(card.id)) return;
   reactingCardIds.value = [...reactingCardIds.value, card.id];
   delete reactionErrors[card.id];
   try {
@@ -167,7 +171,11 @@ const updateReaction = async (card: PublicBoardCard, reaction: BoardReactionType
         ? { method: 'DELETE' }
         : { method: 'PUT', body: JSON.stringify({ reaction }) }
     );
-    card.reactions = state;
+    const currentMode = reactionMode.value;
+    card.reactions = {
+      ...state,
+      current: state.current && boardReactionModeAllows(currentMode, state.current) ? state.current : null
+    };
   } catch (cause) {
     reactionErrors[card.id] = publicError(cause);
   } finally {
@@ -347,23 +355,23 @@ onBeforeUnmount(() => {
             <div class="mt-4 flex min-w-0 flex-wrap items-center justify-between gap-2"><p v-if="card.authorDisplayName" class="min-w-0 break-words text-xs font-medium text-[var(--ui-text-muted)]">{{ card.authorDisplayName }}</p><span v-if="card.owned && card.moderationStatus !== 'approved'" class="rounded-full border border-[var(--ui-border)] px-2 py-1 text-xs">{{ t(`boards.${card.moderationStatus}`) }}</span></div>
           </template>
           <template #footer>
-            <div v-if="card.moderationStatus === 'approved'" class="flex items-center gap-2">
+            <div v-if="card.moderationStatus === 'approved' && reactionMode !== 'disabled'" class="flex items-center gap-2">
               <template v-if="presentation">
-                <span class="board-reaction-count" :aria-label="t('boards.likeCard', { count: card.reactions.likes })"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M7 10v12H3V10h4Zm4.3 12H9V10.4l3.6-7.2c.2-.4.6-.7 1.1-.7 1.2 0 2.1 1 2 2.2l-.4 3.3H20c1.2 0 2.1 1.1 1.8 2.3l-2 9A3.5 3.5 0 0 1 16.4 22h-5.1Z" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8"/></svg>{{ card.reactions.likes }}</span>
-                <span class="board-reaction-count" :aria-label="t('boards.dislikeCard', { count: card.reactions.dislikes })"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M7 14V2H3v12h4Zm4.3-12H9v11.6l3.6 7.2c.2.4.6.7 1.1.7 1.2 0 2.1-1 2-2.2l-.4-3.3H20c1.2 0 2.1-1.1 1.8-2.3l-2-9A3.5 3.5 0 0 0 16.4 2h-5.1Z" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8"/></svg>{{ card.reactions.dislikes }}</span>
+                <span v-if="reactionAllowed('like')" class="board-reaction-count" :aria-label="t('boards.likeCard', { count: card.reactions.likes })"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M7 10v12H3V10h4Zm4.3 12H9V10.4l3.6-7.2c.2-.4.6-.7 1.1-.7 1.2 0 2.1 1 2 2.2l-.4 3.3H20c1.2 0 2.1 1.1 1.8 2.3l-2 9A3.5 3.5 0 0 1 16.4 22h-5.1Z" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8"/></svg>{{ card.reactions.likes }}</span>
+                <span v-if="reactionAllowed('dislike')" class="board-reaction-count" :aria-label="t('boards.dislikeCard', { count: card.reactions.dislikes })"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M7 14V2H3v12h4Zm4.3-12H9v11.6l3.6 7.2c.2.4.6.7 1.1.7 1.2 0 2.1-1 2-2.2l-.4-3.3H20c1.2 0 2.1-1.1 1.8-2.3l-2-9A3.5 3.5 0 0 0 16.4 2h-5.1Z" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8"/></svg>{{ card.reactions.dislikes }}</span>
               </template>
               <template v-else>
-              <button type="button" class="board-reaction" :class="{ 'board-reaction-selected': card.reactions.current === 'like' }" :disabled="presentation || board?.settings.readOnly || reactingCardIds.includes(card.id)" :aria-busy="reactingCardIds.includes(card.id)" :aria-pressed="card.reactions.current === 'like'" :aria-label="t('boards.likeCard', { count: card.reactions.likes })" @click.stop="updateReaction(card, 'like')">
+              <button v-if="reactionAllowed('like')" type="button" class="board-reaction" :class="{ 'board-reaction-selected': card.reactions.current === 'like' }" :disabled="reactingCardIds.includes(card.id)" :aria-busy="reactingCardIds.includes(card.id)" :aria-pressed="card.reactions.current === 'like'" :aria-label="t('boards.likeCard', { count: card.reactions.likes })" @click.stop="updateReaction(card, 'like')">
                 <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M7 10v12H3V10h4Zm4.3 12H9V10.4l3.6-7.2c.2-.4.6-.7 1.1-.7 1.2 0 2.1 1 2 2.2l-.4 3.3H20c1.2 0 2.1 1.1 1.8 2.3l-2 9A3.5 3.5 0 0 1 16.4 22h-5.1Z" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8"/></svg>
                 <span>{{ card.reactions.likes }}</span>
               </button>
-              <button type="button" class="board-reaction" :class="{ 'board-reaction-selected': card.reactions.current === 'dislike' }" :disabled="presentation || board?.settings.readOnly || reactingCardIds.includes(card.id)" :aria-busy="reactingCardIds.includes(card.id)" :aria-pressed="card.reactions.current === 'dislike'" :aria-label="t('boards.dislikeCard', { count: card.reactions.dislikes })" @click.stop="updateReaction(card, 'dislike')">
+              <button v-if="reactionAllowed('dislike')" type="button" class="board-reaction" :class="{ 'board-reaction-selected': card.reactions.current === 'dislike' }" :disabled="reactingCardIds.includes(card.id)" :aria-busy="reactingCardIds.includes(card.id)" :aria-pressed="card.reactions.current === 'dislike'" :aria-label="t('boards.dislikeCard', { count: card.reactions.dislikes })" @click.stop="updateReaction(card, 'dislike')">
                 <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M7 14V2H3v12h4Zm4.3-12H9v11.6l3.6 7.2c.2.4.6.7 1.1.7 1.2 0 2.1-1 2-2.2l-.4-3.3H20c1.2 0 2.1-1.1 1.8-2.3l-2-9A3.5 3.5 0 0 0 16.4 2h-5.1Z" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8"/></svg>
                 <span>{{ card.reactions.dislikes }}</span>
               </button>
               </template>
             </div>
-            <p v-if="reactionErrors[card.id]" class="mt-2 text-xs text-red-600" role="alert">{{ reactionErrors[card.id] }}</p>
+            <p v-if="reactionMode !== 'disabled' && reactionErrors[card.id]" class="mt-2 text-xs text-red-600" role="alert">{{ reactionErrors[card.id] }}</p>
           </template>
         </BoardCardView>
       </section>

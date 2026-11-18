@@ -74,6 +74,7 @@ export class BoardCardService {
       title: card.title,
       body: card.body,
       imageUrl: card.imageUrl,
+      imageBlurred: card.imageBlurred,
       layout: card.layout,
       moderationStatus: card.moderationStatus,
       publishedAt: card.publishedAt,
@@ -253,6 +254,10 @@ export class BoardCardService {
 
   setHidden(userId: string, boardId: string, cardId: string, hidden: boolean) {
     return this.boards.setCardHidden(userId, boardId, cardId, hidden);
+  }
+
+  setImageBlurred(userId: string, boardId: string, cardId: string, blurred: boolean) {
+    return this.boards.setCardImageBlurred(userId, boardId, cardId, blurred);
   }
 
   async resetOwnership(userId: string, boardId: string, cardId: string): Promise<BoardCardOwnershipResetResponse> {

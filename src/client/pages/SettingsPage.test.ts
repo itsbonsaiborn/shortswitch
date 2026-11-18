@@ -49,6 +49,7 @@ describe('SettingsPage two-factor enrollment dialog', () => {
     apiMock.mockImplementation((url: string, options?: RequestInit) => {
       if (url === '/api/sessions') return Promise.resolve([]);
       if (url === '/api/moderation/rules') return Promise.resolve([]);
+      if (url === '/api/moderation/remote-sources') return Promise.resolve([]);
       if (url === '/api/settings/public-display') return Promise.resolve({ language: 'auto', appearance: 'system' });
       if (url === '/api/settings/two-factor/enrollment') {
         return Promise.resolve({ otpauthUri: 'otpauth://totp/ShortSwitch', manualKey: 'ABCD EFGH' });

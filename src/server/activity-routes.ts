@@ -247,6 +247,20 @@ export const registerActivityRoutes = async (app: FastifyInstance<any, any, any,
     }
   });
 
+  const regradeGradingModes = async (request: Parameters<typeof requireAdmin>[0], reply: Parameters<typeof requireAdmin>[1]) => {
+    const authenticated = await requireAdmin(request, reply);
+    if (!authenticated) return;
+    try {
+      return attempts.regradeGradingModeResponses(authenticated.currentUser.id, (request.params as { id: string }).id);
+    } catch (error) {
+      return handle(reply, error);
+    }
+  };
+
+  app.post('/api/activities/:id/results/regrade-grading-modes', { onRequest: app.csrfProtection }, regradeGradingModes);
+  // Compatibility alias for the first Ordering-only iteration of this administrative action.
+  app.post('/api/activities/:id/results/regrade-ordering', { onRequest: app.csrfProtection }, regradeGradingModes);
+
   app.get('/api/activities/:id/exports/attempts.csv', async (request, reply) => {
     const authenticated = await requireAdmin(request, reply);
     if (!authenticated) return;

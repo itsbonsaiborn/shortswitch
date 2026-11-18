@@ -883,12 +883,22 @@ describe.sequential('server security hardening', () => {
       .toEqual({ version: 20, name: 'board_recovery_security' });
     expect(db.prepare('SELECT version, name FROM schema_migrations WHERE version = 21').get())
       .toEqual({ version: 21, name: 'board_submission_expiration' });
+    expect(db.prepare('SELECT version, name FROM schema_migrations WHERE version = 29').get())
+      .toEqual({ version: 29, name: 'board_reaction_modes' });
+    expect(db.prepare('SELECT version, name FROM schema_migrations WHERE version = 30').get())
+      .toEqual({ version: 30, name: 'board_image_blur_state' });
     expect(db.prepare('SELECT version, name FROM schema_migrations WHERE version = 22').get())
       .toEqual({ version: 22, name: 'service_sections' });
     expect(db.prepare('SELECT section_type FROM service_sections ORDER BY section_type').all())
       .toHaveLength(4);
     expect(db.prepare("SELECT name FROM pragma_table_info('board_settings') WHERE name = 'submissions_expires_at'").get())
       .toEqual({ name: 'submissions_expires_at' });
+    expect(db.prepare("SELECT name FROM pragma_table_info('board_settings') WHERE name = 'reaction_mode'").get())
+      .toEqual({ name: 'reaction_mode' });
+    expect(db.prepare("SELECT name FROM pragma_table_info('board_settings') WHERE name = 'blur_images_by_default'").get())
+      .toEqual({ name: 'blur_images_by_default' });
+    expect(db.prepare("SELECT name FROM pragma_table_info('board_cards') WHERE name = 'image_blurred'").get())
+      .toEqual({ name: 'image_blurred' });
     expect(db.prepare(`SELECT name FROM pragma_table_info('board_card_credentials') WHERE name IN (
       'recovery_failed_attempts', 'recovery_window_started_at', 'recovery_locked_until'
     ) ORDER BY name`).all().map((column) => (column as { name: string }).name)).toEqual([
@@ -906,7 +916,7 @@ describe.sequential('server security hardening', () => {
     }));
     expect(board).toMatchObject({
       slug: 'class-board', status: 'published', publicRevision: 0,
-      settings: { layout: 'grid', visualStyle: 'classic', backgroundPattern: 'none', patternIntensity: 35 }
+      settings: { layout: 'grid', visualStyle: 'classic', backgroundPattern: 'none', patternIntensity: 35, reactionMode: 'both' }
     });
     db.prepare(`UPDATE board_themes SET config_json = 'invalid-json' WHERE id = 'board_theme_ocean_blue'`).run();
     expect(repository.listThemes(userId).find((theme) => theme.id === 'board_theme_ocean_blue')?.config)
@@ -1031,6 +1041,103 @@ describe.sequential('server security hardening', () => {
     expect((await app.inject({ method: 'GET', url: '/api/boards/public/physics-wall' })).statusCode).toBe(404);
     expect((await app.inject({ method: 'GET', url: '/api/boards/public/physics-wall/events' })).statusCode).toBe(404);
     expect((await app.inject({ method: 'DELETE', url: `/api/boards/${duplicated.json().id}`, headers })).statusCode).toBe(200);
+    await app.close();
+  });
+
+  test('persists Board image blur defaults and restricts per-card controls to administrators', async () => {
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+    const adminCsrf = await getCsrfBundle(app);
+    const admin = await login(app, 'admin@example.com', 'test-admin-password-42', adminCsrf);
+    const adminHeaders = { cookie: admin.cookies, 'x-csrf-token': adminCsrf.csrfToken };
+    const createdResponse = await app.inject({
+      method: 'POST', url: '/api/boards', headers: adminHeaders,
+      payload: {
+        title: 'Image moderation', slug: 'image-moderation', status: 'published',
+        settings: {
+          moderationMode: 'review_all', blurImagesByDefault: true,
+          maxCardsTotal: 10, maxCardsPerParticipant: 5
+        }
+      }
+    });
+    expect(createdResponse.statusCode).toBe(200);
+    const board = createdResponse.json();
+    expect(board.settings.blurImagesByDefault).toBe(true);
+
+    const participantCsrf = await getCsrfBundle(app);
+    const firstResponse = await app.inject({
+      method: 'POST', url: '/api/boards/public/image-moderation/cards',
+      headers: { cookie: participantCsrf.csrfCookies, 'x-csrf-token': participantCsrf.csrfToken },
+      payload: {
+        title: 'First image', body: 'Blurred by the Board default.',
+        imageUrl: 'https://images.example/first.png', authorDisplayName: null, layout: 'image_text'
+      }
+    });
+    expect(firstResponse.statusCode).toBe(201);
+    expect(firstResponse.json().card).toMatchObject({ imageBlurred: true, moderationStatus: 'pending' });
+    const ownershipCookie = extractCookies(firstResponse.headers['set-cookie'] as string[] | string | undefined);
+    const participantCookies = `${participantCsrf.csrfCookies}; ${ownershipCookie}`;
+
+    const firstCardId = firstResponse.json().card.id as string;
+    const approvedFirst = await app.inject({
+      method: 'POST', url: `/api/boards/${board.id}/cards/${firstCardId}/moderation`,
+      headers: adminHeaders, payload: { status: 'approved' }
+    });
+    expect(approvedFirst.json()).toMatchObject({ imageBlurred: true, moderationStatus: 'approved' });
+
+    const updatedBoard = await app.inject({
+      method: 'PATCH', url: `/api/boards/${board.id}`, headers: adminHeaders,
+      payload: {
+        title: board.title, description: board.description, slug: board.slug,
+        status: board.status, expiresAt: board.expiresAt,
+        settings: { ...board.settings, blurImagesByDefault: false }
+      }
+    });
+    expect(updatedBoard.statusCode).toBe(200);
+    expect(updatedBoard.json().settings.blurImagesByDefault).toBe(false);
+    expect((await app.inject({
+      method: 'GET', url: `/api/boards/${board.id}/cards`, headers: { cookie: admin.cookies }
+    })).json().find((card: { id: string }) => card.id === firstCardId)).toMatchObject({ imageBlurred: true });
+
+    const secondResponse = await app.inject({
+      method: 'POST', url: '/api/boards/public/image-moderation/cards',
+      headers: { cookie: participantCookies, 'x-csrf-token': participantCsrf.csrfToken },
+      payload: {
+        title: 'Second image', body: 'Visible under the new default.',
+        imageUrl: 'https://images.example/second.png', authorDisplayName: null, layout: 'image_text'
+      }
+    });
+    expect(secondResponse.statusCode).toBe(201);
+    expect(secondResponse.json().card.imageBlurred).toBe(false);
+    const secondCardId = secondResponse.json().card.id as string;
+
+    expect((await app.inject({
+      method: 'POST', url: `/api/boards/${board.id}/cards/${firstCardId}/image-blur`,
+      headers: { cookie: participantCookies, 'x-csrf-token': participantCsrf.csrfToken },
+      payload: { blurred: false }
+    })).statusCode).toBe(401);
+
+    const shown = await app.inject({
+      method: 'POST', url: `/api/boards/${board.id}/cards/${firstCardId}/image-blur`,
+      headers: adminHeaders, payload: { blurred: false }
+    });
+    expect(shown.statusCode).toBe(200);
+    expect(shown.json().imageBlurred).toBe(false);
+    const blurred = await app.inject({
+      method: 'POST', url: `/api/boards/${board.id}/cards/${secondCardId}/image-blur`,
+      headers: adminHeaders, payload: { blurred: true }
+    });
+    expect(blurred.statusCode).toBe(200);
+    expect(blurred.json().imageBlurred).toBe(true);
+
+    const approvedSecond = await app.inject({
+      method: 'POST', url: `/api/boards/${board.id}/cards/${secondCardId}/moderation`,
+      headers: adminHeaders, payload: { status: 'approved' }
+    });
+    expect(approvedSecond.json()).toMatchObject({ imageBlurred: true, moderationStatus: 'approved' });
+    const publicCards = (await app.inject({ method: 'GET', url: '/api/boards/public/image-moderation' })).json().cards;
+    expect(publicCards.find((card: { id: string }) => card.id === firstCardId)).toMatchObject({ imageBlurred: false });
+    expect(publicCards.find((card: { id: string }) => card.id === secondCardId)).toMatchObject({ imageBlurred: true });
     await app.close();
   });
 
@@ -1193,11 +1300,72 @@ describe.sequential('server security hardening', () => {
       headers: { cookie: strangerCsrf.csrfCookies }
     })).json()).toEqual({ likes: 0, dislikes: 1, current: null });
 
+    const secondReactorCsrf = await getCsrfBundle(app);
+    const secondReaction = await app.inject({
+      method: 'PUT', url: `/api/boards/public/secure-classroom/cards/${createdCard.card.id}/reaction`,
+      headers: { cookie: secondReactorCsrf.csrfCookies, 'x-csrf-token': secondReactorCsrf.csrfToken },
+      payload: { reaction: 'like' }
+    });
+    expect(secondReaction.statusCode).toBe(200);
+    expect(secondReaction.json()).toEqual({ likes: 1, dislikes: 1, current: 'like' });
+    const secondReactionCookie = extractCookies(secondReaction.headers['set-cookie'] as string[] | string | undefined);
+    const secondReactionCookies = `${secondReactorCsrf.csrfCookies}; ${secondReactionCookie}`;
+
+    const participantARefresh = await app.inject({
+      method: 'GET', url: '/api/boards/public/secure-classroom', headers: { cookie: reactionCookies }
+    });
+    const participantBRefresh = await app.inject({
+      method: 'GET', url: '/api/boards/public/secure-classroom', headers: { cookie: secondReactionCookies }
+    });
+    expect(participantARefresh.json().cards[0].reactions).toEqual({ likes: 1, dislikes: 1, current: 'dislike' });
+    expect(participantBRefresh.json().cards[0].reactions).toEqual({ likes: 1, dislikes: 1, current: 'like' });
+
     const removedReaction = await app.inject({
       method: 'DELETE', url: `/api/boards/public/secure-classroom/cards/${createdCard.card.id}/reaction`,
       headers: { cookie: reactionCookies, 'x-csrf-token': strangerCsrf.csrfToken }
     });
-    expect(removedReaction.json()).toEqual({ likes: 0, dislikes: 0, current: null });
+    expect(removedReaction.json()).toEqual({ likes: 1, dislikes: 0, current: null });
+    expect((await app.inject({
+      method: 'GET', url: '/api/boards/public/secure-classroom', headers: { cookie: reactionCookies }
+    })).json().cards[0].reactions).toEqual({ likes: 1, dislikes: 0, current: null });
+    expect((await app.inject({
+      method: 'GET', url: '/api/boards/public/secure-classroom', headers: { cookie: secondReactionCookies }
+    })).json().cards[0].reactions).toEqual({ likes: 1, dislikes: 0, current: 'like' });
+
+    const secondRemoval = await app.inject({
+      method: 'DELETE', url: `/api/boards/public/secure-classroom/cards/${createdCard.card.id}/reaction`,
+      headers: { cookie: secondReactionCookies, 'x-csrf-token': secondReactorCsrf.csrfToken }
+    });
+    expect(secondRemoval.json()).toEqual({ likes: 0, dislikes: 0, current: null });
+
+    const [simultaneousLike, simultaneousDislike] = await Promise.all([
+      app.inject({
+        method: 'PUT', url: `/api/boards/public/secure-classroom/cards/${createdCard.card.id}/reaction`,
+        headers: { cookie: reactionCookies, 'x-csrf-token': strangerCsrf.csrfToken },
+        payload: { reaction: 'like' }
+      }),
+      app.inject({
+        method: 'PUT', url: `/api/boards/public/secure-classroom/cards/${createdCard.card.id}/reaction`,
+        headers: { cookie: secondReactionCookies, 'x-csrf-token': secondReactorCsrf.csrfToken },
+        payload: { reaction: 'dislike' }
+      })
+    ]);
+    expect(simultaneousLike.statusCode).toBe(200);
+    expect(simultaneousDislike.statusCode).toBe(200);
+    expect((await app.inject({
+      method: 'GET', url: '/api/boards/public/secure-classroom', headers: { cookie: reactionCookies }
+    })).json().cards[0].reactions).toEqual({ likes: 1, dislikes: 1, current: 'like' });
+    expect((await app.inject({
+      method: 'GET', url: '/api/boards/public/secure-classroom', headers: { cookie: secondReactionCookies }
+    })).json().cards[0].reactions).toEqual({ likes: 1, dislikes: 1, current: 'dislike' });
+    await app.inject({
+      method: 'DELETE', url: `/api/boards/public/secure-classroom/cards/${createdCard.card.id}/reaction`,
+      headers: { cookie: reactionCookies, 'x-csrf-token': strangerCsrf.csrfToken }
+    });
+    await app.inject({
+      method: 'DELETE', url: `/api/boards/public/secure-classroom/cards/${createdCard.card.id}/reaction`,
+      headers: { cookie: secondReactionCookies, 'x-csrf-token': secondReactorCsrf.csrfToken }
+    });
 
     const concurrentLikes = await Promise.all([1, 2, 3].map(() => app.inject({
       method: 'PUT', url: `/api/boards/public/secure-classroom/cards/${createdCard.card.id}/reaction`,
@@ -1209,6 +1377,79 @@ describe.sequential('server security hardening', () => {
       method: 'GET', url: `/api/boards/public/secure-classroom/cards/${createdCard.card.id}/reaction`,
       headers: { cookie: reactionCookies }
     })).json()).toEqual({ likes: 1, dislikes: 0, current: 'like' });
+
+    const likesOnly = await app.inject({
+      method: 'PATCH', url: `/api/boards/${board.id}`, headers: adminHeaders,
+      payload: {
+        title: board.title, description: board.description, slug: board.slug, status: board.status, expiresAt: board.expiresAt,
+        settings: { ...board.settings, reactionMode: 'likes_only' }
+      }
+    });
+    expect(likesOnly.statusCode).toBe(200);
+    expect(likesOnly.json().settings.reactionMode).toBe('likes_only');
+    const likesOnlyPublic = await app.inject({
+      method: 'GET', url: '/api/boards/public/secure-classroom', headers: { cookie: reactionCookies }
+    });
+    expect(likesOnlyPublic.json()).toMatchObject({
+      settings: { reactionMode: 'likes_only' },
+      cards: [{ reactions: { likes: 1, dislikes: 0, current: 'like' } }]
+    });
+    expect((await app.inject({
+      method: 'PUT', url: `/api/boards/public/secure-classroom/cards/${createdCard.card.id}/reaction`,
+      headers: { cookie: secondReactionCookies, 'x-csrf-token': secondReactorCsrf.csrfToken },
+      payload: { reaction: 'dislike' }
+    })).statusCode).toBe(400);
+
+    const readOnly = await app.inject({
+      method: 'PATCH', url: `/api/boards/${board.id}`, headers: adminHeaders,
+      payload: {
+        title: board.title, description: board.description, slug: board.slug, status: board.status, expiresAt: board.expiresAt,
+        settings: { ...likesOnly.json().settings, readOnly: true }
+      }
+    });
+    expect(readOnly.statusCode).toBe(200);
+    expect(readOnly.json().settings.reactionMode).toBe('likes_only');
+    const readOnlyPublic = await app.inject({
+      method: 'GET', url: '/api/boards/public/secure-classroom', headers: { cookie: reactionCookies }
+    });
+    expect(readOnlyPublic.json()).toMatchObject({
+      settings: { readOnly: true, reactionMode: 'disabled' },
+      cards: [{ reactions: { likes: 1, dislikes: 0, current: null } }]
+    });
+    expect((await app.inject({
+      method: 'PUT', url: `/api/boards/public/secure-classroom/cards/${createdCard.card.id}/reaction`,
+      headers: { cookie: reactionCookies, 'x-csrf-token': strangerCsrf.csrfToken },
+      payload: { reaction: 'like' }
+    })).statusCode).toBe(400);
+    expect((await app.inject({
+      method: 'DELETE', url: `/api/boards/public/secure-classroom/cards/${createdCard.card.id}/reaction`,
+      headers: { cookie: reactionCookies, 'x-csrf-token': strangerCsrf.csrfToken }
+    })).statusCode).toBe(400);
+
+    const restored = await app.inject({
+      method: 'PATCH', url: `/api/boards/${board.id}`, headers: adminHeaders,
+      payload: {
+        title: board.title, description: board.description, slug: board.slug, status: board.status, expiresAt: board.expiresAt,
+        settings: { ...readOnly.json().settings, readOnly: false }
+      }
+    });
+    expect(restored.statusCode).toBe(200);
+    expect(restored.json().settings.reactionMode).toBe('likes_only');
+    expect((await app.inject({
+      method: 'GET', url: '/api/boards/public/secure-classroom', headers: { cookie: reactionCookies }
+    })).json()).toMatchObject({
+      settings: { readOnly: false, reactionMode: 'likes_only' },
+      cards: [{ reactions: { likes: 1, dislikes: 0, current: 'like' } }]
+    });
+
+    const both = await app.inject({
+      method: 'PATCH', url: `/api/boards/${board.id}`, headers: adminHeaders,
+      payload: {
+        title: board.title, description: board.description, slug: board.slug, status: board.status, expiresAt: board.expiresAt,
+        settings: { ...restored.json().settings, reactionMode: 'both' }
+      }
+    });
+    expect(both.statusCode).toBe(200);
 
     let reactionSpamStatus = 0;
     for (let attempt = 0; attempt < 4; attempt += 1) {
@@ -4829,6 +5070,243 @@ describe.sequential('server security hardening', () => {
     expect(overridden.statusCode).toBe(200);
     expect(overridden.json()).toMatchObject({ score: 2.4, maximumScore: 3 });
     expect(overridden.json().responses[0]).toMatchObject({ awardedPoints: 2.4, maximumPoints: 3, teacherFeedback: 'Teacher override.' });
+    await app.close();
+  });
+
+  test('explicitly regrades historical Ordering submissions from the latest compatible published grading mode', async () => {
+    const { buildApp } = await import('./app.js');
+    const ExcelJS = (await import('@excel.js/exceljs')).default;
+    const app = await buildApp();
+    const csrf = await getCsrfBundle(app);
+    const admin = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
+    const adminHeaders = { cookie: admin.cookies, 'x-csrf-token': csrf.csrfToken };
+    const settings = {
+      title: 'Ordering regrade', description: '', slug: 'ordering-regrade', status: 'active',
+      identityMode: 'anonymous', requiredAnswerBehavior: 'allow_incomplete', navigationPolicy: 'free',
+      resultVisibility: 'after_submission', feedbackPolicy: 'points_per_question', maximumAttempts: 10,
+      attemptTimeLimitSeconds: null, submissionDeadlineAt: null, shuffleQuestionOptions: false
+    };
+    const created = (await app.inject({ method: 'POST', url: '/api/activities', headers: adminHeaders, payload: { settings } })).json();
+    const orderingQuestion = (gradingMode: 'all_or_nothing' | 'partial') => ({
+      id: 'ordering_regrade_question', type: 'question', questionType: 'ordering', graded: true, points: 4, required: false,
+      config: {
+        prompt: 'Put the four items in order', shuffleItems: false, gradingMode,
+        items: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }, { id: 'c', label: 'C' }, { id: 'd', label: 'D' }]
+      },
+      answerKey: { orderedItemIds: ['a', 'b', 'c', 'd'], feedback: '' }
+    });
+    const draft = (expectedRevision: number, gradingMode: 'all_or_nothing' | 'partial') => ({
+      expectedRevision,
+      slides: [{ id: 'ordering_regrade_slide', title: 'Ordering', description: '', blocks: [orderingQuestion(gradingMode)] }]
+    });
+    expect((await app.inject({ method: 'PUT', url: `/api/activities/${created.activity.id}/draft`, headers: adminHeaders, payload: draft(0, 'all_or_nothing') })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'POST', url: `/api/activities/${created.activity.id}/publish`, headers: adminHeaders, payload: { expectedRevision: 1 } })).statusCode).toBe(201);
+
+    const submitOrdering = async (participantKey: string, orderedItemIds: string[]) => {
+      const started = (await app.inject({
+        method: 'POST', url: '/api/activities/public/ordering-regrade/attempts', payload: { participantKey }
+      })).json();
+      const block = started.attempt.slides[0].blocks[0];
+      const authorization = { authorization: `Bearer ${started.attemptToken}` };
+      expect((await app.inject({
+        method: 'PATCH',
+        url: `/api/activities/public/ordering-regrade/attempts/${started.attemptId}/responses/${block.id}`,
+        headers: authorization,
+        payload: { answer: { questionType: 'ordering', orderedItemIds }, clientRevision: 1 }
+      })).statusCode).toBe(200);
+      expect((await app.inject({
+        method: 'POST', url: `/api/activities/public/ordering-regrade/attempts/${started.attemptId}/submit`,
+        headers: authorization, payload: {}
+      })).statusCode).toBe(200);
+      return started.attemptId as string;
+    };
+
+    const oneCorrectAttempt = await submitOrdering('ordering_regrade_one_correct', ['a', 'c', 'd', 'b']);
+    const fullyCorrectAttempt = await submitOrdering('ordering_regrade_fully_correct', ['a', 'b', 'c', 'd']);
+    const fullyIncorrectAttempt = await submitOrdering('ordering_regrade_fully_incorrect', ['b', 'a', 'd', 'c']);
+    const readDetail = async (attemptId: string) => (await app.inject({
+      method: 'GET', url: `/api/activities/${created.activity.id}/attempts/${attemptId}`, headers: { cookie: admin.cookies }
+    })).json();
+    expect(await readDetail(oneCorrectAttempt)).toMatchObject({ score: 0, responses: [expect.objectContaining({ awardedPoints: 0 })] });
+    expect(await readDetail(fullyCorrectAttempt)).toMatchObject({ score: 4, responses: [expect.objectContaining({ awardedPoints: 4 })] });
+    expect(await readDetail(fullyIncorrectAttempt)).toMatchObject({ score: 0, responses: [expect.objectContaining({ awardedPoints: 0 })] });
+
+    expect((await app.inject({ method: 'PUT', url: `/api/activities/${created.activity.id}/draft`, headers: adminHeaders, payload: draft(1, 'partial') })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'POST', url: `/api/activities/${created.activity.id}/publish`, headers: adminHeaders, payload: { expectedRevision: 2 } })).statusCode).toBe(201);
+    expect(await readDetail(oneCorrectAttempt)).toMatchObject({ score: 0 });
+    const partialRegrade = await app.inject({
+      method: 'POST', url: `/api/activities/${created.activity.id}/results/regrade-ordering`, headers: adminHeaders, payload: {}
+    });
+    expect(partialRegrade.statusCode).toBe(200);
+    expect(partialRegrade.json()).toMatchObject({ attemptsScanned: 3, attemptsRegraded: 3, responsesRegraded: 3, sourceVersionNumber: 2 });
+    expect(await readDetail(oneCorrectAttempt)).toMatchObject({ score: 1, maximumScore: 4, responses: [expect.objectContaining({ awardedPoints: 1, maximumPoints: 4 })] });
+    expect(await readDetail(fullyCorrectAttempt)).toMatchObject({ score: 4, responses: [expect.objectContaining({ awardedPoints: 4 })] });
+    expect(await readDetail(fullyIncorrectAttempt)).toMatchObject({ score: 0, responses: [expect.objectContaining({ awardedPoints: 0 })] });
+
+    const partialWorkbookResponse = await app.inject({
+      method: 'GET', url: `/api/activities/${created.activity.id}/exports/responses.xlsx`, headers: { cookie: admin.cookies }
+    });
+    const partialWorkbook = new ExcelJS.Workbook();
+    await (partialWorkbook as any).xlsx.load(partialWorkbookResponse.rawPayload);
+    const partialSheet = (partialWorkbook as any).getWorksheet('Responses');
+    expect([partialSheet.getCell('D2').value, partialSheet.getCell('D3').value, partialSheet.getCell('D4').value]).toContain('1.0 / 4.0');
+
+    const currentVersionAttempt = await submitOrdering('ordering_regrade_current_version', ['a', 'c', 'd', 'b']);
+    expect(await readDetail(currentVersionAttempt)).toMatchObject({ score: 1 });
+    expect((await app.inject({
+      method: 'PATCH', url: `/api/activities/${created.activity.id}`, headers: adminHeaders,
+      payload: { expectedRevision: 2, settings: { status: 'closed' } }
+    })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'PUT', url: `/api/activities/${created.activity.id}/draft`, headers: adminHeaders, payload: draft(3, 'all_or_nothing') })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'POST', url: `/api/activities/${created.activity.id}/publish`, headers: adminHeaders, payload: { expectedRevision: 4 } })).statusCode).toBe(201);
+    const allOrNothingRegrade = await app.inject({
+      method: 'POST', url: `/api/activities/${created.activity.id}/results/regrade-ordering`, headers: adminHeaders, payload: {}
+    });
+    expect(allOrNothingRegrade.statusCode).toBe(200);
+    expect(allOrNothingRegrade.json()).toMatchObject({ attemptsScanned: 4, attemptsRegraded: 4, responsesRegraded: 4, sourceVersionNumber: 3 });
+    expect(await readDetail(oneCorrectAttempt)).toMatchObject({ score: 0, responses: [expect.objectContaining({ awardedPoints: 0 })] });
+    expect(await readDetail(currentVersionAttempt)).toMatchObject({ score: 0, responses: [expect.objectContaining({ awardedPoints: 0 })] });
+    expect((await app.inject({
+      method: 'POST', url: `/api/activities/${created.activity.id}/results/regrade-ordering`, headers: adminHeaders, payload: {}
+    })).json()).toMatchObject({ attemptsScanned: 4, attemptsRegraded: 0, responsesRegraded: 0 });
+    await app.close();
+  });
+
+  test('explicitly regrades historical Multiple Choice and Matching submissions in both grading directions', async () => {
+    const { buildApp } = await import('./app.js');
+    const ExcelJS = (await import('@excel.js/exceljs')).default;
+    const app = await buildApp();
+    const csrf = await getCsrfBundle(app);
+    const admin = await login(app, 'admin@example.com', 'test-admin-password-42', csrf);
+    const adminHeaders = { cookie: admin.cookies, 'x-csrf-token': csrf.csrfToken };
+    const settings = {
+      title: 'Choice and matching regrade', description: '', slug: 'choice-matching-regrade', status: 'active',
+      identityMode: 'anonymous', requiredAnswerBehavior: 'allow_incomplete', navigationPolicy: 'free',
+      resultVisibility: 'after_submission', feedbackPolicy: 'points_per_question', maximumAttempts: 10,
+      attemptTimeLimitSeconds: null, submissionDeadlineAt: null, shuffleQuestionOptions: false
+    };
+    const created = (await app.inject({ method: 'POST', url: '/api/activities', headers: adminHeaders, payload: { settings } })).json();
+    const draft = (expectedRevision: number, gradingMode: 'all_or_nothing' | 'partial') => ({
+      expectedRevision,
+      slides: [
+        {
+          id: 'multiple_choice_regrade_slide', title: 'Multiple Choice', description: '', blocks: [{
+            id: 'multiple_choice_regrade_question', type: 'question', questionType: 'multiple_choice',
+            graded: true, points: 4, required: false,
+            config: {
+              prompt: 'Select both correct options', description: '', minimumSelections: 1, maximumSelections: 4,
+              shuffleOptions: false, gradingMode,
+              options: [
+                { id: 'a', label: 'A' }, { id: 'b', label: 'B' },
+                { id: 'c', label: 'C' }, { id: 'd', label: 'D' }
+              ]
+            },
+            answerKey: { correctOptionIds: ['a', 'b'], feedback: '' }
+          }]
+        },
+        {
+          id: 'matching_regrade_slide', title: 'Matching', description: '', blocks: [{
+            id: 'matching_regrade_question', type: 'question', questionType: 'matching',
+            graded: true, points: 4, required: false,
+            config: {
+              prompt: 'Match the pairs', shuffleLeftItems: false, shuffleRightItems: false, gradingMode,
+              leftItems: [
+                { id: 'l1', label: 'L1' }, { id: 'l2', label: 'L2' },
+                { id: 'l3', label: 'L3' }, { id: 'l4', label: 'L4' }
+              ],
+              rightItems: [
+                { id: 'r1', label: 'R1' }, { id: 'r2', label: 'R2' },
+                { id: 'r3', label: 'R3' }, { id: 'r4', label: 'R4' }
+              ]
+            },
+            answerKey: {
+              pairs: [
+                { leftId: 'l1', rightId: 'r1' }, { leftId: 'l2', rightId: 'r2' },
+                { leftId: 'l3', rightId: 'r3' }, { leftId: 'l4', rightId: 'r4' }
+              ],
+              feedback: ''
+            }
+          }]
+        }
+      ]
+    });
+    expect((await app.inject({ method: 'PUT', url: `/api/activities/${created.activity.id}/draft`, headers: adminHeaders, payload: draft(0, 'all_or_nothing') })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'POST', url: `/api/activities/${created.activity.id}/publish`, headers: adminHeaders, payload: { expectedRevision: 1 } })).statusCode).toBe(201);
+
+    const submit = async (participantKey: string, fullyCorrect: boolean) => {
+      const started = (await app.inject({
+        method: 'POST', url: '/api/activities/public/choice-matching-regrade/attempts', payload: { participantKey }
+      })).json();
+      const blocks = started.attempt.slides.flatMap((slide: { blocks: Array<{ id: string; questionType: string }> }) => slide.blocks);
+      const authorization = { authorization: `Bearer ${started.attemptToken}` };
+      for (const block of blocks) {
+        const answer = block.questionType === 'multiple_choice'
+          ? { questionType: 'multiple_choice', optionIds: fullyCorrect ? ['a', 'b'] : ['a'] }
+          : {
+              questionType: 'matching',
+              pairs: fullyCorrect
+                ? [
+                    { leftId: 'l1', rightId: 'r1' }, { leftId: 'l2', rightId: 'r2' },
+                    { leftId: 'l3', rightId: 'r3' }, { leftId: 'l4', rightId: 'r4' }
+                  ]
+                : [
+                    { leftId: 'l1', rightId: 'r1' }, { leftId: 'l2', rightId: 'r3' },
+                    { leftId: 'l3', rightId: 'r4' }, { leftId: 'l4', rightId: 'r2' }
+                  ]
+            };
+        expect((await app.inject({
+          method: 'PATCH',
+          url: `/api/activities/public/choice-matching-regrade/attempts/${started.attemptId}/responses/${block.id}`,
+          headers: authorization, payload: { answer, clientRevision: 1 }
+        })).statusCode).toBe(200);
+      }
+      expect((await app.inject({
+        method: 'POST', url: `/api/activities/public/choice-matching-regrade/attempts/${started.attemptId}/submit`,
+        headers: authorization, payload: {}
+      })).statusCode).toBe(200);
+      return started.attemptId as string;
+    };
+    const partialAttempt = await submit('choice_matching_partial', false);
+    const correctAttempt = await submit('choice_matching_correct', true);
+    const detail = async (attemptId: string) => (await app.inject({
+      method: 'GET', url: `/api/activities/${created.activity.id}/attempts/${attemptId}`, headers: { cookie: admin.cookies }
+    })).json();
+    expect(await detail(partialAttempt)).toMatchObject({ score: 0 });
+    expect(await detail(correctAttempt)).toMatchObject({ score: 8 });
+
+    expect((await app.inject({ method: 'PUT', url: `/api/activities/${created.activity.id}/draft`, headers: adminHeaders, payload: draft(1, 'partial') })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'POST', url: `/api/activities/${created.activity.id}/publish`, headers: adminHeaders, payload: { expectedRevision: 2 } })).statusCode).toBe(201);
+    const partialRegrade = await app.inject({
+      method: 'POST', url: `/api/activities/${created.activity.id}/results/regrade-grading-modes`, headers: adminHeaders, payload: {}
+    });
+    expect(partialRegrade.statusCode).toBe(200);
+    expect(partialRegrade.json()).toMatchObject({ attemptsRegraded: 2, responsesRegraded: 4, sourceVersionNumber: 2 });
+    const partialDetail = await detail(partialAttempt);
+    expect(partialDetail).toMatchObject({ score: 3, maximumScore: 8 });
+    expect(partialDetail.responses).toEqual(expect.arrayContaining([
+      expect.objectContaining({ questionType: 'multiple_choice', awardedPoints: 2 }),
+      expect.objectContaining({ questionType: 'matching', awardedPoints: 1 })
+    ]));
+    expect(await detail(correctAttempt)).toMatchObject({ score: 8 });
+
+    const workbookResponse = await app.inject({
+      method: 'GET', url: `/api/activities/${created.activity.id}/exports/responses.xlsx`, headers: { cookie: admin.cookies }
+    });
+    const workbook = new ExcelJS.Workbook();
+    await (workbook as any).xlsx.load(workbookResponse.rawPayload);
+    const sheet = (workbook as any).getWorksheet('Responses');
+    const exportedPoints = Array.from({ length: sheet.rowCount - 1 }, (_, index) => sheet.getCell(`D${index + 2}`).value);
+    expect(exportedPoints).toEqual(expect.arrayContaining(['3.0 / 8.0', '8.0 / 8.0']));
+
+    expect((await app.inject({ method: 'PUT', url: `/api/activities/${created.activity.id}/draft`, headers: adminHeaders, payload: draft(2, 'all_or_nothing') })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'POST', url: `/api/activities/${created.activity.id}/publish`, headers: adminHeaders, payload: { expectedRevision: 3 } })).statusCode).toBe(201);
+    const exactRegrade = await app.inject({
+      method: 'POST', url: `/api/activities/${created.activity.id}/results/regrade-grading-modes`, headers: adminHeaders, payload: {}
+    });
+    expect(exactRegrade.statusCode).toBe(200);
+    expect(exactRegrade.json()).toMatchObject({ attemptsRegraded: 2, responsesRegraded: 4, sourceVersionNumber: 3 });
+    expect(await detail(partialAttempt)).toMatchObject({ score: 0 });
+    expect(await detail(correctAttempt)).toMatchObject({ score: 8 });
     await app.close();
   });
 

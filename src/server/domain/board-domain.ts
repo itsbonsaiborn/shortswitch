@@ -33,6 +33,7 @@ export const boardSettingsSchema = z.object({
   visualStyle: z.enum(['classic', 'minimal', 'soft', 'bold']).default('classic'),
   backgroundPattern: z.enum(['none', 'dots', 'grid', 'soft_glow', 'crosses']).default('none'),
   patternIntensity: z.number().int().min(0).max(100).default(35),
+  reactionMode: z.enum(['both', 'likes_only', 'dislikes_only', 'disabled']).default('both'),
   readOnly: z.boolean().default(false),
   locked: z.boolean().default(false),
   submissionsExpiresAt: z.string().datetime({ offset: true }).nullable().default(null),
@@ -43,6 +44,7 @@ export const boardSettingsSchema = z.object({
   maxTitleLength: z.number().int().min(1).max(300).default(160),
   maxBodyLength: z.number().int().min(1).max(20000).default(5000),
   allowImageUrls: z.boolean().default(true),
+  blurImagesByDefault: z.boolean().default(false),
   participantCanEdit: z.boolean().default(true),
   participantCanDelete: z.boolean().default(true),
   requireCardTitle: z.boolean().default(true)

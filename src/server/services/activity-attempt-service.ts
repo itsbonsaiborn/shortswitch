@@ -155,6 +155,14 @@ export class ActivityAttemptService {
     return this.repository.deleteAdminAttempt(userId, activityId, attemptId);
   }
 
+  regradeGradingModeResponses(userId: string, activityId: string) {
+    return this.repository.regradeGradingModeResponses(userId, activityId);
+  }
+
+  regradeOrderingResponses(userId: string, activityId: string) {
+    return this.regradeGradingModeResponses(userId, activityId);
+  }
+
   gradeManualResponse(userId: string, activityId: string, attemptId: string, questionBlockId: string, input: { awardedPoints?: unknown; teacherFeedback?: unknown }) {
     const awardedPoints = Number(input.awardedPoints);
     if (!Number.isFinite(awardedPoints) || awardedPoints < 0 || Math.round(awardedPoints * 1000) !== awardedPoints * 1000) {

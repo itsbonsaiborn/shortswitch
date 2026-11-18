@@ -84,6 +84,13 @@ export class BoardService {
   update(userId: string, boardId: string, raw: BoardInput) {
     const current = this.get(userId, boardId);
     const input = this.normalize(raw);
+    // Read-only mode exposes reactions as disabled, while the stored mode remains
+    // the administrator's preference for when presentation mode is turned off.
+    // Do not let unrelated edits silently change that preference while read-only
+    // mode is already active.
+    if (current.settings.readOnly && input.settings.readOnly) {
+      input.settings.reactionMode = current.settings.reactionMode;
+    }
     this.validateTheme(userId, input);
     try {
       return this.boards.update(userId, boardId, input.slug ? this.resolveSlug(input.slug) : current.slug, input);

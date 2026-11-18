@@ -5,12 +5,14 @@ import { LiveService } from './services/live-service.js';
 import { LiveRealtimeService } from './services/live-realtime-service.js';
 import type { RateLimiterService } from './services/rate-limiter-service.js';
 import type { SessionService } from './services/session-service.js';
+import type { RemoteModerationService } from './services/remote-moderation-service.js';
 
 interface LiveRouteDependencies {
   live: LiveService;
   realtime: LiveRealtimeService;
   sessions: SessionService;
   rateLimiter: RateLimiterService;
+  remoteModeration: RemoteModerationService;
 }
 
 const errorStatus = (message: string) => {
@@ -21,7 +23,7 @@ const errorStatus = (message: string) => {
 };
 
 export const registerLiveRoutes = async (app: FastifyInstance<any, any, any, any>, dependencies: LiveRouteDependencies) => {
-  const { live, realtime, sessions, rateLimiter } = dependencies;
+  const { live, realtime, sessions, rateLimiter, remoteModeration } = dependencies;
   const publish = (activityId: string, forceSnapshot = false) => {
     realtime.schedule(activityId, () => live.getResultsForActivityId(activityId), { forceSnapshot });
   };
@@ -186,6 +188,89 @@ export const registerLiveRoutes = async (app: FastifyInstance<any, any, any, any
     } catch (error) {
       const message = (error as Error).message;
       return reply.code(errorStatus(message)).send({ message });
+    }
+  });
+
+  app.get('/api/moderation/remote-sources', async (request, reply) => {
+    const authenticated = await requireAdmin(request, reply);
+    if (!authenticated) return;
+    return remoteModeration.list(authenticated.currentUser.id);
+  });
+
+  app.post('/api/moderation/remote-sources', { onRequest: app.csrfProtection }, async (request, reply) => {
+    const authenticated = await requireAdmin(request, reply);
+    if (!authenticated) return;
+    try {
+      return reply.code(201).send(remoteModeration.create(authenticated.currentUser.id, request.body));
+    } catch (error) {
+      return reply.code(400).send({ message: (error as Error).message });
+    }
+  });
+
+  app.get('/api/moderation/remote-sources/:id', async (request, reply) => {
+    const authenticated = await requireAdmin(request, reply);
+    if (!authenticated) return;
+    try {
+      const query = request.query as { previewLimit?: string };
+      return remoteModeration.inspect(
+        authenticated.currentUser.id,
+        (request.params as { id: string }).id,
+        Number(query.previewLimit ?? 100)
+      );
+    } catch (error) {
+      return reply.code(404).send({ message: (error as Error).message });
+    }
+  });
+
+  app.patch('/api/moderation/remote-sources/:id', { onRequest: app.csrfProtection }, async (request, reply) => {
+    const authenticated = await requireAdmin(request, reply);
+    if (!authenticated) return;
+    try {
+      return remoteModeration.update(
+        authenticated.currentUser.id,
+        (request.params as { id: string }).id,
+        request.body
+      );
+    } catch (error) {
+      const message = (error as Error).message;
+      return reply.code(message.includes('not found') ? 404 : 400).send({ message });
+    }
+  });
+
+  app.post('/api/moderation/remote-sources/:id/enabled', { onRequest: app.csrfProtection }, async (request, reply) => {
+    const authenticated = await requireAdmin(request, reply);
+    if (!authenticated) return;
+    try {
+      return remoteModeration.setEnabled(
+        authenticated.currentUser.id,
+        (request.params as { id: string }).id,
+        (request.body as { enabled?: unknown })?.enabled
+      );
+    } catch (error) {
+      const message = (error as Error).message;
+      return reply.code(message.includes('not found') ? 404 : 400).send({ message });
+    }
+  });
+
+  app.post('/api/moderation/remote-sources/:id/sync', { onRequest: app.csrfProtection }, async (request, reply) => {
+    const authenticated = await requireAdmin(request, reply);
+    if (!authenticated) return;
+    try {
+      return await remoteModeration.sync(authenticated.currentUser.id, (request.params as { id: string }).id);
+    } catch (error) {
+      const message = (error as Error).message;
+      return reply.code(message.includes('not found') ? 404 : 502).send({ message });
+    }
+  });
+
+  app.delete('/api/moderation/remote-sources/:id', { onRequest: app.csrfProtection }, async (request, reply) => {
+    const authenticated = await requireAdmin(request, reply);
+    if (!authenticated) return;
+    try {
+      remoteModeration.delete(authenticated.currentUser.id, (request.params as { id: string }).id);
+      return { ok: true };
+    } catch (error) {
+      return reply.code(404).send({ message: (error as Error).message });
     }
   });
 

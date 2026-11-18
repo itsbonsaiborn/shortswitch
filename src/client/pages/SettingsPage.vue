@@ -10,6 +10,7 @@ import { usePreferences } from '../composables/usePreferences';
 import { useDisplayPreferences } from '../composables/useDisplayPreferences';
 import { useTheme } from '../composables/useTheme';
 import type { AppearancePreference, LanguagePreference, PublicDisplayPreferences } from '@/shared/display-preferences';
+import RemoteBlocklistsSection from '../components/RemoteBlocklistsSection.vue';
 
 const sessions = ref<UserSession[]>([]);
 const password = ref('');
@@ -432,6 +433,9 @@ onBeforeUnmount(() => {
           <p v-if="moderationRules.length === 0" class="text-sm text-[var(--ui-text-muted)]">{{ t('settings.noRules') }}</p>
         </div>
       </div>
+    </section>
+    <section class="min-w-0 xl:col-span-2">
+      <RemoteBlocklistsSection />
     </section>
   </div>
 
